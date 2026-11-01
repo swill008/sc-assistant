@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from PySide6.QtCore import (QAbstractAnimation, QEasingCurve, QPoint,
-                            QPropertyAnimation, QRectF, QSize, Qt, Signal)
+                            QPropertyAnimation, QRectF, Qt, QTimer, Signal)
 from PySide6.QtGui import QColor, QFont, QGuiApplication, QPainter, QPainterPath, QPen
 from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QSizePolicy,
                                QVBoxLayout, QWidget)
@@ -47,6 +47,9 @@ class NavBar(QWidget):
     tool_requested = Signal(str)
     settings_requested = Signal()
     close_requested = Signal()
+    quit_requested = Signal()
+
+    QUIT_ARM_MS = 2500
 
     def __init__(self, tools: list[dict], parent=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint
@@ -127,11 +130,42 @@ class NavBar(QWidget):
         row.addWidget(hint)
         row.addSpacing(theme.px(14))
 
+        # ✕ only hides the overlay; QUIT ends the program. It needs a second
+        # click within QUIT_ARM_MS so a stray click mid-flight cannot close it.
+        self.quit_btn = QPushButton("QUIT")
+        self.quit_btn.setObjectName("quit")
+        self.quit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.quit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.quit_btn.setFixedHeight(theme.px(26))
+        self.quit_btn.setToolTip("Quit Citizen Assistant (click twice)")
+        self.quit_btn.setProperty("armed", False)
+        self.quit_btn.setStyleSheet(theme.qss("""
+            QPushButton#quit {
+                color: rgba(180,196,212,0.85); background: transparent;
+                border: 1px solid rgba(232,106,106,0.30); border-radius: 8px;
+                padding: 0 10px; font-size: 9px; font-weight: 600;
+                letter-spacing: 1.2px;
+            }
+            QPushButton#quit:hover { background: rgba(232,106,106,0.18); color: #ffd9d9; }
+            QPushButton#quit[armed="true"] {
+                background: rgba(232,106,106,0.40); color: #ffffff;
+                border-color: rgba(232,106,106,0.85);
+            }
+        """))
+        self.quit_btn.clicked.connect(self._on_quit_clicked)
+        self._quit_timer = QTimer(self)
+        self._quit_timer.setSingleShot(True)
+        self._quit_timer.setInterval(self.QUIT_ARM_MS)
+        self._quit_timer.timeout.connect(self._disarm_quit)
+        row.addWidget(self.quit_btn)
+        row.addSpacing(theme.px(6))
+
         close = QPushButton("✕")
         close.setObjectName("close")
         close.setCursor(Qt.CursorShape.PointingHandCursor)
         close.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         close.setFixedSize(theme.px(26), theme.px(26))
+        close.setToolTip("Hide the overlay (F4); the tray icon brings it back")
         close.setStyleSheet(theme.qss("""
             QPushButton#close {
                 color: rgba(180,196,212,0.85); background: transparent;
@@ -173,6 +207,25 @@ class NavBar(QWidget):
         if tool is None or not tool.get("enabled", True):
             return
         self.tool_requested.emit(tool_id)
+
+    def _on_quit_clicked(self) -> None:
+        if self.quit_btn.property("armed"):
+            self._disarm_quit()
+            self.quit_requested.emit()
+            return
+        self._set_quit_armed(True)
+        self._quit_timer.start()
+
+    def _disarm_quit(self) -> None:
+        self._quit_timer.stop()
+        self._set_quit_armed(False)
+
+    def _set_quit_armed(self, armed: bool) -> None:
+        self.quit_btn.setProperty("armed", armed)
+        self.quit_btn.setText("QUIT?" if armed else "QUIT")
+        # Re-polish so the [armed="true"] style rule is re-evaluated.
+        self.quit_btn.style().unpolish(self.quit_btn)
+        self.quit_btn.style().polish(self.quit_btn)
 
     def set_active(self, tool_id: str | None) -> None:
         for tid, btn in self._buttons.items():

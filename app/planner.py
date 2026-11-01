@@ -32,7 +32,7 @@ from .version import VERSION
 
 API = "https://api.uexcorp.uk/2.0"
 USER_AGENT = (f"Citizen-Assistant/{VERSION} "
-              "(+https://github.com/fishtaco7/citizen-assistant)")
+              "(+https://github.com/swill008/citizen-assistant)")
 CACHE_NAME = "routes_cache.json"
 SEED_NAME = "hauling_top_routes.json"
 REFRESH_SECONDS = 15 * 60

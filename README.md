@@ -95,7 +95,7 @@ calibration and stash notes carry over.
 ### Prebuilt EXE
 
 Download **CitizenAssistant-windows-x64.zip** from the
-[Releases](https://github.com/fishtaco7/citizen-assistant/releases) page, unzip
+[Releases](https://github.com/swill008/citizen-assistant/releases) page, unzip
 it, and run `CitizenAssistant.exe`. Keep the folder intact: the executable needs
 the files next to it.
 
@@ -238,6 +238,7 @@ load on the scanner thread.
 | --- | --- |
 | **F3** | Show / hide the nav bar |
 | **F4** | Hide everything (panic key) |
+| **QUIT** on the nav bar | Quit the overlay: click once to arm (it turns red and reads `QUIT?`), again within 2.5 s to quit. `✕` only hides it. |
 
 F3 and F4 are delivered two ways: `RegisterHotKey` for the normal case, and a
 25 ms `GetAsyncKeyState` poll for games that stop delivering hotkeys while
@@ -269,16 +270,50 @@ payloads through the tracker's thread-safe queue.
 The scanner needs to know where the signature number appears on your screen.
 
 1. Open the SC mining scan HUD so a signature number is visible.
-2. Click `⚙` → **SELECT** in *Capture region*.
-3. Drag a box **tightly around the digits only** (a little padding is fine, but
+2. In `⚙` → *Signature capture region*, check **MONITOR** shows the monitor the
+   game is on (it lists every monitor with its real resolution and Windows
+   scaling, read from Windows — nothing to type in).
+3. Click **SELECT**. The picker opens on that monitor.
+4. Drag a box **tightly around the digits only** (a little padding is fine, but
    do not include the word "SIGNATURE" or the units).
+5. Optional: **SHOW BOX** (in *Scanning*) draws the box on screen so you can
+   see exactly where the scanner reads; **SHOW PREVIEW** shows the pixels it
+   reads. Turn SHOW BOX off again when you are done (see *Game performance*).
 
-A good box is roughly 200 × 50 physical pixels. The region is stored in
-physical pixels, so it stays correct if you change display scaling later.
+A good box is roughly 200 × 50 physical pixels at 1440p; on a 5120 × 2160
+(5K2K) screen the signature digits themselves are only about 60 × 26, so a box
+of about 80 × 40 is plenty. The label beside the box shows its size in physical
+pixels while you drag. The region is stored in physical pixels, so it stays
+correct if you change display scaling later.
 
-The scanner samples that box ~8× per second and ignores frames that have not
-changed. A high-confidence exact signature locks on the first read; fuzzy or
-less certain reads still require two identical results before they are shown.
+**Several monitors with different scaling** (for example a 5K2K main screen at
+150% beside a TV at 300%) are supported: the picker opens one dimmed window per
+monitor, each at that monitor's own scale, and the stored box is taken from the
+physical mouse position (`GetPhysicalCursorPos`), so it is exactly the box you
+dragged. Builds before this fix used one window stretched over every monitor;
+Qt gave it a single scale (whichever monitor it landed on), so on a mixed-scale
+desk the box was stored at the wrong size — on a 150% main screen next to a
+300% TV, half the width and height — and OCR read nothing. If you calibrated
+with an older build, run **SELECT** once more.
+
+**Changing resolution or monitor later.** When you draw the box, the app also
+records that monitor's resolution and position. If they change afterwards (a
+new resolution, a different monitor, a rearranged desktop), the box is moved to
+match on the next start or as soon as Windows reports the change, and
+*Signature capture region* shows an amber note such as
+`Monitor changed (5120×2160 → 3840×1600): box adjusted to match`. Choosing a
+different **MONITOR** moves the box the same way. Star Citizen scales its HUD
+with the vertical resolution and keeps it centred, so the box keeps its offset
+from the screen centre and both are scaled by the height ratio
+(`app/display.py`, `rescale`); for the same aspect ratio that is plain
+proportional scaling. Check SHOW BOX or SHOW PREVIEW afterwards, and press
+**SELECT** if the HUD sits somewhere else. Changing only Windows scaling needs
+nothing: the box is stored in physical pixels, which scaling does not change.
+
+The scanner reads that box **4 times a second** by default (`⚙` → *Scanning* →
+**READS / S**, 1–8) and ignores frames that have not changed. A
+high-confidence exact signature locks on the first read; fuzzy or less certain
+reads still require two identical results before they are shown.
 
 ## Reading the scanner
 
@@ -814,14 +849,28 @@ application shortcuts while you type.
   the hint under the slider turns amber and the **RESTART** button relaunches the
   overlay in place (positions and settings are saved first). At the default 100%
   nothing is scaled and the layout is pixel-identical to earlier builds.
-- **Signature capture region** — re-calibrate.
+- **Signature capture region** — **MONITOR** picks the monitor the game runs on
+  (each entry shows the monitor's real resolution and Windows scaling, e.g.
+  `LG ULTRAGEAR+ · 5120×2160 · 150%`); **SELECT** / **CHANGE** re-calibrates on
+  that monitor. An amber note appears when the box was moved because the
+  monitor changed (see *Calibrating the scanner*).
+- **READS / S** — how many times a second the box is read, 1–8 (default 4).
+  Applies immediately and is saved as `poll_ms`. Fewer reads use less CPU; more
+  reads lock onto a new rock sooner.
 - **PAUSE / RESUME** — stop OCR without closing anything.
 - **SHOW PREVIEW** — show the raw pixels being read; useful for checking the box.
+- **SHOW BOX** — draw a thin outline on screen around the box being read. It
+  sits just outside the box, lets clicks through, and is always hidden from
+  screen capture, so neither the scanner nor screenshots ever see it. F4 hides
+  it with everything else. Off by default (`show_region_outline`): like any
+  window over the game it can cost frames, so use it to check the box, then
+  turn it off.
 - **VOICE** — enable/disable spoken announcements and set their volume (see *Voice* above).
 - **RELOAD** — re-read `app/data/signatures.json` without restarting.
 - **UPDATE** — last section in the window: the installed build and a **CHECK**
-  button. Checking reads `app/version.py` from GitHub and compares it with this
-  copy; when something newer exists the button becomes **UPDATE**, which
+  button. Checking reads `app/version.py` from this fork,
+  `swill008/citizen-assistant`, and compares it with this copy; when something
+  newer exists the button becomes **UPDATE**, which
   downloads the `main` branch archive and copies `app/`, `tools/`, the launchers
   and the requirements over this folder, then restarts the overlay. Settings,
   notes and logs live in `%APPDATA%\Citizen Assistant` and are never touched, and
@@ -830,9 +879,13 @@ application shortcuts while you type.
   downloading a new copy.
 
 Advanced scan tuning lives in `config.json`: `poll_ms` controls the capture
-cadence (default `125`), `fast_single_read` enables the high-confidence
+cadence (default `250`, i.e. 4 reads a second; **READS / S** sets it, and
+existing installs on the old `125` default move to `250` once),
+`fast_single_read` enables the high-confidence
 single-read lock, and `fast_confidence` sets its confidence threshold (default
 `0.97`). Set `fast_single_read` to `false` to always require two reads.
+`ocr_threads` (default `1`) is how many CPU threads the OCR model may use; see
+*Game performance* below before raising it.
 
 Settings are saved to `%APPDATA%\Citizen Assistant\config.json`, next to the ore-location
 cache (`where_to_mine.json`), inventory notes (`inventory.json`), the planner
@@ -845,6 +898,52 @@ INVENTORY, COMBAT, NOTES) and the nav bar's visibility are also stored in
 > redirects those writes into the app package container, so the files live under
 > `%LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.3.13_*\LocalCache\Roaming\Citizen Assistant\`.
 > A python.org install uses the plain `%APPDATA%` path.
+
+## Game performance
+
+The scanner shares the CPU and the display with Star Citizen, so it is built to
+stay out of the game's way.
+
+**OCR on one low-priority thread.** `rapidocr-onnxruntime` creates its ONNX
+Runtime sessions with the library defaults: a worker pool as wide as the CPU,
+whose threads spin while they wait. Every scan (8 a second) then burst across
+most cores at once. `app/ocr.py` now builds the sessions with
+`ocr_threads` threads (default 1), no spinning and sequential execution, and the
+scanner thread runs at below-normal priority, so a scan waits for the game
+rather than the other way round. Measured on a Ryzen 7 9800X3D (8 cores, SMT
+off) with the 42,000 signature from a 5K2K screenshot:
+
+| OCR setup | CPU per read | Cores busy during a read | Time per read |
+| --- | --- | --- | --- |
+| Library defaults (before) | 37.7 ms | 6.3 | 6 ms |
+| `ocr_threads: 1` (default) | 6.4 ms | 0.4 | 17 ms |
+| `ocr_threads: 2` | 8.6 ms | 0.6 | 15 ms |
+
+17 ms is well inside the 250 ms default scan interval (and the 125 ms one at
+8 reads a second). In game (PresentMon frame
+captures, 150 s each), the old build gave about 10× more frame hitches than
+with the overlay closed (33–53 versus 3–6, worst 1% of frames 34–41 ms versus
+18–19 ms); limiting the overlay to two cores at low priority brought it back to
+the overlay-closed numbers. Only raise `ocr_threads` on a CPU with spare cores.
+
+**Overlay windows over the game.** Any always-on-top window that covers a
+borderless game (this overlay's nav bar and panels, or another app's) makes
+Windows composite every game frame through the desktop window manager instead
+of letting the game flip straight to the display. Measured with the scanner on
+one core: hiding every overlay window raised the game from 60.6 to 69.7 FPS
+and the worst frame from 78 ms to 18 ms. Close panels you are not using, or hide
+the overlay with **F3**/**F4** when you do not need it. **SHOW BOX** is such a
+window too, which is why it is off by default.
+
+**Reads per second.** Each read costs about 6 ms of CPU on one core, so the
+default 4 a second is about 2.5% of one core; 8 a second doubles that.
+
+To check your own system, Intel's free
+[PresentMon](https://github.com/GameTechDev/PresentMon) records every frame:
+`PresentMon --process_name StarCitizen.exe --timed 150 --output_file frames.csv`
+(run as administrator). The `PresentMode` column says `Hardware: Independent
+Flip` when nothing is composited over the game and `Composed: Flip` when
+something is.
 
 ## Signature data
 
@@ -893,8 +992,8 @@ Outbound traffic is GET requests only:
 | --- | --- |
 | `api.uexcorp.uk` | trade routes and the UEX marketplace tab |
 | `scminer.rocks` | ore locations and signature data |
-| `raw.githubusercontent.com` | hauling mission snapshot, update check |
-| `codeload.github.com` | the update archive, only when you press UPDATE |
+| `raw.githubusercontent.com` | hauling mission snapshot, update check (`swill008/citizen-assistant`) |
+| `codeload.github.com` | the update archive from `swill008/citizen-assistant`, only when you press UPDATE |
 
 There is no telemetry, no analytics and no account. Screenshots, notes and
 inventory data are never uploaded; everything the app stores lives in
@@ -907,15 +1006,22 @@ Nothing installs itself in the background. `⚙` → **CHECK** only asks GitHub 
 the `main` archive, copies it over this folder and restarts the overlay. If you
 never press it, the build stays exactly as installed.
 
-The code that reaches users is therefore whatever is committed to `main` in this
-repository. A fork or a copy can change its own version, but cannot change this
-one — only the repository owner can push to it.
+Updates come from **this fork, `swill008/citizen-assistant`** (`REPO` in
+`app/updater.py`). Until v1.2.16 they came from the original
+`fishtaco7/citizen-assistant`, so pressing UPDATE in this fork would have
+replaced its fixes with the upstream code. The code that reaches users is
+therefore whatever is committed to `main` in this fork; only its owner can push
+to it.
 
 ## Troubleshooting
 
 | Symptom | Fix |
 | --- | --- |
 | Nothing ever reads | Re-calibrate; the box must contain only the digits. Check the preview. |
+| Nothing reads on a 5K / high-DPI screen next to monitors with other scaling | Calibrated with a build before the mixed-scale fix: the box was stored too small. Run **SELECT** again; the label shows the size in physical pixels while you drag. |
+| The game stutters while the overlay runs | Check `ocr_threads` is `1` in `config.json`, and **SHOW PREVIEW** and **SHOW BOX** are off; try fewer **READS / S**. See *Game performance*. |
+| Scanner stopped reading after changing resolution or monitor | Look for the amber note under *Signature capture region*: the box was moved to match. Turn on **SHOW BOX** to see where it is now; press **SELECT** if the HUD is elsewhere. |
+| Not sure where the scanner is reading | Turn on **SHOW BOX**: the outline is drawn around the exact box. It is hidden from capture, so it cannot affect the reading. |
 | Reads the wrong number | Box too large or too small, or the HUD is scaled differently — re-calibrate. |
 | Ore finder list is empty | No internet, or scminer.rocks is down. Press `↻`; the cache is used when available. |
 | Ore finder shows `OFFLINE` | Same as above — the data on screen is the last successful sync. |
@@ -941,6 +1047,9 @@ one — only the repository owner can push to it.
 
 ```bat
 C:\scov\Scripts\python.exe -m tools.selftest     REM OCR + lookup regression checks
+C:\scov\Scripts\python.exe -m tools.scan_selftest REM OCR threads, picker, rescale, settings, outline, QUIT, update source (needs a desktop)
+C:\scov\Scripts\python.exe -m tools.scan_e2e_selftest REM real screen: 5K2K signature -> picker -> capture -> OCR, outline, live app (secondary monitor)
+C:\scov\Scripts\python.exe -m tools.scan_e2e_selftest --primary REM the same on the main/game monitor
 C:\scov\Scripts\python.exe -m tools.workflow_selftest REM workflow + Game.log checks
 C:\scov\Scripts\python.exe -m tools.refinery_selftest REM refinery parser + timers
 C:\scov\Scripts\python.exe -m tools.combat_selftest REM combat parser + tracker + queue

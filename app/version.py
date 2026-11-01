@@ -10,8 +10,8 @@ how you tell, at a glance, which copy is actually running.
 """
 from __future__ import annotations
 
-VERSION = "1.2.16"
-BUILD_DATE = "2026-10-30"
+VERSION = "1.2.17"
+BUILD_DATE = "2026-11-01"
 
 
 def label() -> str:

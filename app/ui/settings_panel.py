@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPainter, QPen, QPixmap
-from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QSlider,
-                               QVBoxLayout, QWidget)
+from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPen, QPixmap
+from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QPushButton,
+                               QSlider, QVBoxLayout, QWidget)
 
 from .. import updater
 from ..version import label as build_label
@@ -110,6 +110,9 @@ class SettingsPanel(QWidget):
     capture_toggled = Signal(bool)
     ui_scale_changed = Signal(int)
     restart_requested = Signal()
+    monitor_changed = Signal(str)     # Qt screen name of the game monitor
+    reads_changed = Signal(int)       # scans per second, 1-8
+    outline_toggled = Signal(bool)    # draw the capture box on screen
 
     def __init__(self, parent=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint
@@ -296,6 +299,44 @@ class SettingsPanel(QWidget):
 
         # Capture region ----------------------------------------------
         root.addWidget(_section("Signature capture region"))
+
+        # Resolution and scaling are read from Windows, not typed in: the
+        # list shows each monitor's real size and scaling, and choosing one
+        # tells SELECT where the game is.
+        monitor_row = QHBoxLayout()
+        monitor_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
+        monitor_row.setSpacing(theme.px(8))
+        monitor_name = QLabel("MONITOR")
+        monitor_name.setFixedWidth(theme.px(58))
+        monitor_name.setFont(theme.font(8, QFont.Weight.DemiBold, spacing=0.8))
+        monitor_name.setStyleSheet(theme.qss(
+            "color: rgba(150,166,182,0.95); background: transparent;"))
+        self.monitor_box = QComboBox()
+        self.monitor_box.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.monitor_box.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.monitor_box.setFixedHeight(theme.px(24))
+        self.monitor_box.setToolTip(
+            "The monitor Star Citizen runs on. Resolution and scaling are read "
+            "from Windows; SELECT opens on this monitor.")
+        self.monitor_box.setStyleSheet(theme.qss("""
+            QComboBox {
+                color: rgba(200,214,228,0.95); background: rgba(79,209,224,0.06);
+                border: 1px solid rgba(79,209,224,0.18); border-radius: 6px;
+                padding: 0 8px; font-size: 8px;
+            }
+            QComboBox:hover { background: rgba(79,209,224,0.12); }
+            QComboBox::drop-down { border: none; width: 16px; }
+            QComboBox QAbstractItemView {
+                color: rgba(200,214,228,0.95); background: rgb(14,20,28);
+                selection-background-color: rgba(79,209,224,0.25);
+                border: 1px solid rgba(79,209,224,0.25);
+            }
+        """))
+        self.monitor_box.activated.connect(self._on_monitor)
+        monitor_row.addWidget(monitor_name)
+        monitor_row.addWidget(self.monitor_box, 1)
+        root.addLayout(monitor_row)
+
         region_row = QHBoxLayout()
         region_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
         region_row.setSpacing(theme.px(8))
@@ -307,19 +348,64 @@ class SettingsPanel(QWidget):
         region_row.addWidget(self.region_label, 1)
         region_row.addWidget(self.region_btn)
         root.addLayout(region_row)
+
+        # Shown when the box was adjusted for a monitor change, or when the
+        # game monitor is not connected.
+        self.region_note = QLabel()
+        self.region_note.setWordWrap(True)
+        self.region_note.setFont(theme.font(7))
+        self.region_note.setStyleSheet(theme.qss(
+            "color: rgba(255,176,32,0.95); background: transparent;"))
+        self.region_note.hide()
+        root.addWidget(self.region_note)
         root.addSpacing(theme.px(8))
 
         # Scanning ----------------------------------------------------
         root.addWidget(_section("Scanning"))
+        reads_row = QHBoxLayout()
+        reads_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
+        reads_row.setSpacing(theme.px(8))
+        reads_name = QLabel("READS / S")
+        reads_name.setFixedWidth(theme.px(58))
+        reads_name.setFont(theme.font(8, QFont.Weight.DemiBold, spacing=0.8))
+        reads_name.setStyleSheet(theme.qss(
+            "color: rgba(150,166,182,0.95); background: transparent;"))
+        self.reads_slider = _slider()
+        self.reads_slider.setRange(1, 8)
+        self.reads_slider.setSingleStep(1)
+        self.reads_slider.setPageStep(1)
+        self.reads_slider.setValue(4)
+        self.reads_slider.setToolTip(
+            "How often the signature box is read. Fewer reads use less CPU; "
+            "more reads lock onto a new rock sooner.")
+        self.reads_slider.valueChanged.connect(self._on_reads)
+        self.reads_label = QLabel("4 / s")
+        self.reads_label.setFixedWidth(theme.px(34))
+        self.reads_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.reads_label.setFont(theme.font(9))
+        self.reads_label.setStyleSheet(theme.qss(
+            "color: rgba(150,166,182,0.95); background: transparent;"))
+        reads_row.addWidget(reads_name)
+        reads_row.addWidget(self.reads_slider, 1)
+        reads_row.addWidget(self.reads_label)
+        root.addLayout(reads_row)
+
         scan_row = QHBoxLayout()
         scan_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
         scan_row.setSpacing(theme.px(8))
         self.pause_btn = _button("PAUSE", checkable=True)
         self.debug_btn = _button("SHOW PREVIEW", checkable=True)
+        self.outline_btn = _button("SHOW BOX", checkable=True)
+        self.outline_btn.setToolTip(
+            "Draw the capture box on screen so you can see where the scanner "
+            "reads. Hidden from screenshots and from the scanner itself.")
         self.pause_btn.toggled.connect(self._on_pause)
         self.debug_btn.toggled.connect(self._on_debug)
+        self.outline_btn.toggled.connect(self.outline_toggled.emit)
         scan_row.addWidget(self.pause_btn, 1)
         scan_row.addWidget(self.debug_btn, 1)
+        scan_row.addWidget(self.outline_btn, 1)
         root.addLayout(scan_row)
         root.addSpacing(theme.px(8))
 
@@ -409,6 +495,16 @@ class SettingsPanel(QWidget):
         self.preview.setVisible(checked)
         self.debug_toggled.emit(checked)
         self.adjustSize()
+
+    def _on_reads(self, value: int) -> None:
+        value = max(1, min(8, int(value)))
+        self.reads_label.setText(f"{value} / s")
+        self.reads_changed.emit(value)
+
+    def _on_monitor(self, index: int) -> None:
+        name = self.monitor_box.itemData(index)
+        if name:
+            self.monitor_changed.emit(str(name))
 
     def _on_voice(self, checked: bool) -> None:
         self.voice_btn.setText("ON" if checked else "OFF")
@@ -515,10 +611,39 @@ class SettingsPanel(QWidget):
             self.region_label.setText("Not calibrated")
             self.region_btn.setText("SELECT")
 
+    def set_region_note(self, text: str) -> None:
+        self.region_note.setText(text)
+        self.region_note.setVisible(bool(text))
+        self.adjustSize()
+
+    def set_monitors(self, choices: list[tuple[str, str]], current: str | None) -> None:
+        """Fill the monitor list with (screen name, label) pairs."""
+        self.monitor_box.blockSignals(True)
+        self.monitor_box.clear()
+        for name, label in choices:
+            self.monitor_box.addItem(label, name)
+        index = self.monitor_box.findData(current) if current else -1
+        self.monitor_box.setCurrentIndex(max(0, index))
+        self.monitor_box.blockSignals(False)
+
+    def set_reads(self, per_second: int) -> None:
+        value = max(1, min(8, int(per_second)))
+        if self.reads_slider.value() != value:
+            self.reads_slider.blockSignals(True)
+            self.reads_slider.setValue(value)
+            self.reads_slider.blockSignals(False)
+        self.reads_label.setText(f"{value} / s")
+
     def set_paused(self, paused: bool) -> None:
         if self.pause_btn.isChecked() != paused:
             self.pause_btn.setChecked(paused)
         self.pause_btn.setText("RESUME" if paused else "PAUSE")
+
+    def set_outline(self, enabled: bool) -> None:
+        if self.outline_btn.isChecked() != enabled:
+            self.outline_btn.blockSignals(True)
+            self.outline_btn.setChecked(enabled)
+            self.outline_btn.blockSignals(False)
 
     def set_debug(self, enabled: bool) -> None:
         if self.debug_btn.isChecked() != enabled:

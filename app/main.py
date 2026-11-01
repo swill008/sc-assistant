@@ -10,13 +10,13 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QObject, QRect, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (QAction, QColor, QFont, QGuiApplication, QIcon,
                            QKeySequence, QPainter, QPainterPath, QPixmap,
                            QShortcut)
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
-from . import win32
+from . import display, win32
 from .blueprints import BlueprintTracker
 from .capture import is_region_valid
 from .combat import CombatTracker
@@ -32,6 +32,7 @@ from .ui.mining_panel import MiningPanel
 from .ui.navbar import NavBar
 from .ui.notes_panel import NotesPanel
 from .ui.orefinder_panel import OreFinderPanel
+from .ui.region_outline import RegionOutline
 from .ui.region_selector import RegionSelector
 from .ui.settings_panel import SettingsPanel
 from .ui.uex_panel import UexPanel
@@ -78,7 +79,7 @@ class ScanThread(QThread):
         self._min_value = int(cfg["min_value"])
         self._max_value = int(cfg["max_value"])
         self._tolerance = float(cfg["tolerance"])
-        self._min_value = int(cfg["min_value"])
+        self._ocr_threads = int(cfg.get("ocr_threads", 1))
         self._last_hash: int | None = None
         self._last_payload: tuple | None = None
 
@@ -120,7 +121,8 @@ class ScanThread(QThread):
                         if ocr is None:
                             from .ocr import SignatureOCR
                             ocr = SignatureOCR(self._min_value,
-                                               self._max_value)
+                                               self._max_value,
+                                               threads=self._ocr_threads)
                     except Exception as exc:
                         self.failed.emit(f"Scanner unavailable: {exc}")
                         return
@@ -149,27 +151,6 @@ class ScanThread(QThread):
 
 
 # ---------------------------------------------------------------------------
-def logical_to_physical(rect: QRect) -> dict:
-    """Qt global-logical rect -> mss physical-pixel rect."""
-    screen = QGuiApplication.screenAt(rect.center()) or QGuiApplication.primaryScreen()
-    geo = screen.geometry()
-    dpr = float(screen.devicePixelRatio())
-
-    origin_x, origin_y = 0, 0
-    for mon in win32.monitors():
-        if (abs(mon["width"] - geo.width() * dpr) <= 2
-                and abs(mon["height"] - geo.height() * dpr) <= 2):
-            origin_x, origin_y = mon["left"], mon["top"]
-            break
-
-    return {
-        "left": int(round(origin_x + (rect.x() - geo.x()) * dpr)),
-        "top": int(round(origin_y + (rect.y() - geo.y()) * dpr)),
-        "width": int(round(rect.width() * dpr)),
-        "height": int(round(rect.height() * dpr)),
-    }
-
-
 def _tray_icon(size: int = 64) -> QIcon:
     pix = QPixmap(size, size)
     pix.fill(Qt.GlobalColor.transparent)
@@ -302,6 +283,7 @@ class OverlayApp(QObject):
         self.nav = NavBar(TOOLS)
         self.panel = MiningPanel()
         self.settings = SettingsPanel()
+        self.outline = RegionOutline()
         self.ore_data = LiveData()
         self.orefinder = OreFinderPanel(self.ore_data)
         self.hauling = HaulingPanel()
@@ -357,6 +339,7 @@ class OverlayApp(QObject):
     def _wire(self) -> None:
         self.nav.tool_requested.connect(self._on_tool)
         self.nav.close_requested.connect(self._hide_all)
+        self.nav.quit_requested.connect(self.quit)
         self.nav.settings_requested.connect(self._toggle_settings)
         self.panel.close_requested.connect(self._on_panel_close)
         self.orefinder.close_requested.connect(self._on_orefinder_close)
@@ -379,6 +362,21 @@ class OverlayApp(QObject):
         self.settings.restart_requested.connect(self.restart)
         self.settings.reload_requested.connect(self._reload_data)
         self.settings.close_requested.connect(self.settings.hide)
+        self.settings.reads_changed.connect(self._on_reads)
+        self.settings.monitor_changed.connect(self._on_game_monitor)
+        self.settings.outline_toggled.connect(self._on_outline)
+
+        # Monitors plugged in, unplugged, or changed (resolution, scaling,
+        # position): re-list them and keep the box on the signature. Debounced
+        # because Windows reports one change as several events.
+        self._display_timer = QTimer(self)
+        self._display_timer.setSingleShot(True)
+        self._display_timer.setInterval(800)
+        self._display_timer.timeout.connect(self._on_displays_changed)
+        self.app.screenAdded.connect(self._watch_screen)
+        self.app.screenRemoved.connect(lambda _screen: self._display_timer.start())
+        for screen in self.app.screens():
+            self._watch_screen(screen, notify=False)
 
     def _build_tray(self) -> None:
         self.tray = QSystemTrayIcon(_tray_icon(), self)
@@ -444,10 +442,14 @@ class OverlayApp(QObject):
         else:
             self.panel.place_default()
 
+        self.settings.set_reads(self._reads_per_second())
+        self._check_display()
         has_region = is_region_valid(self.cfg["region"])
         self.settings.set_region(self.cfg["region"] if has_region else None)
         self.settings.set_version(self.data.version, len(self.data.ores))
         self.settings.set_debug(bool(self.cfg["show_debug_preview"]))
+        self.settings.set_outline(bool(self.cfg["show_region_outline"]))
+        self._update_outline()
         self.voice.set_enabled(bool(self.cfg["voice_enabled"]))
         self.voice.set_volume(float(self.cfg["voice_volume"]))
         self.settings.set_voice(bool(self.cfg["voice_enabled"]))
@@ -525,7 +527,8 @@ class OverlayApp(QObject):
 
         self.combat.start()
         self.blueprint_tracker.start()
-        self.scan.start()
+        # Below the game's threads: a late scan is harmless, a late frame is not.
+        self.scan.start(QThread.Priority.LowPriority)
         self._freshness.start()
         self._topmost.start()
         self.hotkeys.start()
@@ -591,6 +594,10 @@ class OverlayApp(QObject):
                 win32.keep_on_top(widget)
             except Exception:
                 pass
+        try:
+            self.outline.keep_on_top()
+        except Exception:
+            pass
 
     # ------------------------------------------------------------------
     def _on_hotkey(self, hotkey_id: int) -> None:
@@ -602,10 +609,12 @@ class OverlayApp(QObject):
     def _show_bar(self) -> None:
         if not self.nav.shown:
             self.nav.slide_in()
+        self._update_outline()
 
     def _hide_all(self) -> None:
         if self.nav.shown:
             self.nav.slide_out()
+        self.outline.hide()
         self.panel.hide()
         self.settings.hide()
         self.orefinder.hide()
@@ -880,28 +889,106 @@ class OverlayApp(QObject):
             except Exception:
                 pass
 
-    # ------------------------------------------------------------------
-    def select_region(self) -> None:
-        if self._selector is not None:
-            self._selector.raise_()
+    # -- scanner settings: reads per second, game monitor, outline -------
+    def _reads_per_second(self) -> int:
+        try:
+            poll = max(1, int(self.cfg["poll_ms"]))
+        except (TypeError, ValueError):
+            poll = 250
+        return max(1, min(8, round(1000 / poll)))
+
+    def _on_reads(self, per_second: int) -> None:
+        poll = round(1000 / max(1, min(8, int(per_second))))
+        self.cfg["poll_ms"] = poll
+        self.scan.configure(interval_ms=poll)
+        self.cfg.save()
+
+    def _watch_screen(self, screen, notify: bool = True) -> None:
+        screen.geometryChanged.connect(lambda _geo: self._display_timer.start())
+        screen.logicalDotsPerInchChanged.connect(lambda _dpi: self._display_timer.start())
+        if notify:
+            self._display_timer.start()
+
+    def _on_displays_changed(self) -> None:
+        self._check_display()
+        self._update_outline()
+
+    def _refresh_monitor_list(self, current: str | None = None) -> None:
+        self.settings.set_monitors(display.monitor_choices(),
+                                   current or self.cfg.get("game_monitor"))
+
+    def _check_display(self) -> None:
+        """Keep the box on the signature when the game monitor has changed.
+
+        The monitor's physical rect is recorded when the box is drawn. If the
+        game monitor now has a different resolution or position, the box is
+        rescaled onto it (``display.rescale``) and Settings says so.
+        """
+        region = self.cfg["region"]
+        name = self.cfg.get("game_monitor")
+        screen = display.find_screen(name) if name else None
+        if name and screen is None:
+            self._refresh_monitor_list()
+            self.settings.set_region_note(
+                f"Game monitor {name} is not connected. Pick another monitor "
+                "or reconnect it.")
             return
-        hint = ("Drag a box around the scan signature"
-                if not self.demo else
-                "Demo mode: no real region needed")
-        self._selector = RegionSelector(hint)
-        self._selector.selected.connect(self._on_region_selected)
-        self._selector.cancelled.connect(self._on_region_cancelled)
-        self._selector.show()
+        screen = (screen or display.screen_of_region(region)
+                  or QGuiApplication.primaryScreen())
+        self._refresh_monitor_list(screen.name())
+        if not is_region_valid(region):
+            return
+        now = display.physical_rect(screen)
+        recorded = self.cfg.get("region_monitor")
+        if not recorded:
+            # Calibrated before monitors were tracked: adopt the current one.
+            self.cfg["region_monitor"] = now
+            self.cfg["game_monitor"] = screen.name()
+            self.cfg.save()
+            return
+        if display.same_rect(recorded, now):
+            return
+        moved = display.rescale(region, recorded, now)
+        self._apply_region(moved, now, screen.name())
+        self.settings.set_region_note(
+            f"Monitor changed ({recorded['width']}×{recorded['height']} → "
+            f"{now['width']}×{now['height']}): box adjusted to match. Check "
+            "SHOW PREVIEW or SHOW BOX; press SELECT if it is off.")
 
-    def _on_region_cancelled(self) -> None:
-        self._selector = None
-        if not is_region_valid(self.cfg["region"]):
-            self.panel.set_scan_idle("Region selection cancelled")
+    def _on_game_monitor(self, name: str) -> None:
+        screen = display.find_screen(name)
+        if screen is None:
+            return
+        region = self.cfg["region"]
+        recorded = self.cfg.get("region_monitor")
+        now = display.physical_rect(screen)
+        if is_region_valid(region) and recorded and not display.same_rect(recorded, now):
+            self._apply_region(display.rescale(region, recorded, now), now, name)
+            self.settings.set_region_note(
+                f"Box moved to {display.screen_label(screen)}. Check SHOW "
+                "PREVIEW or SHOW BOX; press SELECT if it is off.")
+        else:
+            self.cfg["game_monitor"] = name
+            self.cfg.save()
+            self.settings.set_region_note("")
 
-    def _on_region_selected(self, rect: QRect) -> None:
-        self._selector = None
-        region = logical_to_physical(rect)
+    def _on_outline(self, enabled: bool) -> None:
+        self.cfg["show_region_outline"] = bool(enabled)
+        self.cfg.save()
+        self._update_outline()
+
+    def _update_outline(self) -> None:
+        region = self.cfg["region"]
+        if self.cfg.get("show_region_outline") and is_region_valid(region):
+            self.outline.show_region(region)
+        else:
+            self.outline.hide()
+
+    def _apply_region(self, region: dict, monitor: dict, monitor_name: str) -> None:
+        """Store a new box (and its monitor) and point the scanner at it."""
         self.cfg["region"] = region
+        self.cfg["region_monitor"] = monitor
+        self.cfg["game_monitor"] = monitor_name
         self.cfg.save()
 
         self.scan.configure(region=region)
@@ -913,6 +1000,35 @@ class OverlayApp(QObject):
         self._scan_sig_reset()
 
         self.settings.set_region(region)
+        self._refresh_monitor_list(monitor_name)
+        self._update_outline()
+
+    # ------------------------------------------------------------------
+    def select_region(self) -> None:
+        if self._selector is not None:
+            self._selector.raise_()
+            return
+        hint = ("Drag a box around the scan signature"
+                if not self.demo else
+                "Demo mode: no real region needed")
+        # Open on the game monitor chosen in Settings; all monitors if none is
+        # chosen yet (first run) or it is not connected.
+        game = display.find_screen(self.cfg.get("game_monitor"))
+        self._selector = RegionSelector(hint, screens=[game] if game else None)
+        self._selector.selected.connect(self._on_region_selected)
+        self._selector.cancelled.connect(self._on_region_cancelled)
+        self._selector.show()
+
+    def _on_region_cancelled(self) -> None:
+        self._selector = None
+        if not is_region_valid(self.cfg["region"]):
+            self.panel.set_scan_idle("Region selection cancelled")
+
+    def _on_region_selected(self, region: dict) -> None:
+        self._selector = None
+        screen = display.screen_of_region(region) or QGuiApplication.primaryScreen()
+        self._apply_region(region, display.physical_rect(screen), screen.name())
+        self.settings.set_region_note("")
         self.panel.set_scan_idle(f"Scanning {region['width']} × {region['height']} px")
         self.panel.set_state("reading")
 

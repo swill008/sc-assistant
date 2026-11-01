@@ -22,6 +22,7 @@ from PySide6.QtWidgets import QApplication  # noqa: E402
 from app.combat import CombatEvent, CombatSessionStats  # noqa: E402
 from app.inventory import InventoryStore  # noqa: E402
 from app.main import TOOLS  # noqa: E402
+from app.display import monitor_choices  # noqa: E402
 from app.mining import MiningData  # noqa: E402
 from app.orefinder import LiveData  # noqa: E402
 from app.ui.combat_panel import CombatPanel  # noqa: E402
@@ -63,6 +64,9 @@ def main() -> int:
     settings = SettingsPanel()
     settings.set_region({"left": 2560, "top": 980, "width": 190, "height": 46})
     settings.set_version(data.version, len(data.ores))
+    choices = monitor_choices()
+    settings.set_monitors(choices, choices[0][0] if choices else None)
+    settings.set_reads(4)
 
     ore_data = LiveData()
     finder = OreFinderPanel(ore_data)

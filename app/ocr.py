@@ -11,6 +11,7 @@ reads 4-5 digit signatures reliably.
 from __future__ import annotations
 
 import re
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 
 import cv2
@@ -30,6 +31,37 @@ REC_HEIGHT = 48
 MAX_REC_WIDTH = 640
 
 
+@contextmanager
+def _capped_onnx_threads(threads: int):
+    """Build RapidOCR's ONNX sessions with a fixed, small thread count.
+
+    rapidocr-onnxruntime creates its sessions with ONNX Runtime's defaults: an
+    intra-op pool as wide as the CPU, whose workers spin while waiting. Every
+    scan then bursts across most cores at once and takes them from the game
+    (measured on an 8-core CPU: ~10x more frame hitches). The library has no
+    option for this, so its SessionOptions factory is swapped while the engine
+    is built.
+    """
+    import onnxruntime as ort
+    from rapidocr_onnxruntime import utils as rapid_utils
+
+    base = rapid_utils.SessionOptions
+
+    def factory():
+        opts = base()
+        opts.intra_op_num_threads = threads
+        opts.inter_op_num_threads = 1
+        opts.execution_mode = ort.ExecutionMode.ORT_SEQUENTIAL
+        opts.add_session_config_entry("session.intra_op.allow_spinning", "0")
+        return opts
+
+    rapid_utils.SessionOptions = factory
+    try:
+        yield
+    finally:
+        rapid_utils.SessionOptions = base
+
+
 @dataclass
 class OCRResult:
     value: int | None = None
@@ -45,9 +77,10 @@ class OCRResult:
 
 
 class SignatureOCR:
-    def __init__(self, min_value: int = 2500, max_value: int = 60000):
+    def __init__(self, min_value: int = 2500, max_value: int = 60000, threads: int = 1):
         self.min_value = min_value
         self.max_value = max_value
+        self.threads = max(1, int(threads))
         self._engine = None
 
     # ------------------------------------------------------------------
@@ -55,7 +88,8 @@ class SignatureOCR:
         if self._engine is None:
             from rapidocr_onnxruntime import RapidOCR
             # Recognition only: no text detection, no angle classifier.
-            self._engine = RapidOCR(use_text_det=False, use_angle_cls=False)
+            with _capped_onnx_threads(self.threads):
+                self._engine = RapidOCR(use_text_det=False, use_angle_cls=False)
         return self._engine
 
     # ------------------------------------------------------------------

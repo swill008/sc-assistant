@@ -56,19 +56,31 @@ CONFIG_PATH = config_dir() / "config.json"
 DEFAULTS: dict = {
     "hotkey_toggle_nav": 0x72,          # VK_F3
     "hotkey_panic": 0x73,               # VK_F4 - hide everything
-    "poll_ms": 125,
+    "poll_ms": 250,                     # 4 reads a second; Settings → READS / S
     "stability_reads": 2,               # fallback reads before the value is shown
     "fast_single_read": True,           # high-confidence exact reads lock immediately
     "fast_confidence": 0.97,            # OCR confidence needed for the fast path
+    # CPU threads the OCR model may use. 1 keeps every scan on the (low
+    # priority) scanner thread, so it cannot take cores from the game.
+    "ocr_threads": 1,
     # Close the mining scanner when Game.log reports leaving the pilot seat.
     "close_scanner_on_seat_exit": True,
-    "scan_tuning_version": 1,           # migration marker for the faster defaults
+    "scan_tuning_version": 2,           # migration marker for the poll_ms defaults
     "min_value": 2500,
     "max_value": 60000,
     "tolerance": 0.08,
     # Physical-pixel rectangle of the in-game signature readout.
     "region": None,
+    # Qt name of the monitor the game runs on (Settings → GAME MONITOR).
+    # None means "the monitor the box is on, else the primary monitor".
+    "game_monitor": None,
+    # Physical rect of that monitor when the box was drawn. If the monitor's
+    # resolution or position changes later, the box is rescaled to match.
+    "region_monitor": None,
     "show_debug_preview": False,
+    # Draw an outline around the capture box on screen (Settings → SHOW BOX).
+    # Off by default: any window over the game makes Windows composite it.
+    "show_region_outline": False,
     "voice_enabled": True,             # speak the ore name when a scan locks
     "voice_volume": 0.8,               # 0.0 - 1.0
     # Forget the last spoken rock after this many seconds without a scan.
@@ -142,6 +154,16 @@ class Config:
                 if old_poll == 250:
                     data["poll_ms"] = 125
                 data["scan_tuning_version"] = 1
+            # 8 reads a second was the default before the OCR thread cap; 4 is
+            # now the default (see README "Game performance"). Only the old
+            # default moves; a value someone chose stays.
+            if scan_version < 2:
+                try:
+                    if int(data.get("poll_ms", 125)) == 125:
+                        data["poll_ms"] = 250
+                except (TypeError, ValueError):
+                    data["poll_ms"] = 250
+                data["scan_tuning_version"] = 2
             # Capture exclusion used to be on by default with no UI toggle, so
             # existing installs could not screenshot the overlay at all.  Flip
             # that old default once; the new Settings toggle still lets anyone

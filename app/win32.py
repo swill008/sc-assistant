@@ -82,6 +82,8 @@ if WINDOWS:
     ]
     user32.GetMonitorInfoW.argtypes = [wintypes.HMONITOR, ctypes.POINTER(MONITORINFOEXW)]
     user32.GetMonitorInfoW.restype = wintypes.BOOL
+    user32.GetPhysicalCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
+    user32.GetPhysicalCursorPos.restype = wintypes.BOOL
 
 
 def _hwnd(target) -> int:
@@ -160,6 +162,26 @@ if WINDOWS:
     def keep_on_top(target) -> None:
         _set_topmost(_hwnd(target))
 
+    def place_physical(target, rect: dict) -> None:
+        """Move and size a window to a physical-pixel rect, topmost.
+
+        Qt positions windows in per-monitor logical coordinates, which do not
+        line up with the physical rect mss captures when monitors use
+        different scaling. SetWindowPos takes physical pixels directly.
+        """
+        user32.SetWindowPos(
+            wintypes.HWND(_hwnd(target)), HWND_TOPMOST,
+            int(rect["left"]), int(rect["top"]), int(rect["width"]), int(rect["height"]),
+            SWP_NOACTIVATE,
+        )
+
+    def physical_window_rect(target) -> dict:
+        """The window's actual rect in physical pixels, as Windows has it."""
+        r = RECT()
+        user32.GetWindowRect(wintypes.HWND(_hwnd(target)), ctypes.byref(r))
+        return {"left": r.left, "top": r.top,
+                "width": r.right - r.left, "height": r.bottom - r.top}
+
     def monitors() -> list[dict]:
         """Physical-pixel rects for every monitor, plus its device name."""
         found: list[dict] = []
@@ -180,6 +202,17 @@ if WINDOWS:
 
         user32.EnumDisplayMonitors(None, None, MONITORENUMPROC(_cb), 0)
         return found
+
+    def cursor_pos() -> tuple[int, int]:
+        """Mouse position in physical pixels, the same space mss captures in.
+
+        Qt's mouse coordinates are logical and scaled by whichever monitor Qt
+        assigned the window to, which is wrong for any other monitor when the
+        scales differ. The physical cursor position has no scale at all.
+        """
+        pt = wintypes.POINT()
+        user32.GetPhysicalCursorPos(ctypes.byref(pt))
+        return pt.x, pt.y
 
 else:
     from PySide6.QtCore import Qt
@@ -215,6 +248,23 @@ else:
     def allow_capture(target) -> None:
         return None
 
+    def physical_window_rect(target) -> dict | None:
+        # Qt already places windows exactly here; there is nothing to correct.
+        return None
+
+    def place_physical(target, rect: dict) -> None:
+        """Qt equivalent: convert the scaled rect back to points."""
+        w = _widget(target)
+        if w is None:
+            return
+        from PySide6.QtCore import QPoint, QRect
+
+        screen = QGuiApplication.screenAt(QPoint(int(rect["left"]), int(rect["top"]))) \
+            or QGuiApplication.primaryScreen()
+        dpr = float(screen.devicePixelRatio() or 1.0)
+        w.setGeometry(QRect(round(rect["left"] / dpr), round(rect["top"] / dpr),
+                            round(rect["width"] / dpr), round(rect["height"] / dpr)))
+
     def keep_on_top(target) -> None:
         # macOS floats these windows via WindowStaysOnTopHint and keeps the
         # level without help. Calling raise_() here (as the Win32 backend does
@@ -241,3 +291,12 @@ else:
                 "height": int(round(geo.height() * dpr)),
             })
         return found
+
+    def cursor_pos() -> tuple[int, int]:
+        """Mouse position in the same scaled space as ``monitors()``."""
+        from PySide6.QtGui import QCursor
+
+        pos = QCursor.pos()
+        screen = QGuiApplication.screenAt(pos) or QGuiApplication.primaryScreen()
+        dpr = float(screen.devicePixelRatio() or 1.0)
+        return int(round(pos.x() * dpr)), int(round(pos.y() * dpr))

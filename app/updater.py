@@ -31,12 +31,14 @@ from pathlib import Path
 
 from .version import VERSION
 
-REPO = "fishtaco7/citizen-assistant"
+# This fork. Upstream (fishtaco7/citizen-assistant) does not have its fixes,
+# so updating from there would undo them; see CHANGES.md v1.2.17.
+REPO = "swill008/citizen-assistant"
 BRANCH = "main"
 RAW_VERSION = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/app/version.py"
 ARCHIVE = f"https://codeload.github.com/{REPO}/zip/refs/heads/{BRANCH}"
 USER_AGENT = (f"Citizen-Assistant/{VERSION} "
-              "(+https://github.com/fishtaco7/citizen-assistant)")
+              "(+https://github.com/swill008/citizen-assistant)")
 
 COPY_DIRS = ("app", "tools")
 COPY_FILES = (
@@ -52,6 +54,7 @@ COPY_FILES = (
     "run.command",
     "run-hidden.vbs",
     "README.md",
+    "CHANGES.md",
     "LICENSE",
     "app.ico",
     ".gitignore",
