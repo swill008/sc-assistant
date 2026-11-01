@@ -143,8 +143,8 @@ class ScanThread(QThread):
     # ------------------------------------------------------------------
     def run(self) -> None:  # noqa: D102
         # numpy, OpenCV and the OCR model are loaded only when there is an
-        # active region or demo frame. On a fresh install the region picker is
-        # shown first, so the scanner no longer pays that cost at launch.
+        # active region or demo frame, so a fresh install (no region until
+        # DRAW REGION) does not pay that cost at launch.
         grabber = None
         ocr = None
         demo_mod = None
@@ -661,8 +661,9 @@ class OverlayApp(QObject):
         self.game_log.start()
 
         if not has_region and not self.demo:
-            self.panel.set_scan_idle("No capture region — open settings (⚙) to calibrate")
-            QTimer.singleShot(650, self.select_region)
+            # No picker at start-up: it covered every monitor (the game too)
+            # before the user had asked for it. DRAW REGION is in Settings.
+            self.panel.set_scan_idle("No capture region — press DRAW REGION in Settings (⚙)")
         elif self.demo:
             self.panel.set_scan_idle("Demo mode")
 

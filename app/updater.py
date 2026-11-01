@@ -223,15 +223,24 @@ def run_installer(setup: Path, wait_for_pid: int | None = None) -> None:
         f"Start-Process -FilePath '{quoted}' -ArgumentList "
         "'/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LAUNCH=1'"
     )
-    flags = 0
-    if sys.platform == "win32":
-        # DETACHED_PROCESS | CREATE_NO_WINDOW: no console, and it outlives us.
-        flags = 0x00000008 | 0x08000000
-    subprocess.Popen(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-         "-WindowStyle", "Hidden", "-Command", command],
-        creationflags=flags, close_fds=True,
-    )
+    args = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-WindowStyle", "Hidden", "-Command", command]
+    # CREATE_NO_WINDOW, not DETACHED_PROCESS: PowerShell started with no
+    # console at all never runs its command (tested: the detached helper did
+    # nothing, every CREATE_NO_WINDOW one ran and outlived its parent).
+    # CREATE_BREAKAWAY_FROM_JOB first, as restart() does, so a launcher that
+    # runs us in a job object cannot kill the helper when we quit; jobs that
+    # refuse breakaway get the plain retry.
+    attempts = [0x08000000 | 0x01000000, 0x08000000] if sys.platform == "win32" else [0]
+    for i, flags in enumerate(attempts):
+        try:
+            subprocess.Popen(args, creationflags=flags, close_fds=True,
+                             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL)
+            return
+        except OSError:
+            if i == len(attempts) - 1:
+                raise
 
 
 def is_newer(published: str) -> bool:

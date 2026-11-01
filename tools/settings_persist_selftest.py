@@ -144,6 +144,27 @@ def main() -> int:
                        all(resaved.get(k) == saved.get(k) for k in
                            ("poll_ms", "tracking_range", "show_region_outline", "game_monitor", "region", "anchor")))
 
+    # ---- fresh start with no region: no picker forced on screen ----------
+    print("Fresh start, no region saved")
+    for name in ("config.json", "anchor.png"):
+        (config_dir() / name).unlink(missing_ok=True)
+    fresh_cfg = Config()
+    fresh_cfg["nav_visible"] = False
+    fresh_cfg["voice_enabled"] = False
+    fresh_cfg.save()
+    three = OverlayApp(app, Config.load())
+    notes: list[str] = []
+    show_idle = three.panel.set_scan_idle
+    three.panel.set_scan_idle = lambda note="": (notes.append(note), show_idle(note))
+    three.start()
+    three.panel.hide()
+    _pump(1.5)                            # the old build opened the picker after 0.65 s
+    failures += _check("no region picker opened at start-up", three._selector is None)
+    failures += _check("panel says to press DRAW REGION", any("DRAW REGION" in n for n in notes), f"({notes})")
+    three.nav.quit_btn.click()
+    three.nav.quit_btn.click()
+    _pump(0.3)
+
     print("-" * 78)
     print("ALL CHECKS PASSED" if failures == 0 else f"{failures} CHECK(S) FAILED")
     return failures

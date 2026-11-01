@@ -206,7 +206,7 @@ Not everything lives in the folder:
 
 | What | Where it lives | On the new PC |
 | --- | --- | --- |
-| Capture region, panel positions, hotkey prefs | `%APPDATA%\Citizen Assistant\config.json` | Don't copy it — the region picker runs on first start |
+| Capture region, panel positions, hotkey prefs | `%APPDATA%\Citizen Assistant\config.json` | Don't copy it — press **DRAW REGION** in Settings once on the new PC |
 | Ore location cache | `%APPDATA%\Citizen Assistant\where_to_mine.json` | Re-downloaded from scminer.rocks |
 | Inventory stash notes | `%APPDATA%\Citizen Assistant\inventory.json` | Manual notes — copy this file to keep them |
 | Blueprint + inventory registry | `%APPDATA%\Citizen Assistant\unlocked_blueprints.json` | Permanent unlock history — copy this file to keep it |
@@ -244,7 +244,9 @@ that case use `run.bat` or the shortcut.
 want if something looks wrong.
 
 Starting the app with no saved region (first run, or after deleting
-`%APPDATA%\Citizen Assistant\config.json`) immediately opens the region picker. The
+`%APPDATA%\Citizen Assistant\config.json`) does not open the region picker by
+itself: the scanner panel says `No capture region — press DRAW REGION in
+Settings (⚙)`, and you draw the box when the scan readout is on screen. The
 scanner loads OpenCV and the OCR model only after a region exists, so the window
 opens faster; the first scan after calibration may take a moment while they
 load on the scanner thread.
