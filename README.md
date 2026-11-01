@@ -1120,6 +1120,7 @@ C:\scov\Scripts\python.exe -m tools.scan_selftest REM OCR threads, picker, resca
 C:\scov\Scripts\python.exe -m tools.scan_e2e_selftest REM real screen: 5K2K signature -> picker -> capture -> OCR, outline, live app (secondary monitor)
 C:\scov\Scripts\python.exe -m tools.scan_e2e_selftest --primary REM the same on the main/game monitor (close the game first: a real plate on screen fails the "plate gone" step)
 C:\scov\Scripts\python.exe -m tools.tracking_selftest REM pin tracking on 25 hand-labelled frames of a real flight (tools\fixtures\hud_track), speed limit
+C:\scov\Scripts\python.exe -m tools.settings_persist_selftest REM READS / S, TRACKING, SHOW BOX, MONITOR and the pin survive QUIT and a restart
 C:\scov\Scripts\python.exe -m tools.workflow_selftest REM workflow + Game.log checks
 C:\scov\Scripts\python.exe -m tools.refinery_selftest REM refinery parser + timers
 C:\scov\Scripts\python.exe -m tools.combat_selftest REM combat parser + tracker + queue
