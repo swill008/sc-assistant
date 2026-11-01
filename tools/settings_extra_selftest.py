@@ -5,7 +5,9 @@
 Drives the real SettingsPanel with real mouse clicks (QTest), off-screen:
 the two-click RESET SETTINGS button (arms, reverts, emits once), its error
 note, the UNMATCHED READINGS list (count, newest rows, OPEN FOLDER, two-click
-CLEAR), and the layout at UI scale 1.0 and 1.5 (no widgets overlap, no text
+CLEAR), the six collapsible groups (heading clicks, summaries, remembered and
+forced-open groups, the window fitting itself), and the layout at UI scale 1.0
+and 1.5 in every open/closed combination checked (no widgets overlap, no text
 cut off, armed texts fit).
 """
 from __future__ import annotations
@@ -187,12 +189,14 @@ def _rect(panel: QWidget, w: QWidget) -> QRect:
 
 def check_layout() -> None:
     from app.ui import theme
+    from app.ui.settings_panel import SECTION_IDS
 
     print("LAYOUT")
     for scale in (1.0, 1.5):
         theme.set_scale(scale)
         try:
             panel = _panel()
+            panel.set_open_sections(SECTION_IDS)      # every widget on show
             panel.set_unmatched(_entries(5, time.time()))
             panel.set_reset_error("could not copy the settings folder: access denied")
             for armed in (False, True):
@@ -230,10 +234,227 @@ def check_layout() -> None:
             theme.set_scale(1.0)
 
 
+def _overlaps(panel: QWidget) -> tuple[list, list]:
+    """(overlapping pairs, widgets outside the window) of what is on show."""
+    rects = [(w, _rect(panel, w)) for w in _visible_parts(panel)]
+
+    def name(w):
+        return w.text() if hasattr(w, "text") else type(w).__name__
+    overlaps = [(name(a), name(b)) for i, (a, ra) in enumerate(rects)
+                for b, rb in rects[i + 1:] if ra.intersects(rb)]
+    outside = [name(w) for w, r in rects if not panel.rect().contains(r)]
+    return overlaps, outside
+
+
+def _click_heading(panel, section_id: str, on_text: bool = False) -> None:
+    header = panel.section_header(section_id)
+    QTest.mouseClick(header.title if on_text else header, Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
+
+
+def check_sections() -> None:
+    from app.ui import settings_panel as sp
+    from app.version import VERSION
+
+    print("COLLAPSIBLE GROUPS")
+    check("six group ids in order",
+          sp.SECTION_IDS == ("scanner", "scan_data", "hotkeys", "look", "update", "support"),
+          f"({sp.SECTION_IDS})")
+    panel = _panel()
+    got: list[list] = []
+    panel.sections_changed.connect(lambda ids: got.append(list(ids)))
+
+    tops = [panel.section_header(s).y() for s in sp.SECTION_IDS]
+    check("headings top to bottom in SECTION_IDS order (Support last)",
+          tops == sorted(tops) and len(set(tops)) == 6, f"({tops})")
+    titles = [panel.section_header(s).title.text()[2:] for s in sp.SECTION_IDS]
+    check("headings read SCANNER ... SUPPORT",
+          titles == ["SCANNER", "SCAN DATA", "HOTKEYS", "LOOK & SOUND",
+                     "UPDATE & RESET", "SUPPORT"], f"({titles})")
+    check("new panel: only Scanner open", panel.open_sections == ["scanner"],
+          f"({panel.open_sections})")
+    check("headings never take focus",
+          all(panel.section_header(s).focusPolicy() == Qt.FocusPolicy.NoFocus
+              for s in sp.SECTION_IDS))
+
+    panel.set_open_sections(["hotkeys", "bogus", "look"])
+    QApplication.processEvents()
+    check("set_open_sections opens exactly those (unknown dropped), no signal",
+          panel.open_sections == ["hotkeys", "look"] and got == [],
+          f"({panel.open_sections}, {got})")
+    hot, scan = panel.section_header("hotkeys"), panel.section_header("scanner")
+    check("open heading: ▾ and no summary; closed heading: ▸ with summary",
+          hot.title.text().startswith("▾") and hot.summary.isHidden()
+          and scan.title.text().startswith("▸") and not scan.summary.isHidden(),
+          f"({hot.title.text()!r}, {scan.title.text()!r})")
+    check("closed group's widgets hidden, open group's shown",
+          not panel.region_btn.isVisible() and panel.voice_btn.isVisible())
+
+    panel.set_open_sections([])
+    QApplication.processEvents()
+    closed_h = panel.height()
+    _click_heading(panel, "scan_data")
+    opened_h = panel.height()
+    check("clicking a heading opens it and emits the open ids",
+          panel.open_sections == ["scan_data"] and got == [["scan_data"]]
+          and panel.reload_btn.isVisible(), f"({panel.open_sections}, {got})")
+    check("window grows to fit an opened group", opened_h > closed_h,
+          f"({closed_h} -> {opened_h})")
+    _click_heading(panel, "update", on_text=True)
+    check("a click on the heading text works too; several open at once",
+          panel.open_sections == ["scan_data", "update"], f"({panel.open_sections})")
+    _click_heading(panel, "scan_data")
+    _click_heading(panel, "update")
+    check("clicking again closes; the window shrinks back",
+          panel.open_sections == [] and panel.height() == closed_h and got[-1] == [],
+          f"({panel.height()} vs {closed_h}, {got[-1:]})")
+    overlaps, outside = _overlaps(panel)
+    check("all closed: nothing overlaps or sticks out", not overlaps and not outside,
+          f"({overlaps[:3]}, {outside[:3]})")
+
+    # Summaries come from the existing setters.
+    panel.set_monitors([("DISP9", "DISP9 · 1920×1080 · 100%")], "DISP9")
+    panel.set_region(None)
+    check("scanner summary: monitor · no box",
+          panel.section_summary("scanner") == "DISP9 · no box",
+          f"({panel.section_summary('scanner')!r})")
+    panel.set_region({"width": 300, "height": 40, "left": 10, "top": 20})
+    check("scanner summary: monitor · box set",
+          panel.section_summary("scanner") == "DISP9 · box set",
+          f"({panel.section_summary('scanner')!r})")
+    panel.set_version("4.3", 42)
+    panel.set_unmatched(_entries(3, time.time()))
+    check("scan data summary: ores · unmatched",
+          panel.section_summary("scan_data") == "42 ores · 3 unmatched",
+          f"({panel.section_summary('scan_data')!r})")
+    panel.set_hotkeys({"toggle_nav": 0x72, "panic": 0x73})
+    check("hotkeys summary", panel.section_summary("hotkeys") == "SHOW BAR F3 · HIDE ALL F4",
+          f"({panel.section_summary('hotkeys')!r})")
+    panel.set_ui_scale(125)
+    panel.set_voice(False)
+    check("look summary", panel.section_summary("look") == "UI 125% · voice off",
+          f"({panel.section_summary('look')!r})")
+    check("update summary: the installed version",
+          panel.section_summary("update") == f"v{VERSION} installed",
+          f"({panel.section_summary('update')!r})")
+    panel._on_update_done("check", "999.0.0", "")
+    check("update summary: vX available after CHECK found one",
+          panel.section_summary("update") == "v999.0.0 available",
+          f"({panel.section_summary('update')!r})")
+    check("support summary empty", panel.section_summary("support") == "")
+    header = panel.section_header("scanner")
+    panel.set_monitors([("X" * 120, "long")], "X" * 120)
+    QApplication.processEvents()
+    shown = header.summary.text()
+    check("a long summary is elided inside the heading",
+          shown != header.summary_text
+          and header.summary.fontMetrics().horizontalAdvance(shown) <= header.summary.width(),
+          f"({shown!r})")
+
+    # Forced open: main keeps Scanner open while no box is drawn.
+    got.clear()
+    panel.set_force_open("scanner")
+    _click_heading(panel, "scanner")
+    check("forced group is open and its heading cannot close it",
+          panel.open_sections == ["scanner"] and got == [], f"({panel.open_sections}, {got})")
+    panel.set_force_open(None)
+    check("released: it stays open", panel.open_sections == ["scanner"])
+    _click_heading(panel, "scanner")
+    check("released: the heading closes it again",
+          panel.open_sections == [] and got == [[]], f"({panel.open_sections}, {got})")
+
+    # First run: the DRAW REGION pulse opens Scanner.
+    panel.set_draw_region_attention(True)
+    _click_heading(panel, "scanner")
+    check("DRAW REGION pulse forces Scanner open and keeps it open",
+          panel.open_sections == ["scanner"] and panel.region_btn.isVisible(),
+          f"({panel.open_sections})")
+    panel.set_draw_region_attention(False)
+    check("pulse off: Scanner stays open", panel.open_sections == ["scanner"])
+
+    # Widgets in a closed group still exist and act (other tests click them).
+    panel.set_open_sections([])
+    resets: list[int] = []
+    panel.reset_requested.connect(lambda: resets.append(1))
+    panel.reset_btn.click()
+    panel.reset_btn.click()
+    check("a closed group's buttons still work", resets == [1], f"({resets})")
+
+    # A key capture stops when Hotkeys closes.
+    panel.set_open_sections(["hotkeys"])
+    key = panel._key_buttons["panic"]
+    key.click()
+    capturing = key.capturing
+    _click_heading(panel, "hotkeys")
+    check("closing Hotkeys cancels a key capture", capturing and not key.capturing)
+    panel.close()
+    panel.deleteLater()
+
+
+def check_section_layouts() -> None:
+    """All closed, each group alone, some pairs, all open: at UI 1.0 and 1.5."""
+    from app.ui import theme
+    from app.ui.settings_panel import SECTION_IDS
+
+    print("GROUP LAYOUTS")
+    combos = [[]] + [[s] for s in SECTION_IDS] + [
+        ["scanner", "scan_data"], ["hotkeys", "look"], ["update", "support"],
+        ["scanner", "look", "support"], list(SECTION_IDS)]
+    for scale in (1.0, 1.5):
+        theme.set_scale(scale)
+        try:
+            panel = _panel()
+            panel.set_monitors([("LG ULTRAGEAR+", "LG ULTRAGEAR+ · 5120×2160 · 150%")],
+                               "LG ULTRAGEAR+")
+            panel.set_version("4.3", 42)
+            panel.set_unmatched(_entries(5, time.time()))
+            panel.set_hotkeys({"toggle_nav": 0x72, "panic": 0x73})
+            panel.set_debug(True)
+            panel.set_region_note("The box was moved to fit the new monitor size.")
+            heights: dict[str, int] = {}
+            bad = []
+            for ids in combos:
+                panel.set_open_sections(ids)
+                QApplication.processEvents()
+                overlaps, outside = _overlaps(panel)
+                if overlaps or outside:
+                    bad.append((ids, overlaps[:2], outside[:2]))
+                cut = [h.title.text() for h in (panel.section_header(s) for s in SECTION_IDS)
+                       if h.title.width() < h.title.sizeHint().width()]
+                if cut:
+                    bad.append((ids, "heading cut", cut))
+                heights["+".join(ids) or "none"] = panel.height()
+            check(f"UI {scale}: {len(combos)} combinations, no overlap, nothing outside or cut",
+                  not bad, f"({bad[:3]})")
+            print(f"    UI {scale} heights: all closed {heights['none']} px, "
+                  f"Scanner only {heights['scanner']} px, "
+                  f"all open {heights['+'.join(SECTION_IDS)]} px")
+            check(f"UI {scale}: all closed is the shortest",
+                  heights["none"] == min(heights.values()))
+            check(f"UI {scale}: width unchanged", panel.width() == theme.px(384),
+                  f"({panel.width()})")
+            # Opening near the screen bottom keeps the window on the screen.
+            screen = QApplication.primaryScreen().availableGeometry()
+            panel.set_open_sections([])
+            panel.move(screen.left() + 10, screen.bottom() - panel.height() - 2)
+            QApplication.processEvents()
+            _click_heading(panel, "scanner")
+            g = panel.geometry()
+            fits = panel.height() <= screen.height()
+            check(f"UI {scale}: opening near the bottom keeps the window on screen",
+                  g.bottom() <= screen.bottom() if fits else g.top() == screen.top(),
+                  f"({g.top()}..{g.bottom()} vs {screen.top()}..{screen.bottom()})")
+            panel.close()
+            panel.deleteLater()
+        finally:
+            theme.set_scale(1.0)
+
+
 def main() -> int:
     global _APP
     _APP = QApplication.instance() or QApplication(sys.argv)
-    for test in (check_reset, check_unmatched, check_layout):
+    for test in (check_reset, check_unmatched, check_layout, check_sections,
+                 check_section_layouts):
         try:
             test()
         except Exception:

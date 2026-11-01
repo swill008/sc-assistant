@@ -186,6 +186,9 @@ DEFAULTS: dict = {
     # screen share includes the panels; toggle it in Settings for stream privacy.
     "capture_exclude": False,
     "capture_visibility_version": 1,   # migration marker for the visible default
+    # Settings sections left open (ui/settings_panel.SECTION_IDS); SCANNER is
+    # also forced open while no box is drawn.
+    "settings_open": ["scanner"],
 }
 
 

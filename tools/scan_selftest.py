@@ -1163,6 +1163,29 @@ def check_first_run_attention() -> int:
     o._apply_region(region, mon, screen.name())
     failures += _check("box drawn: highlights off",
                        o.nav.attention is False and o.settings.attention is False)
+    forced = _calls(o.settings, "set_force_open")
+    failures += _check("no box: SCANNER forced open; box drawn: released",
+                       forced == [("scanner",), (None,)], f"(set_force_open {forced})")
+    return failures
+
+
+def check_settings_sections_wiring() -> int:
+    """Open Settings sections: unknown ids dropped at start, clicks saved."""
+    from app.config import DEFAULTS
+
+    failures = 0
+    failures += _check("default open sections: SCANNER only",
+                       DEFAULTS.get("settings_open") == ["scanner"], f"({DEFAULTS.get('settings_open')})")
+    o = _bare_overlay(_test_cfg(settings_open=["hotkeys", "bogus", "scanner", "hotkeys"]))
+    failures += _check("saved sections: unknown and repeated ids dropped, panel order",
+                       o._open_sections() == ["scanner", "hotkeys"], f"({o._open_sections()})")
+    o.cfg["settings_open"] = "scanner"            # hand-edited, not a list
+    failures += _check("a non-list value falls back to the default",
+                       o._open_sections() == ["scanner"], f"({o._open_sections()})")
+    o._on_sections_changed(["look", "nope", "scan_data"])
+    failures += _check("sections_changed: saved (known ids only)",
+                       o.cfg["settings_open"] == ["scan_data", "look"] and o.cfg.saves == 1,
+                       f"({o.cfg['settings_open']}, saves {o.cfg.saves})")
     return failures
 
 
@@ -1608,6 +1631,7 @@ def main() -> int:
     failures += check_hotkeys_wiring()
     failures += check_pins_and_hide_all()
     failures += check_first_run_attention()
+    failures += check_settings_sections_wiring()
     failures += check_update_handoff_failure()
     failures += check_signature_refresh()
     print("-" * 78)

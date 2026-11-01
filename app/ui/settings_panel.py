@@ -1,16 +1,17 @@
-"""Settings window: capture region, scanning controls, hotkeys and updates."""
+"""Settings window: six collapsible groups (scanner, scan data, hotkeys,
+look & sound, update & reset, support)."""
 from __future__ import annotations
 
 import time
 
-from PySide6.QtCore import QRectF, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import QPoint, QRectF, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import (QColor, QDesktopServices, QFont, QGuiApplication,
-                           QImage, QKeyEvent, QPen, QPixmap)
+                           QImage, QKeyEvent, QPainter, QPen, QPixmap)
 from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QPushButton,
-                               QSlider, QVBoxLayout, QWidget)
+                               QSizePolicy, QSlider, QVBoxLayout, QWidget)
 
 from .. import updater
-from ..version import APP_NAME
+from ..version import APP_NAME, VERSION
 from ..version import label as build_label
 from . import theme
 from .pin_button import PinButton
@@ -21,11 +22,117 @@ WIDTH = 384
 BTC_ADDRESS = "bc1qnqpr04750zewr6fwvamjs875ex4he6755ukzkv"
 
 
+# Collapsible groups, top to bottom. The ids are saved in config
+# ("settings_open"), so they never change.
+SECTION_HEADINGS = (
+    ("scanner", "SCANNER"),
+    ("scan_data", "SCAN DATA"),
+    ("hotkeys", "HOTKEYS"),
+    ("look", "LOOK & SOUND"),
+    ("update", "UPDATE & RESET"),
+    ("support", "SUPPORT"),
+)
+SECTION_IDS = tuple(section_id for section_id, _ in SECTION_HEADINGS)
+
+
 def _section(text: str) -> QLabel:
+    """Small sub-heading inside a group."""
     label = QLabel(text.upper())
     label.setFont(theme.font(8, QFont.Weight.Bold, spacing=1.4))
     label.setStyleSheet(theme.qss("color: rgba(136,152,170,0.98); background: transparent;"))
     return label
+
+
+class _SectionHeader(QWidget):
+    """Clickable group heading: "▸ NAME" closed, "▾ NAME" open, and a grey
+    summary on the right while closed."""
+
+    clicked = Signal()
+
+    def __init__(self, heading: str, parent=None):
+        super().__init__(parent)
+        self._heading = heading
+        self._summary = ""
+        self._open = False
+        self._locked = False
+        self._hover = False
+        self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(theme.px(0), theme.px(5), theme.px(0), theme.px(3))
+        row.setSpacing(theme.px(10))
+        self.title = QLabel()
+        self.title.setFont(theme.font(9, QFont.Weight.Bold, spacing=1.6))
+        self.summary = QLabel()
+        self.summary.setFont(theme.font(7))
+        self.summary.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.summary.setStyleSheet(theme.qss(
+            "color: rgba(130,148,166,0.85); background: transparent;"))
+        # Ignored: a long summary is elided instead of widening the window.
+        self.summary.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.summary.setMinimumWidth(0)
+        row.addWidget(self.title)
+        row.addWidget(self.summary, 1)
+        self._refresh()
+
+    @property
+    def summary_text(self) -> str:
+        """The full summary (the label may show it elided)."""
+        return self._summary
+
+    def set_state(self, opened: bool, locked: bool) -> None:
+        self._open, self._locked = bool(opened), bool(locked)
+        self._refresh()
+
+    def set_summary(self, text: str) -> None:
+        self._summary = str(text or "")
+        self._elide()
+
+    def _refresh(self) -> None:
+        self.title.setText(f"{'▾' if self._open else '▸'} {self._heading}")
+        color = "#e6f7fa" if self._hover and not self._locked else "rgba(168,184,200,0.95)"
+        self.title.setStyleSheet(theme.qss(f"color: {color}; background: transparent;"))
+        self.summary.setVisible(not self._open)
+        self.setToolTip("Open until a capture box is drawn" if self._locked else "")
+        self._elide()
+
+    def _elide(self) -> None:
+        width = self.summary.width()
+        text = self.summary.fontMetrics().elidedText(
+            self._summary, Qt.TextElideMode.ElideRight, max(0, width))
+        self.summary.setText(text)
+        self.summary.setToolTip(self._summary if text != self._summary else "")
+
+    def resizeEvent(self, event):  # noqa: N802
+        super().resizeEvent(event)
+        self._elide()
+
+    def enterEvent(self, event):  # noqa: N802
+        self._hover = True
+        self._refresh()
+        super().enterEvent(event)
+
+    def leaveEvent(self, event):  # noqa: N802
+        self._hover = False
+        self._refresh()
+        super().leaveEvent(event)
+
+    def mousePressEvent(self, event):  # noqa: N802
+        # Accepted, so a press here never starts the window drag.
+        event.accept()
+
+    def mouseReleaseEvent(self, event):  # noqa: N802
+        event.accept()
+        if (event.button() == Qt.MouseButton.LeftButton
+                and self.rect().contains(event.position().toPoint())):
+            self.clicked.emit()
+
+    def paintEvent(self, event):  # noqa: N802
+        # A faint divider above each heading.
+        p = QPainter(self)
+        p.setPen(QPen(QColor(79, 209, 224, 34), 1.0))
+        p.drawLine(0, 0, self.width(), 0)
+        p.end()
 
 
 class _UpdateWorker(QThread):
@@ -274,6 +381,7 @@ class SettingsPanel(QWidget):
     reset_requested = Signal()        # RESET SETTINGS, second click
     open_unmatched_folder = Signal()  # UNMATCHED READINGS -> OPEN FOLDER
     clear_unmatched = Signal()        # UNMATCHED READINGS -> CLEAR, second click
+    sections_changed = Signal(list)   # open group ids (SECTION_IDS order), user clicks only
 
     # Two-click buttons (like QUIT on the nav bar): the first click arms,
     # a second within ARM_MS acts; otherwise the button reverts.
@@ -305,6 +413,14 @@ class SettingsPanel(QWidget):
         self._attention_timer.setInterval(600)
         self._attention_timer.timeout.connect(self._pulse_region_btn)
         self._unmatched: list[dict] = []
+        # Collapsible groups: id -> (heading, body). _open is the user's
+        # choice; _forced (and the DRAW REGION pulse, for "scanner") keeps a
+        # group open whatever the user clicks.
+        self._groups: dict[str, tuple[_SectionHeader, QWidget]] = {}
+        self._open: set[str] = {"scanner"}
+        self._forced: str | None = None
+        self._ore_count: int | None = None
+        self._has_region = False
         self._build()
         self.adjustSize()
 
@@ -349,136 +465,19 @@ class SettingsPanel(QWidget):
         root.addLayout(head)
         root.addSpacing(theme.px(4))
 
-        # Support -----------------------------------------------------
-        root.addWidget(_section("Support"))
-        coffee = QLabel("Like my overlay? Buy me a coffee (or a ship)!")
-        coffee.setFont(theme.font(9, QFont.Weight.DemiBold))
-        coffee.setStyleSheet(theme.qss(
-            "color: rgba(232,240,248,0.98); background: transparent;"))
-        root.addWidget(coffee)
+        # Collapsible groups, top to bottom (SECTION_IDS order).
+        builders = {
+            "scanner": self._build_scanner, "scan_data": self._build_scan_data,
+            "hotkeys": self._build_hotkeys, "look": self._build_look,
+            "update": self._build_update, "support": self._build_support,
+        }
+        for section_id, heading in SECTION_HEADINGS:
+            builders[section_id](self._add_group(root, section_id, heading))
+        self._update_summaries()
+        self._apply_sections(fit=False)
 
-        self.btc_label = QLabel(
-            f"BTC: {BTC_ADDRESS}" if BTC_ADDRESS else "Bitcoin address coming soon")
-        self.btc_label.setFont(theme.font(8, spacing=0.2))
-        self.btc_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.btc_label.setStyleSheet(theme.qss(
-            "color: rgba(150,166,182,0.95); background: transparent;"))
-        self.btc_copy = _button("COPY")
-        self.btc_copy.setFixedWidth(theme.px(58))
-        self.btc_copy.setToolTip("Copy the Bitcoin donation address")
-        self.btc_copy.setEnabled(bool(BTC_ADDRESS))
-        self.btc_copy.clicked.connect(self._copy_btc)
-        # Address and button share one line.  The label's minimum width is
-        # cleared so the address can shrink instead of pushing COPY out of the
-        # panel at a large UI scale.
-        self.btc_label.setMinimumWidth(0)
-        btc_row = QHBoxLayout()
-        btc_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
-        btc_row.setSpacing(theme.px(8))
-        btc_row.addWidget(self.btc_label, 1)
-        btc_row.addWidget(self.btc_copy)
-        root.addLayout(btc_row)
-        root.addSpacing(theme.px(8))
-
-        # Appearance --------------------------------------------------
-        root.addWidget(_section("Appearance"))
-
-        ui_scale_row = QHBoxLayout()
-        ui_scale_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
-        ui_scale_row.setSpacing(theme.px(8))
-        ui_scale_name = QLabel("UI SCALE")
-        ui_scale_name.setFixedWidth(theme.px(58))
-        ui_scale_name.setFont(theme.font(8, QFont.Weight.DemiBold, spacing=0.8))
-        ui_scale_name.setStyleSheet(theme.qss(
-            "color: rgba(150,166,182,0.95); background: transparent;"))
-        self.ui_scale_slider = _slider()
-        self.ui_scale_slider.setRange(75, 150)
-        self.ui_scale_slider.setSingleStep(5)
-        self.ui_scale_slider.setPageStep(10)
-        self.ui_scale_slider.setValue(100)
-        self.ui_scale_slider.setToolTip(
-            "Scale the entire overlay UI; takes effect after restart")
-        self.ui_scale_slider.valueChanged.connect(self._on_ui_scale)
-        self.ui_scale_label = QLabel("100%")
-        self.ui_scale_label.setFixedWidth(theme.px(34))
-        self.ui_scale_label.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.ui_scale_label.setFont(theme.font(9))
-        self.ui_scale_label.setStyleSheet(theme.qss(
-            "color: rgba(150,166,182,0.95); background: transparent;"))
-        ui_scale_row.addWidget(ui_scale_name)
-        ui_scale_row.addWidget(self.ui_scale_slider, 1)
-        ui_scale_row.addWidget(self.ui_scale_label)
-        root.addLayout(ui_scale_row)
-
-        ui_scale_hint_row = QHBoxLayout()
-        ui_scale_hint_row.setContentsMargins(theme.px(0), theme.px(0),
-                                             theme.px(0), theme.px(0))
-        ui_scale_hint_row.setSpacing(theme.px(8))
-        self.ui_scale_hint = QLabel("Applies after restart")
-        self.ui_scale_hint.setFont(theme.font(7))
-        self.ui_scale_hint.setStyleSheet(theme.qss(
-            "color: rgba(130,148,166,0.9); background: transparent;"))
-        self.ui_scale_restart = _button("RESTART")
-        self.ui_scale_restart.setFixedHeight(theme.px(20))
-        self.ui_scale_restart.setToolTip(
-            "Restart the overlay now to apply the new UI scale")
-        self.ui_scale_restart.clicked.connect(self.restart_requested.emit)
-        ui_scale_hint_row.addWidget(self.ui_scale_hint)
-        ui_scale_hint_row.addStretch(1)
-        ui_scale_hint_row.addWidget(self.ui_scale_restart)
-        root.addLayout(ui_scale_hint_row)
-        root.addSpacing(theme.px(4))
-
-        opacity_row = QHBoxLayout()
-        opacity_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
-        opacity_row.setSpacing(theme.px(8))
-        opacity_name = QLabel("OPACITY")
-        opacity_name.setFixedWidth(theme.px(58))
-        opacity_name.setFont(theme.font(8, QFont.Weight.DemiBold, spacing=0.8))
-        opacity_name.setStyleSheet(theme.qss(
-            "color: rgba(150,166,182,0.95); background: transparent;"))
-        self.opacity_slider = _slider()
-        self.opacity_slider.setRange(30, 100)
-        self.opacity_slider.setValue(100)
-        self.opacity_slider.setToolTip(
-            "Opacity of the overlay panels (nav bar and settings stay fully visible)")
-        self.opacity_slider.valueChanged.connect(self._on_opacity)
-        self.opacity_label = QLabel("100%")
-        self.opacity_label.setFixedWidth(theme.px(34))
-        self.opacity_label.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.opacity_label.setFont(theme.font(9))
-        self.opacity_label.setStyleSheet(theme.qss(
-            "color: rgba(150,166,182,0.95); background: transparent;"))
-        opacity_row.addWidget(opacity_name)
-        opacity_row.addWidget(self.opacity_slider, 1)
-        opacity_row.addWidget(self.opacity_label)
-        root.addLayout(opacity_row)
-
-        capture_row = QHBoxLayout()
-        capture_row.setContentsMargins(theme.px(0), theme.px(0),
-                                       theme.px(0), theme.px(0))
-        capture_row.setSpacing(theme.px(8))
-        self.capture_btn = _button("VISIBLE", checkable=True)
-        self.capture_btn.setFixedWidth(theme.px(82))
-        self.capture_btn.setChecked(True)
-        self.capture_btn.setToolTip(
-            "Include the overlay in screenshots and screen shares")
-        self.capture_btn.toggled.connect(self._on_capture)
-        # The sentence is the label now: it already says what the state means,
-        # so the separate SCREENSHOTS caption is gone and the button sits to
-        # its right.
-        self.capture_hint = QLabel("Shown in screenshots and streams")
-        self.capture_hint.setFont(theme.font(8))
-        self.capture_hint.setStyleSheet(theme.qss(
-            "color: rgba(150,166,182,0.95); background: transparent;"))
-        capture_row.addWidget(self.capture_hint, 1)
-        capture_row.addWidget(self.capture_btn)
-        root.addLayout(capture_row)
-        root.addSpacing(theme.px(8))
-
+    def _build_scanner(self, root: QVBoxLayout) -> None:
+        """Signature capture region and Scanning (with the preview)."""
         # Capture region ----------------------------------------------
         root.addWidget(_section("Signature capture region"))
 
@@ -630,37 +629,6 @@ class SettingsPanel(QWidget):
         scan_row.addWidget(self.debug_btn, 1)
         scan_row.addWidget(self.outline_btn, 1)
         root.addLayout(scan_row)
-        root.addSpacing(theme.px(8))
-
-        # Voice -------------------------------------------------------
-        root.addWidget(_section("Voice"))
-        voice_row = QHBoxLayout()
-        voice_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
-        voice_row.setSpacing(theme.px(8))
-
-        self.voice_btn = _button("ON", checkable=True)
-        self.voice_btn.setFixedWidth(theme.px(52))
-        self.voice_btn.setChecked(True)
-        self.voice_btn.setToolTip("Speak the ore name when a signature locks")
-        self.voice_btn.toggled.connect(self._on_voice)
-
-        self.volume_slider = _slider()
-        self.volume_slider.setValue(80)
-        self.volume_slider.setToolTip("Announcement volume")
-        self.volume_slider.valueChanged.connect(self._on_volume)
-
-        self.volume_label = QLabel("80%")
-        self.volume_label.setFixedWidth(theme.px(34))
-        self.volume_label.setAlignment(
-            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
-        self.volume_label.setFont(theme.font(9))
-        self.volume_label.setStyleSheet(theme.qss(
-            "color: rgba(150,166,182,0.95); background: transparent;"))
-
-        voice_row.addWidget(self.voice_btn)
-        voice_row.addWidget(self.volume_slider, 1)
-        voice_row.addWidget(self.volume_label)
-        root.addLayout(voice_row)
 
         self.preview = QLabel()
         self.preview.setFixedHeight(theme.px(78))
@@ -671,24 +639,9 @@ class SettingsPanel(QWidget):
         self.preview.setText("Drag a box around the signature, then confirm the digits below")
         self.preview.hide()
         root.addWidget(self.preview)
-        root.addSpacing(theme.px(8))
 
-        # Hotkeys -----------------------------------------------------
-        root.addWidget(_section("Hotkeys"))
-        self._hotkey_rows = QVBoxLayout()
-        self._hotkey_rows.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
-        self._hotkey_rows.setSpacing(theme.px(4))
-        root.addLayout(self._hotkey_rows)
-        for key, label in HOTKEY_ROWS:
-            self._add_hotkey_row(key, label)
-        self.hotkey_hint = QLabel(
-            "Click a key, then press the new one. Esc = no key.")
-        self.hotkey_hint.setWordWrap(True)
-        self.hotkey_hint.setFont(theme.font(7))
-        self._hotkey_hint_style(False)
-        root.addWidget(self.hotkey_hint)
-        root.addSpacing(theme.px(8))
-
+    def _build_scan_data(self, root: QVBoxLayout) -> None:
+        """Signature data and Unmatched readings."""
         # Signature data ----------------------------------------------
         root.addWidget(_section("Signature data"))
         data_row = QHBoxLayout()
@@ -762,8 +715,154 @@ class SettingsPanel(QWidget):
             self._unmatched_rows.addLayout(row)
             self._unmatched_row_labels.append((value, when))
         root.addLayout(self._unmatched_rows)
+
+    def _build_hotkeys(self, root: QVBoxLayout) -> None:
+        """One row per hotkey, then the hint."""
+        self._hotkey_rows = QVBoxLayout()
+        self._hotkey_rows.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
+        self._hotkey_rows.setSpacing(theme.px(4))
+        root.addLayout(self._hotkey_rows)
+        for key, label in HOTKEY_ROWS:
+            self._add_hotkey_row(key, label)
+        self.hotkey_hint = QLabel(
+            "Click a key, then press the new one. Esc = no key.")
+        self.hotkey_hint.setWordWrap(True)
+        self.hotkey_hint.setFont(theme.font(7))
+        self._hotkey_hint_style(False)
+        root.addWidget(self.hotkey_hint)
+
+    def _build_look(self, root: QVBoxLayout) -> None:
+        """Appearance and Voice."""
+        # Appearance --------------------------------------------------
+        root.addWidget(_section("Appearance"))
+
+        ui_scale_row = QHBoxLayout()
+        ui_scale_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
+        ui_scale_row.setSpacing(theme.px(8))
+        ui_scale_name = QLabel("UI SCALE")
+        ui_scale_name.setFixedWidth(theme.px(58))
+        ui_scale_name.setFont(theme.font(8, QFont.Weight.DemiBold, spacing=0.8))
+        ui_scale_name.setStyleSheet(theme.qss(
+            "color: rgba(150,166,182,0.95); background: transparent;"))
+        self.ui_scale_slider = _slider()
+        self.ui_scale_slider.setRange(75, 150)
+        self.ui_scale_slider.setSingleStep(5)
+        self.ui_scale_slider.setPageStep(10)
+        self.ui_scale_slider.setValue(100)
+        self.ui_scale_slider.setToolTip(
+            "Scale the entire overlay UI; takes effect after restart")
+        self.ui_scale_slider.valueChanged.connect(self._on_ui_scale)
+        self.ui_scale_label = QLabel("100%")
+        self.ui_scale_label.setFixedWidth(theme.px(34))
+        self.ui_scale_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.ui_scale_label.setFont(theme.font(9))
+        self.ui_scale_label.setStyleSheet(theme.qss(
+            "color: rgba(150,166,182,0.95); background: transparent;"))
+        ui_scale_row.addWidget(ui_scale_name)
+        ui_scale_row.addWidget(self.ui_scale_slider, 1)
+        ui_scale_row.addWidget(self.ui_scale_label)
+        root.addLayout(ui_scale_row)
+
+        ui_scale_hint_row = QHBoxLayout()
+        ui_scale_hint_row.setContentsMargins(theme.px(0), theme.px(0),
+                                             theme.px(0), theme.px(0))
+        ui_scale_hint_row.setSpacing(theme.px(8))
+        self.ui_scale_hint = QLabel("Applies after restart")
+        self.ui_scale_hint.setFont(theme.font(7))
+        self.ui_scale_hint.setStyleSheet(theme.qss(
+            "color: rgba(130,148,166,0.9); background: transparent;"))
+        self.ui_scale_restart = _button("RESTART")
+        self.ui_scale_restart.setFixedHeight(theme.px(20))
+        self.ui_scale_restart.setToolTip(
+            "Restart the overlay now to apply the new UI scale")
+        self.ui_scale_restart.clicked.connect(self.restart_requested.emit)
+        ui_scale_hint_row.addWidget(self.ui_scale_hint)
+        ui_scale_hint_row.addStretch(1)
+        ui_scale_hint_row.addWidget(self.ui_scale_restart)
+        root.addLayout(ui_scale_hint_row)
+        root.addSpacing(theme.px(4))
+
+        opacity_row = QHBoxLayout()
+        opacity_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
+        opacity_row.setSpacing(theme.px(8))
+        opacity_name = QLabel("OPACITY")
+        opacity_name.setFixedWidth(theme.px(58))
+        opacity_name.setFont(theme.font(8, QFont.Weight.DemiBold, spacing=0.8))
+        opacity_name.setStyleSheet(theme.qss(
+            "color: rgba(150,166,182,0.95); background: transparent;"))
+        self.opacity_slider = _slider()
+        self.opacity_slider.setRange(30, 100)
+        self.opacity_slider.setValue(100)
+        self.opacity_slider.setToolTip(
+            "Opacity of the overlay panels (nav bar and settings stay fully visible)")
+        self.opacity_slider.valueChanged.connect(self._on_opacity)
+        self.opacity_label = QLabel("100%")
+        self.opacity_label.setFixedWidth(theme.px(34))
+        self.opacity_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.opacity_label.setFont(theme.font(9))
+        self.opacity_label.setStyleSheet(theme.qss(
+            "color: rgba(150,166,182,0.95); background: transparent;"))
+        opacity_row.addWidget(opacity_name)
+        opacity_row.addWidget(self.opacity_slider, 1)
+        opacity_row.addWidget(self.opacity_label)
+        root.addLayout(opacity_row)
+
+        capture_row = QHBoxLayout()
+        capture_row.setContentsMargins(theme.px(0), theme.px(0),
+                                       theme.px(0), theme.px(0))
+        capture_row.setSpacing(theme.px(8))
+        self.capture_btn = _button("VISIBLE", checkable=True)
+        self.capture_btn.setFixedWidth(theme.px(82))
+        self.capture_btn.setChecked(True)
+        self.capture_btn.setToolTip(
+            "Include the overlay in screenshots and screen shares")
+        self.capture_btn.toggled.connect(self._on_capture)
+        # The sentence is the label now: it already says what the state means,
+        # so the separate SCREENSHOTS caption is gone and the button sits to
+        # its right.
+        self.capture_hint = QLabel("Shown in screenshots and streams")
+        self.capture_hint.setFont(theme.font(8))
+        self.capture_hint.setStyleSheet(theme.qss(
+            "color: rgba(150,166,182,0.95); background: transparent;"))
+        capture_row.addWidget(self.capture_hint, 1)
+        capture_row.addWidget(self.capture_btn)
+        root.addLayout(capture_row)
         root.addSpacing(theme.px(8))
 
+        # Voice -------------------------------------------------------
+        root.addWidget(_section("Voice"))
+        voice_row = QHBoxLayout()
+        voice_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
+        voice_row.setSpacing(theme.px(8))
+
+        self.voice_btn = _button("ON", checkable=True)
+        self.voice_btn.setFixedWidth(theme.px(52))
+        self.voice_btn.setChecked(True)
+        self.voice_btn.setToolTip("Speak the ore name when a signature locks")
+        self.voice_btn.toggled.connect(self._on_voice)
+
+        self.volume_slider = _slider()
+        self.volume_slider.setValue(80)
+        self.volume_slider.setToolTip("Announcement volume")
+        self.volume_slider.valueChanged.connect(self._on_volume)
+
+        self.volume_label = QLabel("80%")
+        self.volume_label.setFixedWidth(theme.px(34))
+        self.volume_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.volume_label.setFont(theme.font(9))
+        self.volume_label.setStyleSheet(theme.qss(
+            "color: rgba(150,166,182,0.95); background: transparent;"))
+
+        voice_row.addWidget(self.voice_btn)
+        voice_row.addWidget(self.volume_slider, 1)
+        voice_row.addWidget(self.volume_label)
+        root.addLayout(voice_row)
+
+    def _build_update(self, root: QVBoxLayout) -> None:
+        """Update and Reset."""
         # Update ------------------------------------------------------
         # Last on purpose: it is a maintenance action, not something adjusted
         # mid-session, so it sits below the scan and voice controls.
@@ -834,6 +933,145 @@ class SettingsPanel(QWidget):
         self.reset_note.hide()
         root.addWidget(self.reset_note)
 
+    def _build_support(self, root: QVBoxLayout) -> None:
+        """Donation line and the Bitcoin address."""
+        coffee = QLabel("Like my overlay? Buy me a coffee (or a ship)!")
+        coffee.setFont(theme.font(9, QFont.Weight.DemiBold))
+        coffee.setStyleSheet(theme.qss(
+            "color: rgba(232,240,248,0.98); background: transparent;"))
+        root.addWidget(coffee)
+
+        self.btc_label = QLabel(
+            f"BTC: {BTC_ADDRESS}" if BTC_ADDRESS else "Bitcoin address coming soon")
+        self.btc_label.setFont(theme.font(8, spacing=0.2))
+        self.btc_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.btc_label.setStyleSheet(theme.qss(
+            "color: rgba(150,166,182,0.95); background: transparent;"))
+        self.btc_copy = _button("COPY")
+        self.btc_copy.setFixedWidth(theme.px(58))
+        self.btc_copy.setToolTip("Copy the Bitcoin donation address")
+        self.btc_copy.setEnabled(bool(BTC_ADDRESS))
+        self.btc_copy.clicked.connect(self._copy_btc)
+        # Address and button share one line.  The label's minimum width is
+        # cleared so the address can shrink instead of pushing COPY out of the
+        # panel at a large UI scale.
+        self.btc_label.setMinimumWidth(0)
+        btc_row = QHBoxLayout()
+        btc_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
+        btc_row.setSpacing(theme.px(8))
+        btc_row.addWidget(self.btc_label, 1)
+        btc_row.addWidget(self.btc_copy)
+        root.addLayout(btc_row)
+
+    # -- collapsible groups ------------------------------------------------
+    def _add_group(self, root: QVBoxLayout, section_id: str, heading: str) -> QVBoxLayout:
+        """Heading row plus a body; returns the body's layout to fill."""
+        header = _SectionHeader(heading, self)
+        header.clicked.connect(lambda sid=section_id: self._on_header_clicked(sid))
+        body = QWidget(self)
+        layout = QVBoxLayout(body)
+        layout.setContentsMargins(theme.px(0), theme.px(2), theme.px(0), theme.px(6))
+        layout.setSpacing(theme.px(8))
+        root.addWidget(header)
+        root.addWidget(body)
+        self._groups[section_id] = (header, body)
+        return layout
+
+    def _locked(self, section_id: str) -> bool:
+        """Kept open: forced by main, or Scanner while DRAW REGION pulses."""
+        return section_id == self._forced or (section_id == "scanner" and self._attention)
+
+    def _is_open(self, section_id: str) -> bool:
+        return section_id in self._open or self._locked(section_id)
+
+    @property
+    def open_sections(self) -> list[str]:
+        """Group ids shown open, in SECTION_IDS order."""
+        return [sid for sid in SECTION_IDS if self._is_open(sid)]
+
+    def set_open_sections(self, ids) -> None:
+        """Open exactly these groups (unknown ids dropped); emits nothing."""
+        self._open = {str(sid) for sid in (ids or []) if str(sid) in SECTION_IDS}
+        self._apply_sections()
+
+    def set_force_open(self, section_id: str | None) -> None:
+        """Keep one group open (its heading cannot close it); None releases.
+
+        A released group stays open, so the window does not jump."""
+        section_id = section_id if section_id in SECTION_IDS else None
+        if self._forced and self._forced != section_id:
+            self._open.add(self._forced)
+        self._forced = section_id
+        self._apply_sections()
+
+    def section_header(self, section_id: str) -> _SectionHeader:
+        """The heading row of a group (tests click it)."""
+        return self._groups[section_id][0]
+
+    def _on_header_clicked(self, section_id: str) -> None:
+        if self._locked(section_id):
+            return
+        if section_id in self._open:
+            self._open.discard(section_id)
+        else:
+            self._open.add(section_id)
+        self._apply_sections()
+        self.sections_changed.emit(self.open_sections)
+
+    def _apply_sections(self, fit: bool = True) -> None:
+        for section_id, (header, body) in self._groups.items():
+            opened = self._is_open(section_id)
+            header.set_state(opened, self._locked(section_id))
+            body.setVisible(opened)
+        if not self._is_open("hotkeys"):
+            for button in self._key_buttons.values():
+                button.cancel_capture()
+        if fit:
+            self._fit()
+
+    def _fit(self) -> None:
+        """Resize to the open groups, then keep the window on its screen."""
+        self.adjustSize()
+        if not self.isVisible():
+            return
+        # The screen under the heading row: the top stays put while the
+        # bottom may already hang below the screen.
+        screen = QGuiApplication.screenAt(
+            self.geometry().topLeft() + QPoint(self.width() // 2, 10))
+        if screen is None:              # off every screen (e.g. tests): leave it
+            return
+        geo = screen.availableGeometry()
+        if self.geometry().bottom() > geo.bottom():
+            self.move(self.x(), max(geo.top(), geo.bottom() - self.height() + 1))
+
+    def _update_summaries(self) -> None:
+        """Grey one-liners shown on closed headings."""
+        if not self._groups:
+            return
+        monitor = self.monitor_box.currentData() or ""
+        box = "box set" if self._has_region else "no box"
+        unmatched = f"{len(self._unmatched)} unmatched"
+        keys = " · ".join(f"{label} {vk_name(self._key_buttons[key].vk)}"
+                          for key, label in HOTKEY_ROWS)
+        voice = "on" if self.voice_btn.isChecked() else "off"
+        summaries = {
+            "scanner": " · ".join(p for p in (str(monitor), box) if p),
+            "scan_data": (f"{self._ore_count} ores · {unmatched}"
+                          if self._ore_count is not None else unmatched),
+            "hotkeys": keys,
+            "look": f"UI {self.ui_scale_slider.value()}% · voice {voice}",
+            "update": (f"v{self._pending_version} available" if self._pending_version
+                       else f"v{VERSION} installed"),
+            "support": "",
+        }
+        for section_id, text in summaries.items():
+            self._groups[section_id][0].set_summary(text)
+
+    def section_summary(self, section_id: str) -> str:
+        """Full summary text of a group's heading (for tests)."""
+        return self._groups[section_id][0].summary_text
+
     # ------------------------------------------------------------------
     def _on_pause(self, checked: bool) -> None:
         self.pause_btn.setText("RESUME" if checked else "PAUSE")
@@ -865,12 +1103,14 @@ class SettingsPanel(QWidget):
 
     def _on_monitor(self, index: int) -> None:
         name = self.monitor_box.itemData(index)
+        self._update_summaries()
         if name:
             self.monitor_changed.emit(str(name))
 
     def _on_voice(self, checked: bool) -> None:
         self.voice_btn.setText("ON" if checked else "OFF")
         self.volume_slider.setEnabled(checked)
+        self._update_summaries()
         self.voice_toggled.emit(checked)
 
     def _on_volume(self, value: int) -> None:
@@ -881,6 +1121,7 @@ class SettingsPanel(QWidget):
         value = max(75, min(150, int(value)))
         self.ui_scale_label.setText(f"{value}%")
         self._refresh_scale_hint(value)
+        self._update_summaries()
         self.ui_scale_changed.emit(value)
 
     def _refresh_scale_hint(self, value: int) -> None:
@@ -973,6 +1214,7 @@ class SettingsPanel(QWidget):
                 self.update_btn.setText("CHECK")
                 self._set_whats_new("", "")
             self._update_tooltip()
+            self._update_summaries()
             return
 
         if mode == "install":
@@ -983,6 +1225,7 @@ class SettingsPanel(QWidget):
             version = extra or self._pending_version
             self._pending_version = version
             self._installing = True
+            self._update_summaries()
             self.update_btn.setEnabled(False)
             self.update_hint.setText(
                 f"Installing v{version} · {APP_NAME} closes and starts again by itself")
@@ -993,6 +1236,7 @@ class SettingsPanel(QWidget):
         self._pending_version = ""
         self._set_whats_new("", "")
         self.update_hint.setText(f"Updated to v{value} · restarting…")
+        self._update_summaries()
         self.update_btn.setText("CHECK")
         self._update_tooltip()
         # The new files are already on disk; only a restart loads them.
@@ -1086,6 +1330,7 @@ class SettingsPanel(QWidget):
         self.hotkey_hint.setText(
             f"{label}: {vk_name(vk)}" if vk else f"{label}: no key")
         self._hotkey_hint_style(False)
+        self._update_summaries()
         self.hotkeys_changed.emit(self.hotkeys())
 
     def hotkeys(self) -> dict:
@@ -1128,6 +1373,7 @@ class SettingsPanel(QWidget):
         tools = keys.get("tools") or {}
         for tool_id, _label in self._tools:
             self._key_buttons[f"tool:{tool_id}"].set_vk(int(tools.get(tool_id) or 0))
+        self._update_summaries()
 
     # -- first run: point at DRAW REGION ------------------------------------
     def _style_region_btn(self, bright: bool) -> None:
@@ -1158,6 +1404,9 @@ class SettingsPanel(QWidget):
         if on == self._attention:
             return
         self._attention = on
+        if not on:
+            self._open.add("scanner")     # stays open: the window does not jump
+        self._apply_sections()
         if on:
             self._attention_on = True
             self._style_region_btn(True)
@@ -1281,6 +1530,7 @@ class SettingsPanel(QWidget):
         if count == 0:
             self._disarm_clear()
         self.unmatched_clear_btn.setEnabled(count > 0)
+        self._update_summaries()
         self.adjustSize()
 
     @property
@@ -1310,6 +1560,7 @@ class SettingsPanel(QWidget):
 
     # ------------------------------------------------------------------
     def set_region(self, region: dict | None) -> None:
+        self._has_region = bool(region)
         if region:
             self.region_label.setText(
                 f"{region['width']} × {region['height']} px  ·  "
@@ -1318,6 +1569,7 @@ class SettingsPanel(QWidget):
         else:
             self.region_label.setText("Not calibrated")
             self.region_btn.setText("DRAW REGION")
+        self._update_summaries()
 
     def set_region_note(self, text: str) -> None:
         self.region_note.setText(text)
@@ -1333,6 +1585,7 @@ class SettingsPanel(QWidget):
         index = self.monitor_box.findData(current) if current else -1
         self.monitor_box.setCurrentIndex(max(0, index))
         self.monitor_box.blockSignals(False)
+        self._update_summaries()
 
     def set_reads(self, per_second: int) -> None:
         value = max(1, min(8, int(per_second)))
@@ -1382,6 +1635,7 @@ class SettingsPanel(QWidget):
             self.voice_btn.blockSignals(False)
         self.voice_btn.setText("ON" if enabled else "OFF")
         self.volume_slider.setEnabled(enabled)
+        self._update_summaries()
 
     def set_volume(self, percent: int) -> None:
         value = max(0, min(100, int(percent)))
@@ -1421,6 +1675,7 @@ class SettingsPanel(QWidget):
             self.ui_scale_slider.blockSignals(False)
         self.ui_scale_label.setText(f"{value}%")
         self._refresh_scale_hint(value)
+        self._update_summaries()
 
     def set_voice_hint(self, text: str) -> None:
         self.voice_btn.setToolTip(
@@ -1428,6 +1683,11 @@ class SettingsPanel(QWidget):
 
     def set_version(self, version: str, count: int) -> None:
         self.version_label.setText(f"Signatures: {version}  ·  {count} ores")
+        try:
+            self._ore_count = int(count)
+        except (TypeError, ValueError):
+            self._ore_count = None
+        self._update_summaries()
 
     def set_preview(self, crop) -> None:
         if crop is None or not self.preview.isVisible():

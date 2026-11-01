@@ -11,8 +11,8 @@ blueprint/inventory tracker tails the same log for blueprint unlocks and item
 acquisitions, then publishes structured events to the host overlay. Nothing
 reads game memory, injects code, or synthesises input.
 
-SC Assistant was called **Citizen Assistant** until v1.2.19; v1.0.0 is the
-first release under the new name (see *Upgrading from Citizen Assistant
+SC Assistant was called **Citizen Assistant** until v1.2.19; v1.0.1 is the
+first published release under the new name (see *Upgrading from Citizen Assistant
 1.2.x*). It started as a fork of
 [fishtaco7/citizen-assistant](https://github.com/fishtaco7/citizen-assistant).
 
@@ -170,11 +170,11 @@ The result is `dist\SCAssistant\SCAssistant.exe`.
 
 ### Upgrading from Citizen Assistant 1.2.x
 
-Install 1.0.0 **by hand once**: download `SCAssistant-1.0.0-Setup.exe` from the
+Install 1.0.1 **by hand once**: download `SCAssistant-1.0.1-Setup.exe` from the
 [releases](https://github.com/swill008/sc-assistant/releases), quit Citizen
-Assistant and run it. The version number started again at 1.0.0 with the new
+Assistant and run it. The version number started again at 1.0 with the new
 name, which is lower than 1.2.19, so the old **UPDATE** button never offers it.
-From 1.0.0 on, **UPDATE** works as usual.
+From 1.0.1 on, **UPDATE** works as usual.
 
 What happens on the way:
 
@@ -1039,29 +1039,40 @@ application shortcuts while you type.
 
 ## Settings window
 
-`⚙` on the nav bar opens:
+`⚙` on the nav bar opens the settings window. Its controls are in six groups,
+top to bottom. Each group has a heading you click to open or close it: `▸` when
+closed, `▾` when open. Any number of groups can be open at once, and the window
+resizes to fit. A closed heading shows a short grey summary on its right:
 
-- **SUPPORT** — "Like my overlay? Buy me a coffee (or a ship)!" with a BTC
-  address and copy button.
-- **APPEARANCE** — UI scale (75–150% in 5% steps) and opacity slider
-  (30–100%) for the content panels (mining, ore finder, HAULING, UEX, INVENTORY,
-  COMBAT and NOTES); the nav bar and settings window stay fully visible while you
-  adjust opacity. The **VISIBLE/HIDDEN** button beside *Shown in screenshots and
-  streams* controls whether the windows appear in screenshots, OBS and screen
-  shares (stored as `capture_exclude`).
-  The scale is applied by the overlay itself (`app/ui/theme.py`) rather than by
-  Qt's `QT_SCALE_FACTOR`, because that variable only changes widget geometry on
-  Windows/Linux — on macOS it was ignored, which is why the slider used to do
-  nothing there. Widgets are built once, so a new scale needs a fresh process:
-  the hint under the slider turns amber and the **RESTART** button relaunches the
-  overlay in place (positions and settings are saved first). At the default 100%
-  nothing is scaled and the layout is pixel-identical to earlier builds.
-- **Signature capture region** — **MONITOR** picks the monitor the game runs on
+| Group | Holds | Summary while closed |
+|---|---|---|
+| **SCANNER** | *Signature capture region*, *Scanning* | the monitor · `no box` or `box set` |
+| **SCAN DATA** | *Signature data*, *Unmatched readings* | `<N> ores · <M> unmatched` (only `<M> unmatched` until the signature table has loaded) |
+| **HOTKEYS** | *Hotkeys* | SHOW BAR and HIDE ALL, e.g. `SHOW BAR F3 · HIDE ALL F4` |
+| **LOOK & SOUND** | *Appearance*, *Voice* | e.g. `UI 100% · voice on` |
+| **UPDATE & RESET** | *Update*, *Reset* | `v<x> installed`, or `v<x> available` after CHECK found a newer one |
+| **SUPPORT** | *Support* | nothing |
+
+Where a group holds two of the old sections, their names stay as small
+sub-headings inside it. The open groups are remembered (`settings_open` in
+`config.json`); the first time only SCANNER is open. While no scan box has been
+drawn, SCANNER stays open and its heading cannot close it, so DRAW REGION is
+always in view; once the box is drawn SCANNER stays open until you close it.
+Closing HOTKEYS cancels a key change that was waiting for a key press.
+
+**SCANNER**
+
+*Signature capture region*
+
+- **MONITOR** picks the monitor the game runs on
   (each entry shows the monitor's real resolution and Windows scaling, e.g.
   `LG ULTRAGEAR+ · 5120×2160 · 150%`); **DRAW REGION** re-calibrates on
   that monitor. An amber note appears when the box was moved because the
   monitor changed, and it says what happened to tracking (see *Calibrating
   the scanner*).
+
+*Scanning*
+
 - **READS / S** — how many times a second the box is read, 1–8 (default 4).
   Applies immediately and is saved as `poll_ms`. Fewer reads use less CPU; more
   reads lock onto a new rock sooner.
@@ -1082,23 +1093,60 @@ application shortcuts while you type.
   it with everything else. Off by default (`show_region_outline`): like any
   window over the game it can cost frames, so use it to check the box, then
   turn it off.
-- **VOICE** — enable/disable spoken announcements and set their volume (see *Voice* above).
-- **HOTKEYS** — one row per key: **SHOW BAR** (default F3), **HIDE ALL**
+
+**SCAN DATA**
+
+*Signature data*
+
+- Where the signature table came from, for example
+  `Signatures: scmdb 4.10.2 live · 26 ores`, or `bundled 4.10.2` with the
+  reason scmdb was not used; **RELOAD** re-reads it without restarting (see
+  *Signature data*).
+
+*Unmatched readings*
+
+- How many readings matched nothing (`None saved`
+  or `N saved`) and the newest three (number and time). **OPEN FOLDER** opens
+  `%APPDATA%\SC Assistant\unmatched\`; **CLEAR** deletes the list and its
+  pictures after a second click (the first changes it to `CLEAR?` for about
+  3 seconds). See *Unmatched readings* under *Reading the scanner*.
+
+**HOTKEYS**
+
+- One row per key: **SHOW BAR** (default F3), **HIDE ALL**
   (default F4), then one per tool (MINING, ORE FINDER, HAULING, UEX,
   INVENTORY, COMBAT, NOTES; none by default). Click a key button, then press
   the new key; Esc sets no key. A key already used by another row is refused
   with a note. The keys apply at once, without a restart, and are saved as
   `hotkey_toggle_nav`, `hotkey_panic` and `hotkey_tools`.
-- **SIGNATURE DATA** — where the signature table came from, for example
-  `Signatures: scmdb 4.10.2 live · 26 ores`, or `bundled 4.10.2` with the
-  reason scmdb was not used; **RELOAD** re-reads it without restarting (see
-  *Signature data*).
-- **UNMATCHED READINGS** — how many readings matched nothing (`None saved`
-  or `N saved`) and the newest three (number and time). **OPEN FOLDER** opens
-  `%APPDATA%\SC Assistant\unmatched\`; **CLEAR** deletes the list and its
-  pictures after a second click (the first changes it to `CLEAR?` for about
-  3 seconds). See *Unmatched readings* under *Reading the scanner*.
-- **UPDATE** — the installed build and a **CHECK** the installed build and a **CHECK**
+
+**LOOK & SOUND**
+
+*Appearance*
+
+- UI scale (75–150% in 5% steps) and opacity slider
+  (30–100%) for the content panels (mining, ore finder, HAULING, UEX, INVENTORY,
+  COMBAT and NOTES); the nav bar and settings window stay fully visible while you
+  adjust opacity. The **VISIBLE/HIDDEN** button beside *Shown in screenshots and
+  streams* controls whether the windows appear in screenshots, OBS and screen
+  shares (stored as `capture_exclude`).
+  The scale is applied by the overlay itself (`app/ui/theme.py`) rather than by
+  Qt's `QT_SCALE_FACTOR`, because that variable only changes widget geometry on
+  Windows/Linux — on macOS it was ignored, which is why the slider used to do
+  nothing there. Widgets are built once, so a new scale needs a fresh process:
+  the hint under the slider turns amber and the **RESTART** button relaunches the
+  overlay in place (positions and settings are saved first). At the default 100%
+  nothing is scaled and the layout is pixel-identical to earlier builds.
+
+*Voice*
+
+- **VOICE** — turn on or off spoken announcements and set their volume (see *Voice* above).
+
+**UPDATE & RESET**
+
+*Update*
+
+- The installed build and a **CHECK**
   button. When something newer exists the button becomes **UPDATE**, and
   "What's new in vX" from that release's notes is shown under it (plain text
   only). What UPDATE does depends on the install:
@@ -1119,7 +1167,10 @@ application shortcuts while you type.
 
   Settings, notes and logs live in `%APPDATA%\SC Assistant` and are never
   touched. Quitting during a download cancels it.
-- **RESET** — last section: the red **RESET SETTINGS** button puts the
+
+*Reset*
+
+- The red **RESET SETTINGS** button puts the
   settings back to their defaults. Click it twice, like QUIT: the first click
   changes it to `CLICK AGAIN TO RESET` for about 3 seconds. Then:
   1. the whole `%APPDATA%\SC Assistant` folder is copied to a backup folder
@@ -1139,6 +1190,11 @@ application shortcuts while you type.
   program), nothing is removed and the note says `Reset failed, nothing was
   removed: …`. To undo a reset, quit the app and copy the files back from the
   backup folder.
+
+**SUPPORT**
+
+- "Like my overlay? Buy me a coffee (or a ship)!" with a BTC
+  address and copy button.
 
 The settings window has a push-pin too, like every panel.
 

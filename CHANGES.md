@@ -1,13 +1,14 @@
 # Changes
 
-## v1.0.0 — 2026-11-01
+## v1.0.1 — 2026-11-01
 
-Citizen Assistant is now **SC Assistant**, and the version number starts again
-at 1.0.0. Also: data safety for the user's own files, visible HUD-tracking
+The first published release of **SC Assistant** (Citizen Assistant renamed;
+the version number starts again at 1.0). 1.0.0 was a local test build and was
+never published, so everything below is new in 1.0.1. Also: data safety for the user's own files, visible HUD-tracking
 feedback, signature data from scmdb.net, release notes, update and scanner
 fixes, rebindable hotkeys, window pins and first-run guidance, scan limits from
-the game data, feedback on every read, a recorder for unmatched readings and a
-settings reset.
+the game data, feedback on every read, a recorder for unmatched readings, a
+settings reset and collapsible Settings sections.
 
 ### Scan limits from the game data
 
@@ -105,6 +106,28 @@ up to 6, salvage scrap up to 15; whole derelicts are not in the data):
   quit (so restarting cannot write the old settings back), then restarts. If
   the reset fails nothing is removed, the scanner resumes and Settings shows
   `Reset failed, nothing was removed: <reason>`.
+
+### Collapsible Settings sections
+
+- The settings window is six groups, top to bottom: SCANNER (*Signature
+  capture region*, *Scanning*), SCAN DATA (*Signature data*, *Unmatched
+  readings*), HOTKEYS, LOOK & SOUND (*Appearance*, *Voice*), UPDATE & RESET
+  (*Update*, *Reset*) and SUPPORT, which moved from the top to the bottom.
+  The old section names stay as sub-headings inside a group of two.
+- Each heading row (`▸` closed, `▾` open) opens or closes its group; any
+  number can be open. A closed heading shows a grey summary on its right
+  (monitor and `no box`/`box set`; `<N> ores · <M> unmatched`; SHOW BAR and
+  HIDE ALL keys; UI scale and voice; `v<x> installed` or `v<x> available`),
+  elided when long. The window resizes to fit after each change, inside its
+  screen. Closing HOTKEYS cancels a pending key capture.
+- The open groups are saved as `settings_open` in `config.json` (default
+  `["scanner"]`; unknown ids are dropped). `SettingsPanel.SECTION_IDS`,
+  `set_open_sections`, `open_sections`, `sections_changed` (user clicks only)
+  and `set_force_open`.
+- While no box is drawn SCANNER is held open (`set_force_open("scanner")`,
+  released when a box is applied), and the first-run DRAW REGION pulse also
+  holds it open; when the pulse ends SCANNER is left open. Widgets in a closed
+  group still exist.
 
 ### Rename to SC Assistant, version 1.0.0
 

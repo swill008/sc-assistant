@@ -7,7 +7,9 @@ Runs the real OverlayApp twice against a temporary settings folder (your own
 BOX and MONITOR through the Settings controls, saves a pin from the 5K2K test
 image the way DRAW REGION does, and quits with QUIT. The file on disk must hold
 every change; the second run, started from that file, must show each one in
-Settings and use it in the scanner. A third run uses UNMATCHED READINGS (OPEN
+Settings and use it in the scanner. The open Settings sections (headings
+opened and closed in the first run) must come back the same, an unknown id in
+the file is dropped, and SCANNER is forced open only while no box is drawn. A third run uses UNMATCHED READINGS (OPEN
 FOLDER, CLEAR) and RESET SETTINGS: the restart is caught, the settings file
 must stay gone after the restart and quit (nothing old written back), a dated
 backup holds it, and a fourth run starts on the defaults.
@@ -44,6 +46,19 @@ DIGITS = (76, 38, 56, 28)                   # the digits box inside the fixture
 def _check(label: str, ok: bool, detail: str = "") -> int:
     print(f"  {'PASS' if ok else 'FAIL'}  {label}{'  ' + detail if detail else ''}")
     return 0 if ok else 1
+
+
+def _user_opens(s, ids: list) -> None:
+    """Click the Settings headings whose open state differs from ids (a
+    forced heading ignores the click, as it does for the user)."""
+    from PySide6.QtTest import QTest
+
+    from app.ui.settings_panel import SECTION_IDS
+
+    for sid in SECTION_IDS:
+        if (sid in ids) != (sid in s.open_sections):
+            QTest.mouseClick(s.section_header(sid), Qt.MouseButton.LeftButton)
+    QApplication.processEvents()
 
 
 def _pump(seconds: float) -> None:
@@ -123,6 +138,9 @@ def _reset_run(app, saved: dict) -> int:
                        four.scan._interval == int(DEFAULTS["poll_ms"]), f"(interval {four.scan._interval})")
     failures += _check("no box and no pin after the reset",
                        four.cfg["region"] == DEFAULTS["region"] and not four.scan.tracking)
+    failures += _check("open Settings sections back to SCANNER only",
+                       four.cfg["settings_open"] == ["scanner"] and four.settings.open_sections == ["scanner"],
+                       f"(cfg {four.cfg['settings_open']}, panel {four.settings.open_sections})")
     four.nav.quit_btn.click()
     four.nav.quit_btn.click()
     _pump(0.3)
@@ -174,6 +192,8 @@ def main() -> int:
     s.reads_slider.setValue(6)
     s.tracking_slider.setValue(250 // TRACKING_STEP)  # the slider counts 50 px steps
     s.outline_btn.setChecked(True)
+    want_open = ["scanner", "hotkeys", "look"]
+    _user_opens(s, want_open)
     # Save a pin the way DRAW REGION does, from the 5K2K image, on the new box.
     box = one.cfg["region"]
     image = cv2.imread(str(FIXTURE))
@@ -196,6 +216,11 @@ def main() -> int:
     failures += _check("box saved", saved.get("region") == box_after, f"({saved.get('region')})")
     meta = saved.get("anchor")
     failures += _check("pin saved", bool(meta) and (config_dir() / meta.get("file", "")).is_file(), f"({meta})")
+    failures += _check("open Settings sections saved", saved.get("settings_open") == want_open,
+                       f"({saved.get('settings_open')})")
+    # A hand-edited or older file may name a section that no longer exists.
+    edited = dict(saved, settings_open=want_open + ["no_such_section"])
+    CONFIG_PATH.write_text(json.dumps(edited, indent=2), encoding="utf-8")
     one.outline.hide()
     for w in (one.nav, one.panel, one.settings):
         w.hide()
@@ -220,13 +245,21 @@ def main() -> int:
     failures += _check("scanner uses the saved box", two.scan._region == box_after, f"({two.scan._region})")
     failures += _check("saved pin loaded: tracking is on", two.scan.tracking)
     failures += _check("no amber note", not s.region_note.text(), f"({s.region_note.text()!r})")
+    failures += _check("open Settings sections come back, unknown id dropped",
+                       s.open_sections == want_open and two.cfg["settings_open"] == want_open,
+                       f"(panel {s.open_sections}, cfg {two.cfg['settings_open']})")
+    _user_opens(s, ["hotkeys", "look"])
+    failures += _check("box drawn: SCANNER can be closed", s.open_sections == ["hotkeys", "look"],
+                       f"({s.open_sections})")
+    _user_opens(s, want_open)
     two.nav.quit_btn.click()
     two.nav.quit_btn.click()
     _pump(0.5)
     resaved = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     failures += _check("quitting again keeps every setting",
                        all(resaved.get(k) == saved.get(k) for k in
-                           ("poll_ms", "tracking_range", "show_region_outline", "game_monitor", "region", "anchor")))
+                           ("poll_ms", "tracking_range", "show_region_outline", "game_monitor", "region", "anchor",
+                            "settings_open")))
 
     # ---- RESET SETTINGS: defaults after the restart, nothing written back --
     failures += _reset_run(app, saved)
@@ -248,6 +281,14 @@ def main() -> int:
     _pump(1.5)                            # the old build opened the picker after 0.65 s
     failures += _check("no region picker opened at start-up", three._selector is None)
     failures += _check("panel says to press DRAW REGION", any("DRAW REGION" in n for n in notes), f"({notes})")
+    s = three.settings
+    _user_opens(s, ["hotkeys"])
+    failures += _check("no box: SCANNER stays open when its heading is closed",
+                       s.open_sections == ["scanner", "hotkeys"], f"({s.open_sections})")
+    three._apply_region(region, mon, start.name())
+    _user_opens(s, ["hotkeys"])
+    failures += _check("box applied: SCANNER released and can be closed",
+                       s.open_sections == ["hotkeys"], f"({s.open_sections})")
     three.nav.quit_btn.click()
     three.nav.quit_btn.click()
     _pump(0.3)

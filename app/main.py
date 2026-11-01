@@ -35,7 +35,7 @@ from .ui.notes_panel import NotesPanel
 from .ui.orefinder_panel import OreFinderPanel
 from .ui.region_outline import RegionOutline
 from .ui.region_selector import RegionSelector
-from .ui.settings_panel import SettingsPanel
+from .ui.settings_panel import SECTION_IDS, SettingsPanel
 from .ui.uex_panel import UexPanel
 from .ui import theme
 from .unmatched import UnmatchedLog
@@ -637,6 +637,7 @@ class OverlayApp(QObject):
         self.settings.open_unmatched_folder.connect(self._open_unmatched_folder)
         self.settings.clear_unmatched.connect(self._clear_unmatched)
         self.settings.reset_requested.connect(self._reset_settings)
+        self.settings.sections_changed.connect(self._on_sections_changed)
         for panel_id, widget in self._panels().items():
             widget.pin_toggled.connect(
                 lambda pinned, pid=panel_id: self._on_pin(pid, pinned))
@@ -720,6 +721,8 @@ class OverlayApp(QObject):
         self.settings.set_reads(self._reads_per_second())
         self.settings.set_tracking(self._tracking_range())
         self.settings.set_tools(TOOLS)          # one hotkey row per tool
+        self.cfg["settings_open"] = self._open_sections()
+        self.settings.set_open_sections(self.cfg["settings_open"])
         self.settings.set_hotkeys(self._hotkey_config())
         self._load_pins()
         self._check_display()
@@ -1587,6 +1590,20 @@ class OverlayApp(QObject):
         need = not self.demo and not is_region_valid(self.cfg["region"])
         self.nav.set_settings_attention(need)
         self.settings.set_draw_region_attention(need)
+        # SCANNER stays open (its heading cannot close it) until a box is drawn.
+        self.settings.set_force_open(
+            None if is_region_valid(self.cfg["region"]) else "scanner")
+
+    def _open_sections(self) -> list[str]:
+        """The saved open Settings sections, unknown or repeated ids dropped."""
+        saved = self.cfg.get("settings_open")
+        if not isinstance(saved, list):
+            return list(app_config.DEFAULTS["settings_open"])
+        return [i for i in SECTION_IDS if i in saved]
+
+    def _on_sections_changed(self, ids: list) -> None:
+        self.cfg["settings_open"] = [i for i in SECTION_IDS if i in ids]
+        self.cfg.save()
 
     # ------------------------------------------------------------------
     def select_region(self) -> None:
