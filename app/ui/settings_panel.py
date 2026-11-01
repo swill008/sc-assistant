@@ -1,5 +1,5 @@
-"""Settings window: six collapsible groups (scanner, scan data, hotkeys,
-look & sound, update & reset, support)."""
+"""Settings window: five collapsible groups (scanner, scan data, hotkeys,
+look & sound, update & reset)."""
 from __future__ import annotations
 
 import time
@@ -18,9 +18,6 @@ from .pin_button import PinButton
 
 WIDTH = 384
 
-# Bitcoin donation address shown in the Support section.
-BTC_ADDRESS = "bc1qnqpr04750zewr6fwvamjs875ex4he6755ukzkv"
-
 
 # Collapsible groups, top to bottom. The ids are saved in config
 # ("settings_open"), so they never change.
@@ -30,7 +27,6 @@ SECTION_HEADINGS = (
     ("hotkeys", "HOTKEYS"),
     ("look", "LOOK & SOUND"),
     ("update", "UPDATE & RESET"),
-    ("support", "SUPPORT"),
 )
 SECTION_IDS = tuple(section_id for section_id, _ in SECTION_HEADINGS)
 
@@ -144,6 +140,7 @@ class _UpdateWorker(QThread):
     #   apply   -> installed version, ""
     done = Signal(str, str, str)
     failed = Signal(str)
+    progress = Signal(int, int)       # install: bytes so far, total (0 = unknown)
 
     def __init__(self, mode: str, parent=None):
         super().__init__(parent)
@@ -156,12 +153,30 @@ class _UpdateWorker(QThread):
                 self.done.emit("check", published, notes)
             elif updater.is_frozen():
                 # Installed EXE: fetch the release's Setup.exe; the app runs it.
-                got = updater.download_setup(cancelled=self.isInterruptionRequested)
+                got = updater.download_setup(cancelled=self.isInterruptionRequested,
+                                             progress=self.progress.emit)
                 self.done.emit("install", str(got.path), str(got.version))
             else:
                 self.done.emit("apply", updater.apply(), "")
         except Exception as exc:      # surface it, never take the app down
             self.failed.emit(str(exc))
+
+
+def _mb(count: int) -> int:
+    """Whole megabytes (1 MB = 1,048,576 bytes)."""
+    return max(0, int(count)) // (1 << 20)
+
+
+def _percent(got: int, total: int) -> int:
+    return min(100, max(0, int(got)) * 100 // max(1, int(total)))
+
+
+def download_text(version: str, got: int, total: int) -> str:
+    """The UPDATE line while Setup.exe downloads; total 0 means unknown size."""
+    if total > 0:
+        return (f"Downloading v{version} · {_percent(got, total)}% · "
+                f"{_mb(got)} of {_mb(total)} MB")
+    return f"Downloading v{version} · {_mb(got)} MB"
 
 
 def _slider() -> QSlider:
@@ -405,6 +420,7 @@ class SettingsPanel(QWidget):
         self._pending_version = ""
         self._installing = False
         self._update_worker: _UpdateWorker | None = None
+        self._download: tuple[int, int] | None = None   # (got, total) while downloading
         self._tools: list[tuple[str, str]] = []
         self._key_buttons: dict[str, _KeyButton] = {}   # "toggle_nav", "panic", "tool:<id>"
         self._attention = False
@@ -469,7 +485,7 @@ class SettingsPanel(QWidget):
         builders = {
             "scanner": self._build_scanner, "scan_data": self._build_scan_data,
             "hotkeys": self._build_hotkeys, "look": self._build_look,
-            "update": self._build_update, "support": self._build_support,
+            "update": self._build_update,
         }
         for section_id, heading in SECTION_HEADINGS:
             builders[section_id](self._add_group(root, section_id, heading))
@@ -933,37 +949,6 @@ class SettingsPanel(QWidget):
         self.reset_note.hide()
         root.addWidget(self.reset_note)
 
-    def _build_support(self, root: QVBoxLayout) -> None:
-        """Donation line and the Bitcoin address."""
-        coffee = QLabel("Like my overlay? Buy me a coffee (or a ship)!")
-        coffee.setFont(theme.font(9, QFont.Weight.DemiBold))
-        coffee.setStyleSheet(theme.qss(
-            "color: rgba(232,240,248,0.98); background: transparent;"))
-        root.addWidget(coffee)
-
-        self.btc_label = QLabel(
-            f"BTC: {BTC_ADDRESS}" if BTC_ADDRESS else "Bitcoin address coming soon")
-        self.btc_label.setFont(theme.font(8, spacing=0.2))
-        self.btc_label.setTextInteractionFlags(
-            Qt.TextInteractionFlag.TextSelectableByMouse)
-        self.btc_label.setStyleSheet(theme.qss(
-            "color: rgba(150,166,182,0.95); background: transparent;"))
-        self.btc_copy = _button("COPY")
-        self.btc_copy.setFixedWidth(theme.px(58))
-        self.btc_copy.setToolTip("Copy the Bitcoin donation address")
-        self.btc_copy.setEnabled(bool(BTC_ADDRESS))
-        self.btc_copy.clicked.connect(self._copy_btc)
-        # Address and button share one line.  The label's minimum width is
-        # cleared so the address can shrink instead of pushing COPY out of the
-        # panel at a large UI scale.
-        self.btc_label.setMinimumWidth(0)
-        btc_row = QHBoxLayout()
-        btc_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
-        btc_row.setSpacing(theme.px(8))
-        btc_row.addWidget(self.btc_label, 1)
-        btc_row.addWidget(self.btc_copy)
-        root.addLayout(btc_row)
-
     # -- collapsible groups ------------------------------------------------
     def _add_group(self, root: QVBoxLayout, section_id: str, heading: str) -> QVBoxLayout:
         """Heading row plus a body; returns the body's layout to fill."""
@@ -1061,9 +1046,9 @@ class SettingsPanel(QWidget):
                           if self._ore_count is not None else unmatched),
             "hotkeys": keys,
             "look": f"UI {self.ui_scale_slider.value()}% · voice {voice}",
-            "update": (f"v{self._pending_version} available" if self._pending_version
+            "update": (self._download_summary() if self._download is not None
+                       else f"v{self._pending_version} available" if self._pending_version
                        else f"v{VERSION} installed"),
-            "support": "",
         }
         for section_id, text in summaries.items():
             self._groups[section_id][0].set_summary(text)
@@ -1171,11 +1156,31 @@ class SettingsPanel(QWidget):
 
         worker = _UpdateWorker(mode, self)
         worker.done.connect(self._on_update_done)
+        worker.progress.connect(self._on_update_progress)
         worker.failed.connect(self._on_update_failed)
         worker.finished.connect(self._on_update_finished)
         worker.finished.connect(worker.deleteLater)
         self._update_worker = worker
         worker.start()
+
+    def _on_update_progress(self, got: int, total: int) -> None:
+        """Setup.exe download progress: the UPDATE line and the folded summary."""
+        if self._installing:
+            return
+        self._download = (max(0, int(got)), max(0, int(total)))
+        self.update_hint.setText(download_text(self._pending_version, got, total))
+        self._update_summaries()
+
+    def _download_summary(self) -> str:
+        got, total = self._download or (0, 0)
+        if total > 0:
+            return f"downloading {_percent(got, total)}%"
+        return f"downloading {_mb(got)} MB"
+
+    def _end_download(self) -> None:
+        if self._download is not None:
+            self._download = None
+            self._update_summaries()
 
     def _set_whats_new(self, version: str, notes: str) -> None:
         text = updater.whats_new(notes, version) if notes and version else ""
@@ -1200,6 +1205,7 @@ class SettingsPanel(QWidget):
         self.update_btn.setToolTip(tip)
 
     def _on_update_done(self, mode: str, value: str, extra: str = "") -> None:
+        self._download = None
         if mode == "check":
             if value and updater.is_newer(value):
                 self._pending_version = value
@@ -1243,10 +1249,12 @@ class SettingsPanel(QWidget):
         self.restart_requested.emit()
 
     def _on_update_failed(self, message: str) -> None:
+        self._end_download()
         self.update_hint.setText(f"Update failed: {message}")
         self.update_btn.setText("UPDATE" if self._pending_version else "CHECK")
 
     def _on_update_finished(self) -> None:
+        self._end_download()
         if not self._installing:
             self.update_btn.setEnabled(True)
         self._update_worker = None
@@ -1277,7 +1285,7 @@ class SettingsPanel(QWidget):
             if not worker.isRunning():
                 return True
             worker.requestInterruption()
-            for signal in (worker.done, worker.failed):
+            for signal in (worker.done, worker.failed, worker.progress):
                 try:
                     signal.disconnect()
                 except (RuntimeError, TypeError):
@@ -1550,13 +1558,6 @@ class SettingsPanel(QWidget):
     @property
     def pinned(self) -> bool:
         return self.pin_btn.isChecked()
-
-    def _copy_btc(self) -> None:
-        if not BTC_ADDRESS:
-            return
-        QGuiApplication.clipboard().setText(BTC_ADDRESS)
-        self.btc_copy.setText("COPIED")
-        QTimer.singleShot(1400, lambda: self.btc_copy.setText("COPY"))
 
     # ------------------------------------------------------------------
     def set_region(self, region: dict | None) -> None:

@@ -1,5 +1,59 @@
 # Changes
 
+## v1.0.2 — 2026-11-01
+
+Download progress for UPDATE, the Support group removed from Settings, and
+window positions that survive a crash.
+
+### Download progress (plan item O)
+
+**What happened.** UPDATE showed one fixed line for the whole download of the
+Setup (about 100 MB), so a slow download looked like a hang.
+
+**Change.** `updater.download_setup(timeout=300.0, cancelled=None,
+progress=None)` calls `progress(got_bytes, total_bytes)` once at the start
+with `(0, total)` and after every 1 MB chunk; `total` is the release asset's
+size, 0 when GitHub gives none. `_UpdateWorker` re-emits it as
+`progress = Signal(int, int)`, queued to the GUI thread. The UPDATE line reads
+`Downloading v<x> · NN% · <got> of <total> MB` (MB = bytes / 1,048,576, whole
+numbers, NN never above 100), or `Downloading v<x> · <got> MB` without a size.
+The folded UPDATE & RESET heading shows `downloading NN%` (or
+`downloading <got> MB`) while downloading, then its usual summary.
+
+### Support group removed (plan item P)
+
+**Change.** The SUPPORT group held only the original author's coffee/Bitcoin
+donation request. It is removed with `BTC_ADDRESS`, the donation text, the
+COPY button and `_copy_btc`; `SECTION_IDS` is now `("scanner", "scan_data",
+"hotkeys", "look", "update")`, five groups. A saved `"support"` id in
+`settings_open` is dropped at start. The original author stays credited in
+README and LICENSE.
+
+### Window positions persist (plan item Q)
+
+**What happened.** The seven tool panels' positions and the open panels were
+saved only by `_save_state`, on a normal quit or restart, so ending the app in
+Task Manager, a crash or a Windows shutdown lost every move. The Settings
+window's position was never saved, and only COMBAT, UEX and NOTES were pulled
+back on screen at start.
+
+**Change.** `app/main.py` installs an event filter on the seven tool panels
+(mining, ore finder, hauling, inventory, combat, UEX, notes) and the Settings
+window (`_WindowWatcher`): every Move, Show and Hide event restarts one 1 s
+single-shot timer that calls `_save_state`. The filter is installed after the
+windows are placed at start, and nothing is scheduled while `_resetting` or
+after QUIT/dispose (`_stop_saving`). New config key `settings_pos` (default
+`None`): until Settings has a position (restored, or placed by
+`place_default(self.panel)` the first time it opens) it is not written. At
+start every saved position is restored and `fit_on_screen()` (new, in
+`app/main.py`) moves each of the eight windows fully inside the available area
+of the screen holding its centre, or the nearest screen when none does; a
+window larger than that area is aligned by its top-left, and a window already
+fully on screen is not moved. Settings is fitted again each time it opens and,
+once placed, reopens where it was left instead of under the scanner panel. The nav bar is left out;
+it keeps its edge placement. All eight windows have fixed sizes, so no sizes
+are saved. Panel files are not changed.
+
 ## v1.0.1 — 2026-11-01
 
 The first published release of **SC Assistant** (Citizen Assistant renamed;

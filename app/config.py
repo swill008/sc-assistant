@@ -172,6 +172,8 @@ DEFAULTS: dict = {
     "uex_pos": None,
     "notes_pos": None,
     "combat_pos": None,
+    # Settings window position; None places it under the scanner panel.
+    "settings_pos": None,
     "open_tools": [],
     # Panels pinned with their header pin (ui/pin_button.py): they stay on
     # screen when the overlay is hidden (F4 / the nav bar's ✕). Panel ids:

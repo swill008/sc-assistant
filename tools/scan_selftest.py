@@ -27,7 +27,7 @@ if str(ROOT) not in sys.path:
 # resolved when app.config is imported, so point it at a temp folder first.
 os.environ["APPDATA"] = tempfile.mkdtemp(prefix="ca_scan_selftest_")
 
-from PySide6.QtCore import QPoint, Qt  # noqa: E402
+from PySide6.QtCore import QPoint, Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QGuiApplication  # noqa: E402
 from PySide6.QtTest import QTest  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
@@ -647,6 +647,9 @@ def _bare_overlay(cfg):
     if hasattr(o, "_init_result_state"):         # missing before plan L
         o._init_result_state()
     o._resetting = False
+    o._closed = False
+    o._settings_placed = False
+    o._persist_timer = QTimer()             # the debounced window save (plan Q)
     o.unmatched = _FakeUnmatched()
     o.scan = _FakeScan2()
     o.outline = _FakeOutline()

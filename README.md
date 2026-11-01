@@ -1039,7 +1039,7 @@ application shortcuts while you type.
 
 ## Settings window
 
-`⚙` on the nav bar opens the settings window. Its controls are in six groups,
+`⚙` on the nav bar opens the settings window. Its controls are in five groups,
 top to bottom. Each group has a heading you click to open or close it: `▸` when
 closed, `▾` when open. Any number of groups can be open at once, and the window
 resizes to fit. A closed heading shows a short grey summary on its right:
@@ -1050,8 +1050,7 @@ resizes to fit. A closed heading shows a short grey summary on its right:
 | **SCAN DATA** | *Signature data*, *Unmatched readings* | `<N> ores · <M> unmatched` (only `<M> unmatched` until the signature table has loaded) |
 | **HOTKEYS** | *Hotkeys* | SHOW BAR and HIDE ALL, e.g. `SHOW BAR F3 · HIDE ALL F4` |
 | **LOOK & SOUND** | *Appearance*, *Voice* | e.g. `UI 100% · voice on` |
-| **UPDATE & RESET** | *Update*, *Reset* | `v<x> installed`, or `v<x> available` after CHECK found a newer one |
-| **SUPPORT** | *Support* | nothing |
+| **UPDATE & RESET** | *Update*, *Reset* | `v<x> installed`, or `v<x> available` after CHECK found a newer one; `downloading NN%` (or `downloading <got> MB`) while UPDATE downloads |
 
 Where a group holds two of the old sections, their names stay as small
 sub-headings inside it. The open groups are remembered (`settings_open` in
@@ -1154,7 +1153,9 @@ Closing HOTKEYS cancels a key change that was waiting for a key press.
     of this fork, `swill008/sc-assistant`. UPDATE downloads that
     release's Setup, checks its size and its SHA-256 digest against GitHub's,
     and names the version it actually downloaded (it can be newer than the one
-    CHECK saw). SC Assistant then closes, Setup installs silently and
+    CHECK saw). While it downloads, the line under the button counts up
+    every megabyte: `Downloading v<x> · NN% · <got> of <total> MB`, or
+    `Downloading v<x> · <got> MB` when GitHub gives no size. SC Assistant then closes, Setup installs silently and
     starts the new version. The hand-off waits for the old copy to exit with
     no time limit; if Setup stops without installing (exit code 1 or 2), the
     old version is started again.
@@ -1191,12 +1192,22 @@ Closing HOTKEYS cancels a key change that was waiting for a key press.
   removed: …`. To undo a reset, quit the app and copy the files back from the
   backup folder.
 
-**SUPPORT**
-
-- "Like my overlay? Buy me a coffee (or a ship)!" with a BTC
-  address and copy button.
-
 The settings window has a push-pin too, like every panel.
+
+### Window positions
+
+The seven tool panels (mining, ORE FINDER, HAULING, INVENTORY, COMBAT, UEX and
+NOTES) and the settings window remember where you put them. The positions
+and the list of open panels are saved about a second after a window stops
+moving, opens or closes, so nothing is lost if the app is closed from Task
+Manager, crashes or Windows shuts down. The settings window's spot is
+`settings_pos` in `config.json`; until it has one, the window opens just below
+the scanner panel, and after that it reopens where you left it. At start, and
+each time Settings opens, every window is moved fully onto the screen it is
+mostly on, or the nearest connected screen when it is on none (for example one
+left on an unplugged monitor). A window already fully on screen is not moved. The nav bar
+is not included: it keeps its place at the screen edge. The windows have fixed
+sizes, so no sizes are saved.
 
 Advanced scan tuning lives in `config.json`: `poll_ms` controls the capture
 cadence (default `250`, i.e. 4 reads a second; **READS / S** sets it, and

@@ -186,6 +186,23 @@ every scannable item; visible feedback for every read (no silent discards).
   caches; notes, inventory and blueprints are kept. Click twice like QUIT;
   a dated backup folder is kept next to the settings; then the app restarts.
 
+## After 1.0.1 (planning, 2026-11-01) — O, P, Q built for 1.0.2
+- O. Download progress (decided 2a, 3a; built, 1.0.2): the UPDATE line reads "Downloading
+  v<x> · NN% · <got> of <total> MB", updated every MB (download_setup reads
+  1 MB chunks and knows release.size); without a size only "<got> MB". The
+  folded UPDATE & RESET heading summary shows "downloading NN%".
+- P. Support group removed (decided 1a; built, 1.0.2): it held only the original author's
+  coffee/Bitcoin donation request; Settings becomes five groups. The original
+  author stays credited in README and LICENSE.
+- Q. Window positions persist (decided 1a, 2a, 3a, 4a; built, 1.0.2). Finding: positions
+  of the 7 tool panels were saved only in _save_state (normal quit or
+  restart), so Task Manager, a crash or Windows shutdown lost every move and
+  the open panels; the Settings window was never saved; only combat, UEX and
+  notes were pulled back on screen. Decision: save about 1 s after a drag
+  ends and when a window opens or closes; all 7 panels plus Settings (the nav
+  bar keeps its edge spot); every window pulled fully onto the nearest
+  connected screen at start; sizes saved for panels that can be resized.
+
 ## Parked (2026-11-01): SuperCargo button
 A CARGO nav-bar button that shows/hides SuperCargo and its overlay. Planned
 method: `--show` / `--hide` / `--toggle` switches added to the user's

@@ -5,7 +5,7 @@
 Drives the real SettingsPanel with real mouse clicks (QTest), off-screen:
 the two-click RESET SETTINGS button (arms, reverts, emits once), its error
 note, the UNMATCHED READINGS list (count, newest rows, OPEN FOLDER, two-click
-CLEAR), the six collapsible groups (heading clicks, summaries, remembered and
+CLEAR), the five collapsible groups (no Support group or donation text) (heading clicks, summaries, remembered and
 forced-open groups, the window fitting itself), and the layout at UI scale 1.0
 and 1.5 in every open/closed combination checked (no widgets overlap, no text
 cut off, armed texts fit).
@@ -257,20 +257,29 @@ def check_sections() -> None:
     from app.version import VERSION
 
     print("COLLAPSIBLE GROUPS")
-    check("six group ids in order",
-          sp.SECTION_IDS == ("scanner", "scan_data", "hotkeys", "look", "update", "support"),
+    check("five group ids in order (no Support)",
+          sp.SECTION_IDS == ("scanner", "scan_data", "hotkeys", "look", "update"),
           f"({sp.SECTION_IDS})")
     panel = _panel()
     got: list[list] = []
     panel.sections_changed.connect(lambda ids: got.append(list(ids)))
 
     tops = [panel.section_header(s).y() for s in sp.SECTION_IDS]
-    check("headings top to bottom in SECTION_IDS order (Support last)",
-          tops == sorted(tops) and len(set(tops)) == 6, f"({tops})")
+    check("headings top to bottom in SECTION_IDS order (Update & Reset last)",
+          tops == sorted(tops) and len(set(tops)) == 5, f"({tops})")
     titles = [panel.section_header(s).title.text()[2:] for s in sp.SECTION_IDS]
-    check("headings read SCANNER ... SUPPORT",
+    check("headings read SCANNER ... UPDATE & RESET",
           titles == ["SCANNER", "SCAN DATA", "HOTKEYS", "LOOK & SOUND",
-                     "UPDATE & RESET", "SUPPORT"], f"({titles})")
+                     "UPDATE & RESET"], f"({titles})")
+    words = [w.text() for w in panel.findChildren(QLabel) + panel.findChildren(QPushButton)]
+    donation = [t for t in words if any(k in t.lower() for k in
+                                        ("coffee", "btc", "bitcoin", "bc1q", "donat", "support"))]
+    check("no donation text, address or COPY button anywhere in Settings",
+          not donation and "COPY" not in words
+          and not any(hasattr(panel, n) for n in ("btc_label", "btc_copy", "_copy_btc"))
+          and not hasattr(sp, "BTC_ADDRESS")
+          and "bc1q" not in Path(sp.__file__).read_text(encoding="utf-8"),
+          f"({donation})")
     check("new panel: only Scanner open", panel.open_sections == ["scanner"],
           f"({panel.open_sections})")
     check("headings never take focus",
@@ -341,7 +350,6 @@ def check_sections() -> None:
     check("update summary: vX available after CHECK found one",
           panel.section_summary("update") == "v999.0.0 available",
           f"({panel.section_summary('update')!r})")
-    check("support summary empty", panel.section_summary("support") == "")
     header = panel.section_header("scanner")
     panel.set_monitors([("X" * 120, "long")], "X" * 120)
     QApplication.processEvents()
@@ -398,8 +406,8 @@ def check_section_layouts() -> None:
 
     print("GROUP LAYOUTS")
     combos = [[]] + [[s] for s in SECTION_IDS] + [
-        ["scanner", "scan_data"], ["hotkeys", "look"], ["update", "support"],
-        ["scanner", "look", "support"], list(SECTION_IDS)]
+        ["scanner", "scan_data"], ["hotkeys", "look"], ["look", "update"],
+        ["scanner", "look", "update"], list(SECTION_IDS)]
     for scale in (1.0, 1.5):
         theme.set_scale(scale)
         try:

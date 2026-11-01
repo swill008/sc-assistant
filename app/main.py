@@ -10,7 +10,7 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QObject, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import (QAction, QColor, QFont, QGuiApplication, QIcon,
                            QKeySequence, QPainter, QPainterPath, QPixmap,
                            QShortcut)
@@ -503,6 +503,60 @@ def _already_running_notice() -> None:
 
 
 # ---------------------------------------------------------------------------
+def _saved_pos(value) -> tuple[int, int] | None:
+    """A saved [x, y] window position, or None when missing or malformed."""
+    if isinstance(value, list) and len(value) == 2:
+        try:
+            return int(value[0]), int(value[1])
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
+def _rect_distance(rect, point) -> int:
+    """Squared distance from point to rect (0 inside it)."""
+    dx = max(rect.left() - point.x(), 0, point.x() - rect.right())
+    dy = max(rect.top() - point.y(), 0, point.y() - rect.bottom())
+    return dx * dx + dy * dy
+
+
+def fit_on_screen(widget) -> None:
+    """Move a window fully onto the nearest connected screen (logical px).
+
+    Nearest: the screen whose available area holds the window's centre, else
+    the one closest to it. A window larger than that area is aligned by its
+    top-left. A window already fully on a screen is not moved.
+    """
+    frame = widget.frameGeometry()
+    screens = QGuiApplication.screens()
+    if not screens:
+        return
+    centre = frame.center()
+    geo = min((sc.availableGeometry() for sc in screens),
+              key=lambda g: _rect_distance(g, centre))
+    if geo.contains(frame):
+        return
+    x = max(geo.left(), min(frame.left(), geo.right() - frame.width() + 1))
+    y = max(geo.top(), min(frame.top(), geo.bottom() - frame.height() + 1))
+    widget.move(widget.x() + x - frame.left(), widget.y() + y - frame.top())
+
+
+class _WindowWatcher(QObject):
+    """Event filter on the tool windows and Settings: any move, show or hide
+    restarts a short timer, so a position is saved once the window stops."""
+
+    _EVENTS = (QEvent.Type.Move, QEvent.Type.Show, QEvent.Type.Hide)
+
+    def __init__(self, on_change, parent: QObject):
+        super().__init__(parent)
+        self._on_change = on_change
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        if event.type() in self._EVENTS:
+            self._on_change()
+        return False
+
+
 class OverlayApp(QObject):
     # Host-facing headless bridges.  The trackers never create windows; the
     # host decides whether to render a toast, update a HUD layer, or ignore it.
@@ -538,6 +592,11 @@ class OverlayApp(QObject):
         self._init_result_state()
         # RESET SETTINGS in progress: nothing may write the old settings back.
         self._resetting = False
+        # QUIT or dispose ran: the debounced window save is off for good.
+        self._closed = False
+        # Settings has a real position (restored or placed when opened); until
+        # then its x/y are meaningless and "settings_pos" is not written.
+        self._settings_placed = False
         self.unmatched = UnmatchedLog()
 
         self.nav = NavBar(TOOLS)
@@ -600,6 +659,41 @@ class OverlayApp(QObject):
         self._topmost = QTimer(self)
         self._topmost.setInterval(2000)
         self._topmost.timeout.connect(self._assert_topmost)
+
+        # Window positions and open tools are saved about a second after a
+        # window stops moving or is shown/hidden, not only on QUIT/restart.
+        self._persist_timer = QTimer(self)
+        self._persist_timer.setSingleShot(True)
+        self._persist_timer.setInterval(1000)
+        self._persist_timer.timeout.connect(self._save_state)
+        self._window_watcher = _WindowWatcher(self._schedule_save, self)
+
+    def _windows(self) -> dict:
+        """Config key -> window for every window whose position is saved
+        (the seven tools and Settings; the nav bar keeps its edge place)."""
+        return {"mining_panel_pos": self.panel,
+                "orefinder_pos": self.orefinder,
+                "hauling_pos": self.hauling,
+                "inventory_pos": self.inventory,
+                "combat_pos": self.combat_panel,
+                "uex_pos": self.uex,
+                "notes_pos": self.notes,
+                "settings_pos": self.settings}
+
+    def _restore_pos(self, widget, key: str) -> bool:
+        pos = _saved_pos(self.cfg.get(key))
+        if pos is None:
+            return False
+        widget.move(*pos)
+        return True
+
+    def _schedule_save(self) -> None:
+        if not self._closed and not self._resetting:
+            self._persist_timer.start()
+
+    def _stop_saving(self) -> None:
+        self._closed = True
+        self._persist_timer.stop()
 
     # ------------------------------------------------------------------
     def _wire(self) -> None:
@@ -712,11 +806,9 @@ class OverlayApp(QObject):
         if self.cfg["nav_visible"] or self.demo:
             self.nav.slide_in()
 
-        pos = self.cfg["mining_panel_pos"]
-        if isinstance(pos, list) and len(pos) == 2:
-            self.panel.move(int(pos[0]), int(pos[1]))
-        else:
+        if not self._restore_pos(self.panel, "mining_panel_pos"):
             self.panel.place_default()
+        fit_on_screen(self.panel)
 
         self.settings.set_reads(self._reads_per_second())
         self.settings.set_tracking(self._tracking_range())
@@ -745,50 +837,21 @@ class OverlayApp(QObject):
             "" if self.voice.available else "No speech engine available")
         self._show_unmatched()
 
-        ore_pos = self.cfg.get("orefinder_pos")
-        if isinstance(ore_pos, list) and len(ore_pos) == 2:
-            self.orefinder.move(int(ore_pos[0]), int(ore_pos[1]))
-
         self.panel.show()
-        if not isinstance(ore_pos, list):
-            self.orefinder.place_default(self.panel)
-
-        hauling_pos = self.cfg.get("hauling_pos")
-        if isinstance(hauling_pos, list) and len(hauling_pos) == 2:
-            self.hauling.move(int(hauling_pos[0]), int(hauling_pos[1]))
-        else:
-            self.hauling.place_default(self.panel)
+        # The other tools default to a spot beside the (now shown) scanner.
+        for key, widget in self._windows().items():
+            if widget is self.panel:
+                continue
+            if self._restore_pos(widget, key):
+                if widget is self.settings:
+                    self._settings_placed = True
+            elif widget is not self.settings:     # Settings: placed on open
+                widget.place_default(self.panel)
+            # A saved position can belong to a monitor that is no longer
+            # attached, which made a tool look like it opened nothing.
+            fit_on_screen(widget)
         self.hauling.set_preferences(int(self.cfg["hauling_cargo"]),
                                      int(self.cfg["hauling_commodity"]))
-
-        inventory_pos = self.cfg.get("inventory_pos")
-        if isinstance(inventory_pos, list) and len(inventory_pos) == 2:
-            self.inventory.move(int(inventory_pos[0]), int(inventory_pos[1]))
-        else:
-            self.inventory.place_default(self.panel)
-
-        combat_pos = self.cfg.get("combat_pos")
-        if isinstance(combat_pos, list) and len(combat_pos) == 2:
-            self.combat_panel.move(int(combat_pos[0]), int(combat_pos[1]))
-        else:
-            self.combat_panel.place_default(self.panel)
-        # A saved position can belong to a monitor that is no longer attached,
-        # which made COMBAT look like it opened nothing. Pull it back on screen.
-        self.combat_panel.clamp_to_screen()
-
-        uex_pos = self.cfg.get("uex_pos")
-        if isinstance(uex_pos, list) and len(uex_pos) == 2:
-            self.uex.move(int(uex_pos[0]), int(uex_pos[1]))
-        else:
-            self.uex.place_default(self.panel)
-        self.uex.clamp_to_screen()
-
-        notes_pos = self.cfg.get("notes_pos")
-        if isinstance(notes_pos, list) and len(notes_pos) == 2:
-            self.notes.move(int(notes_pos[0]), int(notes_pos[1]))
-        else:
-            self.notes.place_default(self.panel)
-        self.notes.clamp_to_screen()
 
         # Reopen whatever was on screen last time. A UI-scale restart used to
         # come back with every panel closed, which made the restart feel like a
@@ -829,6 +892,9 @@ class OverlayApp(QObject):
         # and the signature data is refreshed from scmdb off the GUI thread.
         self._load_anchor()
         QTimer.singleShot(0, self, self._refresh_data)
+        # Last: placing the windows above is not a user move to save.
+        for widget in self._windows().values():
+            widget.installEventFilter(self._window_watcher)
 
     def _apply_window_tweaks(self) -> None:
         for widget in (self.nav, self.panel, self.settings, self.orefinder,
@@ -1166,7 +1232,10 @@ class OverlayApp(QObject):
         if self.settings.isVisible():
             self.settings.hide()
             return
-        self.settings.place_default(self.panel)
+        if not self._settings_placed:
+            self.settings.place_default(self.panel)
+            self._settings_placed = True
+        fit_on_screen(self.settings)
         self.settings.show()
         self.settings.raise_()
         self._assert_topmost()
@@ -1899,6 +1968,8 @@ class OverlayApp(QObject):
                                       self.combat_panel.y()]
             self.cfg["uex_pos"] = [self.uex.x(), self.uex.y()]
             self.cfg["notes_pos"] = [self.notes.x(), self.notes.y()]
+            if self._settings_placed:
+                self.cfg["settings_pos"] = [self.settings.x(), self.settings.y()]
             self.cfg["open_tools"] = [
                 tool_id for tool_id, widget in (
                     ("mining", self.panel),
@@ -1981,6 +2052,7 @@ class OverlayApp(QObject):
 
     def quit(self) -> None:
         self._save_state()
+        self._stop_saving()       # closing the windows below is not a change
         self.combat.close()
         self.blueprint_tracker.close()
         self.scan.stop()
@@ -2003,6 +2075,7 @@ class OverlayApp(QObject):
         second time in its exit handlers, which on Windows shows up as an
         intermittent access violation (0xC0000005) after a clean quit.
         """
+        self._stop_saving()
         widgets = (self.nav, self.panel, self.settings, self.orefinder,
                    self.hauling, self.inventory, self.combat_panel)
         for widget in widgets:

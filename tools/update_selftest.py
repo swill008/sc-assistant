@@ -262,6 +262,136 @@ def check_download() -> int:
     return failures
 
 
+MB = 1 << 20
+
+
+def check_download_progress() -> int:
+    """download_setup reports (0, total) first, then after every 1 MB chunk."""
+    failures = 0
+    payload = b"MZ" + b"\0" * (3 * MB + MB // 2 - 2)          # 3.5 MB
+
+    def run(size, cancelled=None):
+        calls: list = []
+        rel = _release("9.9.10", "https://x/setup", size, "", NOTES)
+        with _Patch(updater, latest_release=lambda t=15.0: rel), \
+                _Patch(updater.tempfile, gettempdir=lambda: _TMP.name), \
+                _Patch(updater.urllib.request, urlopen=lambda req, timeout=0: _FakeResponse(payload)):
+            try:
+                got = updater.download_setup(cancelled=cancelled,
+                                             progress=lambda g, t: calls.append((g, t)))
+                Path(got.path).unlink()
+            except RuntimeError as exc:
+                calls.append(("raised", str(exc)))
+        return calls
+
+    n = len(payload)
+    calls = run(n)
+    failures += _check("progress: (0, total) first, then every 1 MB chunk, ending at total",
+                       calls == [(0, n), (MB, n), (2 * MB, n), (3 * MB, n), (n, n)], f"({calls})")
+    calls = run(0)
+    failures += _check("progress: unknown size reports total 0",
+                       calls == [(0, 0), (MB, 0), (2 * MB, 0), (3 * MB, 0), (n, 0)], f"({calls})")
+    polls = {"n": 0}
+
+    def cancel_after_two():
+        polls["n"] += 1
+        return polls["n"] > 2
+    calls = run(n, cancelled=cancel_after_two)
+    failures += _check("progress: cancel still stops the download (and removes the .part)",
+                       bool(calls) and calls[-1][0] == "raised" and "cancelled" in calls[-1][1]
+                       and calls[:-1] == [(0, n), (MB, n), (2 * MB, n)]
+                       and not list((Path(_TMP.name) / "SCAssistant-update").glob("*.part")),
+                       f"({calls})")
+    return failures
+
+
+def check_download_progress_ui() -> int:
+    """The UPDATE line and the folded UPDATE & RESET summary follow the download."""
+    import threading
+
+    from app.ui import settings_panel
+    from app.ui.settings_panel import SettingsPanel
+
+    failures = 0
+    texts = getattr(settings_panel, "download_text", None)
+    failures += _check("download_text: percent and whole MB",
+                       texts is not None and texts("1.0.2", 2 * MB + 5, 50 * MB + MB // 2)
+                       == "Downloading v1.0.2 · 3% · 2 of 50 MB")
+    failures += _check("download_text: never above 100%",
+                       texts is not None and texts("1.0.2", 60 * MB, 50 * MB)
+                       == "Downloading v1.0.2 · 100% · 60 of 50 MB")
+    failures += _check("download_text: unknown size shows MB only",
+                       texts is not None and texts("1.0.2", 7 * MB + 1, 0) == "Downloading v1.0.2 · 7 MB")
+    fake_setup = str(Path(_TMP.name) / "SCAssistant-9.9.9-Setup.exe")
+
+    def flow(total, steps, expect, finish="ok"):
+        gate = threading.Semaphore(0)
+
+        def stepped_download(t=300.0, cancelled=None, progress=None):
+            for got in steps:
+                if progress is not None:
+                    progress(got, total)
+                if not gate.acquire(timeout=5):
+                    raise RuntimeError("test gate timed out")
+            if finish == "fail":
+                raise RuntimeError("network went away")
+            return updater.Downloaded(Path(fake_setup), "9.9.9")
+
+        out = 0
+        with _Patch(updater, is_frozen=lambda: True, standalone=lambda: False,
+                    check=lambda t=15.0: ("9.9.9", ""), download_setup=stepped_download):
+            panel = SettingsPanel()
+            panel.install_requested.connect(lambda path: None)
+            panel.update_btn.click()
+            _wait(lambda: panel._update_worker is None)
+            header = panel.section_header("update")
+            if "update" in panel.open_sections:
+                header.clicked.emit()
+                QApplication.processEvents()
+            usual = panel.section_summary("update")
+            folded = "update" not in panel.open_sections and not header.summary.isHidden()
+            out += _check(f"progress UI (total {total}): UPDATE & RESET folded, usual summary",
+                          folded and usual == "v9.9.9 available", f"({folded}, {usual!r})")
+            panel.update_btn.click()
+            for line, summary in expect:
+                ok = _wait(lambda: panel.update_hint.text() == line, 3)
+                got_line, got_summary = panel.update_hint.text(), panel.section_summary("update")
+                out += _check(f"  line {line!r}, folded summary {summary!r}",
+                              ok and got_summary == summary, f"({got_line!r}, {got_summary!r})")
+                gate.release()
+            _wait(lambda: panel._update_worker is None)
+            after = panel.section_summary("update")
+            if finish == "fail":
+                out += _check("  a failed download: summary back to its usual text, line says why",
+                              after == "v9.9.9 available"
+                              and "network went away" in panel.update_hint.text(),
+                              f"({after!r}, {panel.update_hint.text()!r})")
+            else:
+                out += _check("  after the download: summary back to its usual text",
+                              after == "v9.9.9 available"
+                              and panel.update_hint.text().startswith("Installing v9.9.9"),
+                              f"({after!r}, {panel.update_hint.text()!r})")
+            for _ in steps:              # never leave a fake download waiting
+                gate.release()
+            _wait(lambda: panel._update_worker is None)
+            panel.deleteLater()
+            QApplication.processEvents()
+        return out
+
+    t = 40 * MB + MB // 3
+    failures += flow(t, [0, MB, 20 * MB + 7, t], [
+        ("Downloading v9.9.9 · 0% · 0 of 40 MB", "downloading 0%"),
+        ("Downloading v9.9.9 · 2% · 1 of 40 MB", "downloading 2%"),
+        ("Downloading v9.9.9 · 49% · 20 of 40 MB", "downloading 49%"),
+        ("Downloading v9.9.9 · 100% · 40 of 40 MB", "downloading 100%"),
+    ])
+    failures += flow(0, [0, 3 * MB + 9], [
+        ("Downloading v9.9.9 · 0 MB", "downloading 0 MB"),
+        ("Downloading v9.9.9 · 3 MB", "downloading 3 MB"),
+    ], finish="fail")
+    return failures
+
+
 def check_installer_command() -> int:
     """The hand-off's PowerShell: no wait limit; old version back on exit 1/2."""
     failures = 0
@@ -341,7 +471,7 @@ def check_settings_flow() -> int:
     fake_setup = str(Path(_TMP.name) / "SCAssistant-9.9.10-Setup.exe")
     downloads: list[bool] = []
 
-    def fake_download(t=300.0, cancelled=None):
+    def fake_download(t=300.0, cancelled=None, progress=None):
         downloads.append(True)
         make = getattr(updater, "Downloaded", None)
         # The release moved on between CHECK (9.9.9) and UPDATE (9.9.10).
@@ -401,7 +531,9 @@ def check_settings_flow() -> int:
         wn = getattr(panel, "whats_new_label", None)
         failures += _check("no notes: no What's new box", wn is None or wn.isHidden())
 
-        def slow_download(t=300.0, cancelled=None):
+        def slow_download(t=300.0, cancelled=None, progress=None):
+            if progress is not None:
+                progress(0, 40 << 20)
             while not (cancelled and cancelled()):
                 time.sleep(0.02)
             raise RuntimeError("the download was cancelled")
@@ -566,13 +698,14 @@ def check_app_handoff() -> int:
 def check_live_release() -> int:
     try:
         release = updater.latest_release()
-        version, url, size = release[0], release[1], release[2]
+        ver, url, size = release[0], release[1], release[2]
     except Exception as exc:  # network
         return _check("latest release readable on GitHub", False, f"({exc})")
     digest = getattr(release, "digest", "")
+    # ``ver``, not ``version``: that name is the app.version module.
     return _check("latest release on GitHub has an installer",
-                  url.endswith(version.SETUP_ASSET.format(version=version)) and size > 10_000_000,
-                  f"(v{version}, {size // 1_000_000} MB, digest {'yes' if digest else 'no'}, {url})")
+                  url.endswith(version.SETUP_ASSET.format(version=ver)) and size > 10_000_000,
+                  f"(v{ver}, {size // 1_000_000} MB, digest {'yes' if digest else 'no'}, {url})")
 
 
 def _run(fn) -> int:
@@ -590,7 +723,8 @@ def main() -> int:
     if QApplication.instance() is None:
         QApplication(sys.argv)
     failures = 0
-    checks = [check_names, check_release_parsing, check_whats_new, check_download, check_installer_command,
+    checks = [check_names, check_release_parsing, check_whats_new, check_download, check_download_progress,
+              check_download_progress_ui, check_installer_command,
               check_installer_real, check_settings_flow, check_tracking_slider,
               check_setters_quiet, check_pin_and_attention, check_app_handoff]
     if "--offline" not in sys.argv:

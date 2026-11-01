@@ -281,12 +281,15 @@ class Downloaded(NamedTuple):
 
 
 def download_setup(timeout: float = 300.0,
-                   cancelled: Callable[[], bool] | None = None) -> Downloaded:
+                   cancelled: Callable[[], bool] | None = None,
+                   progress: Callable[[int, int], None] | None = None) -> Downloaded:
     """Download the latest release's Setup.exe to a temporary folder.
 
     The file is checked against the release's size, the EXE header and, when
     GitHub gives one, its sha256 digest; anything wrong (or ``cancelled()``
-    turning true) removes the partial file and raises.
+    turning true) removes the partial file and raises. ``progress(got, total)``
+    is called once with (0, total) and after every 1 MB chunk; total is the
+    release's size, 0 when GitHub does not give one.
     """
     release = latest_release(min(timeout, 30.0))
     target = (Path(tempfile.gettempdir()) / f"{_names.EXE_NAME}-update"
@@ -299,6 +302,9 @@ def download_setup(timeout: float = 300.0,
         request = urllib.request.Request(release.url, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(request, timeout=timeout) as response, \
                 open(partial, "wb") as out:
+            done = 0
+            if progress is not None:
+                progress(0, release.size)
             while True:
                 if cancelled is not None and cancelled():
                     raise RuntimeError("the download was cancelled")
@@ -308,6 +314,9 @@ def download_setup(timeout: float = 300.0,
                 out.write(chunk)
                 if hasher is not None:
                     hasher.update(chunk)
+                done += len(chunk)
+                if progress is not None:
+                    progress(done, release.size)
         got = partial.stat().st_size
         with open(partial, "rb") as fh:
             is_exe = fh.read(2) == b"MZ"
