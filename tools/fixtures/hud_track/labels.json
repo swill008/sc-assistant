@@ -213,7 +213,7 @@
         463,
         478
       ],
-      "note": "heavy blue scan tint, faint plate partly broken by the tint pattern; pin +-3 px"
+      "note": "heavy blue scan tint, faint plate partly broken by the tint pattern; pin +-3 px. In this frame the first digit looks like a 6 (61,000): the value 51,000 is the rock's, taken from the clear frames either side (f0114, f0156, f0160 all read 51,000), not from this frame's pixels"
     },
     {
       "file": "f0204.jpg",
