@@ -309,7 +309,7 @@ The scanner needs to know where the signature number appears on your screen.
 2. In `⚙` → *Signature capture region*, check **MONITOR** shows the monitor the
    game is on (it lists every monitor with its real resolution and Windows
    scaling, read from Windows — nothing to type in).
-3. Click **SELECT**. The picker opens on that monitor.
+3. Click **DRAW REGION**. The picker opens on that monitor.
 4. Drag a box **tightly around the digits only** (a little padding is fine, but
    do not include the word "SIGNATURE" or the units).
 5. Optional: **SHOW BOX** (in *Scanning*) draws the box on screen so you can
@@ -330,7 +330,7 @@ dragged. Builds before this fix used one window stretched over every monitor;
 Qt gave it a single scale (whichever monitor it landed on), so on a mixed-scale
 desk the box was stored at the wrong size — on a 150% main screen next to a
 300% TV, half the width and height — and OCR read nothing. If you calibrated
-with an older build, run **SELECT** once more.
+with an older build, press **DRAW REGION** once more.
 
 **Changing resolution or monitor later.** When you draw the box, the app also
 records that monitor's resolution and position. If they change afterwards (a
@@ -343,16 +343,16 @@ with the vertical resolution and keeps it centred, so the box keeps its offset
 from the screen centre and both are scaled by the height ratio
 (`app/display.py`, `rescale`); for the same aspect ratio that is plain
 proportional scaling. Check SHOW BOX or SHOW PREVIEW afterwards, and press
-**SELECT** if the HUD sits somewhere else. Changing only Windows scaling needs
+**DRAW REGION** if the HUD sits somewhere else. Changing only Windows scaling needs
 nothing: the box is stored in physical pixels, which scaling does not change.
 A box moved this way turns HUD tracking off (the saved pin is for the old
-resolution); press **SELECT** again to turn it back on.
+resolution); press **DRAW REGION** again to turn it back on.
 
 **Following the HUD as it sways (tracking).** In flight Star Citizen's HUD
 moves with the ship's "physics" — on a 5120×2160 screen the signature plate
 was measured moving 218 px left to 250 px right and 43 px up to 227 px down
 around the drawn box, often 100 px within a tenth of a second, so a fixed box
-caught it in 19 of 300 frames. When you press **SELECT** with the scan readout
+caught it in 19 of 300 frames. When you press **DRAW REGION** with the scan readout
 on screen, the app also saves the plate's orange **pin icon** just left of the
 digits (`%APPDATA%\Citizen Assistant\anchor.png`). Each read then captures a
 larger area around the box, finds the pin in it (about 1.3 ms; it searches a
@@ -363,8 +363,8 @@ is not run at all. The pin is the anchor because it looks the same in every
 ship, whatever the rest of the HUD looks like. **TRACKING** in *Scanning* sets
 how far it searches (default ±400 px across and ±300 px up and down on a
 2160-px-high screen, scaled for other heights); `OFF` reads the fixed box as
-before. If SELECT finds no pin next to the box, an amber note says tracking is
-off — press SELECT again with the readout showing. With **SHOW BOX** on, the
+before. If DRAW REGION finds no pin next to the box, an amber note says tracking is
+off — press DRAW REGION again with the readout showing. With **SHOW BOX** on, the
 outline follows the digits being read.
 
 The scanner reads that box **4 times a second** by default (`⚙` → *Scanning* →
@@ -908,7 +908,7 @@ application shortcuts while you type.
   nothing is scaled and the layout is pixel-identical to earlier builds.
 - **Signature capture region** — **MONITOR** picks the monitor the game runs on
   (each entry shows the monitor's real resolution and Windows scaling, e.g.
-  `LG ULTRAGEAR+ · 5120×2160 · 150%`); **SELECT** / **CHANGE** re-calibrates on
+  `LG ULTRAGEAR+ · 5120×2160 · 150%`); **DRAW REGION** re-calibrates on
   that monitor. An amber note appears when the box was moved because the
   monitor changed (see *Calibrating the scanner*).
 - **READS / S** — how many times a second the box is read, 1–8 (default 4).
@@ -917,7 +917,7 @@ application shortcuts while you type.
 - **TRACKING** — how far the scanner looks for the plate's pin around the box
   as the HUD sways, `OFF` or ±50 to ±800 px (default ±400 across, ±300 up and
   down, for a 2160-px-high screen; scaled for others). Applies immediately and
-  is saved as `tracking_range`. Needs a pin saved by **SELECT** (see
+  is saved as `tracking_range`. Needs a pin saved by **DRAW REGION** (see
   *Calibrating the scanner*).
 - **PAUSE / RESUME** — stop OCR without closing anything.
 - **SHOW PREVIEW** — show the raw pixels being read; useful for checking the box.
@@ -1085,11 +1085,11 @@ to it.
 | Symptom | Fix |
 | --- | --- |
 | Nothing ever reads | Re-calibrate; the box must contain only the digits. Check the preview. |
-| Nothing reads on a 5K / high-DPI screen next to monitors with other scaling | Calibrated with a build before the mixed-scale fix: the box was stored too small. Run **SELECT** again; the label shows the size in physical pixels while you drag. |
+| Nothing reads on a 5K / high-DPI screen next to monitors with other scaling | Calibrated with a build before the mixed-scale fix: the box was stored too small. Press **DRAW REGION** again; the label shows the size in physical pixels while you drag. |
 | The game stutters while the overlay runs | Check `ocr_threads` is `1` in `config.json`, and **SHOW PREVIEW** and **SHOW BOX** are off; try fewer **READS / S**. See *Game performance*. |
-| Reads only now and then while flying | The HUD sways away from the box. Press **SELECT** with the scan readout on screen so the pin is saved, and check **TRACKING** is not `OFF`. A larger range follows bigger sways. |
-| Amber note "No pin icon found left of the box" | The readout was not on screen (or the box was drawn somewhere else) when you pressed SELECT. Open the scan HUD and press **SELECT** again around the digits. |
-| Scanner stopped reading after changing resolution or monitor | Look for the amber note under *Signature capture region*: the box was moved to match. Turn on **SHOW BOX** to see where it is now; press **SELECT** if the HUD is elsewhere. |
+| Reads only now and then while flying | The HUD sways away from the box. Press **DRAW REGION** with the scan readout on screen so the pin is saved, and check **TRACKING** is not `OFF`. A larger range follows bigger sways. |
+| Amber note "No pin icon found left of the box" | The readout was not on screen (or the box was drawn somewhere else) when you pressed DRAW REGION. Open the scan HUD and press **DRAW REGION** again around the digits. |
+| Scanner stopped reading after changing resolution or monitor | Look for the amber note under *Signature capture region*: the box was moved to match. Turn on **SHOW BOX** to see where it is now; press **DRAW REGION** if the HUD is elsewhere. |
 | Not sure where the scanner is reading | Turn on **SHOW BOX**: the outline is drawn around the exact box. It is hidden from capture, so it cannot affect the reading. |
 | Reads the wrong number | Box too large or too small, or the HUD is scaled differently — re-calibrate. |
 | Ore finder list is empty | No internet, or scminer.rocks is down. Press `↻`; the cache is used when available. |

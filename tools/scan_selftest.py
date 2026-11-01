@@ -1,6 +1,6 @@
 """Scanner plumbing checks: OCR thread cap, the per-monitor region picker,
 keeping the box right when the monitor changes, the scanner settings, HUD
-tracking (search area, OCR only on a match, anchor at SELECT and cleared on a
+tracking (search area, OCR only on a match, anchor at DRAW REGION and cleared on a
 monitor change) and the update source.
 
     python -m tools.scan_selftest
@@ -57,9 +57,9 @@ def _open_picker(fake_cursor: list, picked: list):
 
     picker = RegionSelector("selftest", cursor_pos=lambda: fake_cursor[0])
     picker.selected.connect(picked.append)
-    picker.show()
     for w in picker.windows:
-        w.setWindowOpacity(0.0)
+        w.setWindowOpacity(0.0)        # before show: never a visible frame
+    picker.show()
     QApplication.processEvents()
     return picker
 
@@ -108,15 +108,17 @@ def check_region_picker() -> int:
 def check_picker_on_one_monitor() -> int:
     from app.ui.region_selector import RegionSelector
 
-    screen = QGuiApplication.primaryScreen()
+    # A secondary monitor when there is one: keep tests off the game screen.
+    primary = QGuiApplication.primaryScreen()
+    screen = next((s for s in QGuiApplication.screens() if s is not primary), primary)
     picker = RegionSelector("selftest", screens=[screen])
-    picker.show()
     for w in picker.windows:
-        w.setWindowOpacity(0.0)
+        w.setWindowOpacity(0.0)        # before show: never a visible frame
+    picker.show()
     QApplication.processEvents()
     ok = len(picker.windows) == 1 and picker.windows[0].screen() is screen
     picker.close()
-    return _check("SELECT opens only on the chosen game monitor", ok)
+    return _check("DRAW REGION opens only on the chosen game monitor", ok)
 
 
 def check_rescale() -> int:
@@ -402,7 +404,7 @@ class _FakeSettings:
 
 def check_anchor_dropped_on_rescale() -> int:
     """A monitor change rescales the box; the saved pin is for the old
-    resolution, so tracking goes off and the note says to press SELECT."""
+    resolution, so tracking goes off and the note says to press DRAW REGION."""
     from app import main as main_mod
     from app.config import Config
 
@@ -444,14 +446,14 @@ def check_anchor_dropped_on_rescale() -> int:
                            len(fake.applied) == 1 and cfg["anchor"] is None
                            and {"anchor": None} in fake.scan.calls,
                            f"(applied {fake.applied}, anchor {cfg['anchor']}, scan {fake.scan.calls})")
-        failures += _check(f"{label}: note says press SELECT to turn tracking back on",
-                           "press SELECT to turn it back on" in fake.settings.note,
+        failures += _check(f"{label}: note says press DRAW REGION to turn tracking back on",
+                           "press DRAW REGION to turn it back on" in fake.settings.note,
                            f"(note {fake.settings.note!r})")
     return failures
 
 
 def check_calibration_anchor() -> int:
-    """SELECT looks for the pin around the new box: saved and handed to the
+    """DRAW REGION looks for the pin around the new box: saved and handed to the
     scanner when found, otherwise the fixed box and the amber note."""
     import tempfile
 

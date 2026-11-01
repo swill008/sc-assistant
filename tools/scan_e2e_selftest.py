@@ -17,7 +17,7 @@ on a secondary monitor, or the primary if there is only one, then:
    42,000, READS / S changes the live scan interval and the saved config, SHOW
    BOX shows and F4 hides the outline, a monitor resolution change rescales the
    box and says so, the monitor choice is saved, and QUIT stops the scanner;
-5. HUD tracking, inside that app: SELECT on the box saves the pin anchor;
+5. HUD tracking, inside that app: DRAW REGION on the box saves the pin anchor;
    with the signature moved by a HUD-sized sway (+150, +100 px) the scanner
    still reads it, its ``tracked`` rect sits on the moved digits and the fixed
    box alone would not read it; SHOW BOX follows the digits; with the
@@ -195,9 +195,9 @@ def part_screen_path(screen) -> tuple[int, dict | None]:
     picked: list[dict] = []
     picker = RegionSelector("e2e", cursor_pos=lambda: cursor[0], screens=[screen])
     picker.selected.connect(picked.append)
-    picker.show()
     for w in picker.windows:
-        w.setWindowOpacity(0.0)
+        w.setWindowOpacity(0.0)        # before show: never a visible frame
+    picker.show()
     QApplication.processEvents()
     win = picker.windows[0]
     QTest.mousePress(win, Qt.MouseButton.LeftButton, Qt.KeyboardModifier.NoModifier, QPoint(10, 10))
@@ -251,6 +251,7 @@ def part_app(screen, shown: dict) -> int:
     cfg["region_monitor"] = mon
     cfg["game_monitor"] = screen.name()
     cfg["voice_enabled"] = False
+    cfg["nav_visible"] = False            # keep the nav bar off the game screen
     cfg.save()
 
     app = QApplication.instance()
@@ -264,6 +265,7 @@ def part_app(screen, shown: dict) -> int:
         overlay.scan.tracked.connect(
             lambda rect: seen["tracked"].append((time.monotonic(), rect)))
     overlay.start()
+    overlay.panel.hide()                  # the scanner panel opens on the main screen
 
     # The real scan thread (low priority, 1 OCR thread) reads the live box.
     end = time.monotonic() + 8
@@ -321,7 +323,10 @@ def part_app(screen, shown: dict) -> int:
                        f"({[box.itemText(i) for i in range(box.count())]})")
     failures += _check("MONITOR list shows the game monitor",
                        box.currentData() == screen.name(), f"(current {box.currentData()!r})")
-    other = next((s for s in QGuiApplication.screens() if s is not screen), None)
+    # Another side monitor if there is one, so the moved box stays off the game screen.
+    primary = QGuiApplication.primaryScreen()
+    others = [s for s in QGuiApplication.screens() if s is not screen]
+    other = next((s for s in others if s is not primary), others[0] if others else None)
     if other is not None:
         before = dict(overlay.cfg["region"])
         box.setCurrentIndex(box.findData(other.name()))
@@ -366,18 +371,18 @@ def part_tracking(overlay, shown: dict, seen: dict) -> int:
     def outline_now():
         return win32.physical_window_rect(overlay.outline) if overlay.outline.isVisible() else None
 
-    # 1. SELECT through the app with the plate on the drawn box: the app grabs
+    # 1. DRAW REGION through the app with the plate on the drawn box: the app grabs
     #    the screen around it and saves the pin anchor.
     overlay._on_region_selected(dict(region))
     _pump(0.3)
     meta = overlay.cfg.get("anchor")
     saved = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-    failures += _check("SELECT saves the pin anchor in the config",
+    failures += _check("DRAW REGION saves the pin anchor in the config",
                        bool(meta) and saved.get("anchor") == meta, f"(anchor {meta})")
     png = config_dir() / "anchor.png"
-    failures += _check("SELECT writes anchor.png in the config folder", png.is_file(), f"({png})")
+    failures += _check("DRAW REGION writes anchor.png in the config folder", png.is_file(), f"({png})")
     note = overlay.settings.region_note
-    failures += _check("no 'No pin icon' note after SELECT", "No pin icon" not in note.text(),
+    failures += _check("no 'No pin icon' note after DRAW REGION", "No pin icon" not in note.text(),
                        f"(note {note.text()!r})")
     ok = _wait(lambda: overlay._last_value == EXPECTED and _on_digits(last_tracked(), region))
     failures += _check(f"tracking reads {EXPECTED:,} on the calibrated box", ok,

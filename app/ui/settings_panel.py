@@ -1,8 +1,9 @@
 """Settings window: capture region, scanning controls and data info."""
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QGuiApplication, QImage, QPen, QPixmap
+from PySide6.QtCore import QRectF, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtGui import (QColor, QDesktopServices, QFont, QGuiApplication,
+                           QImage, QPen, QPixmap)
 from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QPushButton,
                                QSlider, QVBoxLayout, QWidget)
 
@@ -38,6 +39,9 @@ class _UpdateWorker(QThread):
             if self._mode == "check":
                 _installed, published, _newer = updater.newest()
                 self.done.emit("check", published)
+            elif updater.is_frozen():
+                # Installed EXE: fetch the release's Setup.exe; the app runs it.
+                self.done.emit("install", str(updater.download_setup()))
             else:
                 self.done.emit("apply", updater.apply())
         except Exception as exc:      # surface it, never take the app down
@@ -123,6 +127,7 @@ class SettingsPanel(QWidget):
     capture_toggled = Signal(bool)
     ui_scale_changed = Signal(int)
     restart_requested = Signal()
+    install_requested = Signal(str)   # downloaded Setup.exe to run after quitting
     monitor_changed = Signal(str)     # Qt screen name of the game monitor
     reads_changed = Signal(int)       # scans per second, 1-8
     outline_toggled = Signal(bool)    # draw the capture box on screen
@@ -316,7 +321,7 @@ class SettingsPanel(QWidget):
 
         # Resolution and scaling are read from Windows, not typed in: the
         # list shows each monitor's real size and scaling, and choosing one
-        # tells SELECT where the game is.
+        # tells DRAW REGION where the game is.
         monitor_row = QHBoxLayout()
         monitor_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
         monitor_row.setSpacing(theme.px(8))
@@ -331,7 +336,7 @@ class SettingsPanel(QWidget):
         self.monitor_box.setFixedHeight(theme.px(24))
         self.monitor_box.setToolTip(
             "The monitor Star Citizen runs on. Resolution and scaling are read "
-            "from Windows; SELECT opens on this monitor.")
+            "from Windows; DRAW REGION opens on this monitor.")
         self.monitor_box.setStyleSheet(theme.qss("""
             QComboBox {
                 color: rgba(200,214,228,0.95); background: rgba(79,209,224,0.06);
@@ -357,7 +362,22 @@ class SettingsPanel(QWidget):
         self.region_label = QLabel("Not calibrated")
         self.region_label.setFont(theme.font(9))
         self.region_label.setStyleSheet(theme.qss("color: rgba(150,166,182,0.95); background: transparent;"))
-        self.region_btn = _button("SELECT")
+        self.region_btn = _button("DRAW REGION")
+        # Red, like QUIT on the nav bar: the one control here that changes
+        # what the scanner reads (and saves the tracking pin).
+        self.region_btn.setStyleSheet(theme.qss("""
+            QPushButton {
+                color: #ffd9d9; background: rgba(232,106,106,0.22);
+                border: 1px solid rgba(232,106,106,0.70); border-radius: 7px;
+                font-size: 8px; font-weight: 600;
+                letter-spacing: 1.0px; padding: 0 10px;
+            }
+            QPushButton:hover { background: rgba(232,106,106,0.40); color: #ffffff; }
+            QPushButton:disabled {
+                color: rgba(130,148,166,0.55); background: rgba(232,106,106,0.05);
+                border-color: rgba(232,106,106,0.20);
+            }
+        """))
         self.region_btn.clicked.connect(self.region_requested.emit)
         region_row.addWidget(self.region_label, 1)
         region_row.addWidget(self.region_btn)
@@ -423,7 +443,7 @@ class SettingsPanel(QWidget):
         self.tracking_slider.setToolTip(
             "How far the scanner follows the signature when the HUD sways. "
             "OFF reads the fixed box only. Needs the pin icon left of the box "
-            "when you press SELECT.")
+            "when you press DRAW REGION.")
         self.tracking_slider.valueChanged.connect(self._on_tracking)
         self.tracking_label = QLabel(_tracking_text(400))
         self.tracking_label.setFixedWidth(theme.px(48))
@@ -603,16 +623,23 @@ class SettingsPanel(QWidget):
     def _on_update_clicked(self) -> None:
         if self._update_worker is not None and self._update_worker.isRunning():
             return
-        if updater.is_frozen():
+        mode = "apply" if self._pending_version else "check"
+        if mode == "apply" and updater.standalone():
+            # An unzipped copy: Setup would install a second one elsewhere.
+            QDesktopServices.openUrl(QUrl(updater.RELEASES_PAGE))
             self.update_hint.setText(
-                "EXE build: download a new copy to update")
+                f"Standalone copy: download v{self._pending_version} from the "
+                "Releases page (opened), or use the installer")
             return
 
-        mode = "apply" if self._pending_version else "check"
         self.update_btn.setEnabled(False)
         self.update_btn.setText("…")
-        self.update_hint.setText(
-            "Copying the newest files…" if mode == "apply" else "Checking GitHub…")
+        if mode == "check":
+            self.update_hint.setText("Checking GitHub…")
+        elif updater.is_frozen():
+            self.update_hint.setText(f"Downloading the v{self._pending_version} installer…")
+        else:
+            self.update_hint.setText("Copying the newest files…")
 
         worker = _UpdateWorker(mode, self)
         worker.done.connect(self._on_update_done)
@@ -633,6 +660,16 @@ class SettingsPanel(QWidget):
                 self.update_hint.setText(
                     f"Up to date · GitHub has v{value or '?'}")
                 self.update_btn.setText("CHECK")
+            return
+
+        if mode == "install":
+            # value is the downloaded Setup.exe; the app hands it off and quits.
+            version = self._pending_version
+            self._pending_version = ""
+            self.update_hint.setText(
+                f"Installing v{version} · Citizen Assistant closes and starts again by itself")
+            self.update_btn.setText("CHECK")
+            self.install_requested.emit(value)
             return
 
         self._pending_version = ""
@@ -662,10 +699,10 @@ class SettingsPanel(QWidget):
             self.region_label.setText(
                 f"{region['width']} × {region['height']} px  ·  "
                 f"({region['left']}, {region['top']})")
-            self.region_btn.setText("CHANGE")
+            self.region_btn.setText("DRAW REGION")
         else:
             self.region_label.setText("Not calibrated")
-            self.region_btn.setText("SELECT")
+            self.region_btn.setText("DRAW REGION")
 
     def set_region_note(self, text: str) -> None:
         self.region_note.setText(text)

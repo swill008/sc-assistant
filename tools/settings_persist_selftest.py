@@ -5,7 +5,7 @@
 Runs the real OverlayApp twice against a temporary settings folder (your own
 %APPDATA% is never touched). The first run changes READS / S, TRACKING, SHOW
 BOX and MONITOR through the Settings controls, saves a pin from the 5K2K test
-image the way SELECT does, and quits with QUIT. The file on disk must hold
+image the way DRAW REGION does, and quits with QUIT. The file on disk must hold
 every change; the second run, started from that file, must show each one in
 Settings and use it in the scanner.
 """
@@ -61,7 +61,8 @@ def main() -> int:
     # Start on a secondary monitor so nothing covers the game; switch to
     # another monitor through the MONITOR list.
     start = next((s for s in screens if s is not primary), primary)
-    other = next((s for s in screens if s is not start), None)
+    others = [s for s in screens if s is not start]
+    other = next((s for s in others if s is not primary), others[0] if others else None)
     mon = display.physical_rect(start)
     region = {"left": mon["left"] + mon["width"] // 2, "top": mon["top"] + mon["height"] // 2,
               "width": DIGITS[2], "height": DIGITS[3]}
@@ -70,6 +71,7 @@ def main() -> int:
     cfg["region_monitor"] = mon
     cfg["game_monitor"] = start.name()
     cfg["voice_enabled"] = False
+    cfg["nav_visible"] = False            # keep the nav bar off the game screen
     cfg.save()
     print(f"settings folder {config_dir()}")
     print("-" * 78)
@@ -78,6 +80,7 @@ def main() -> int:
     print("First run: change the settings, then QUIT")
     one = OverlayApp(app, Config.load())
     one.start()
+    one.panel.hide()                      # the scanner panel opens on the main screen
     _pump(0.5)
     s = one.settings
     want_monitor = other.name() if other is not None else start.name()
@@ -87,7 +90,7 @@ def main() -> int:
     s.reads_slider.setValue(6)
     s.tracking_slider.setValue(250)
     s.outline_btn.setChecked(True)
-    # Save a pin the way SELECT does, from the 5K2K image, on the new box.
+    # Save a pin the way DRAW REGION does, from the 5K2K image, on the new box.
     box = one.cfg["region"]
     image = cv2.imread(str(FIXTURE))
     origin = (box["left"] - DIGITS[0], box["top"] - DIGITS[1])
@@ -117,6 +120,7 @@ def main() -> int:
     print("Second run: start from the saved file")
     two = OverlayApp(app, Config.load())
     two.start()
+    two.panel.hide()
     _pump(0.8)
     s = two.settings
     failures += _check("READS / S shows 6", s.reads_slider.value() == 6 and s.reads_label.text() == "6 / s",

@@ -245,9 +245,9 @@ class ScanThread(QThread):
 
 # ---------------------------------------------------------------------------
 _NO_PIN_NOTE = ("No pin icon found left of the box: tracking is off. Press "
-                "SELECT with the scan readout on screen to turn it on.")
+                "DRAW REGION with the scan readout on screen to turn it on.")
 _TRACKING_DROPPED = (" Tracking is off (the saved pin was for the old "
-                     "resolution): press SELECT to turn it back on.")
+                     "resolution): press DRAW REGION to turn it back on.")
 
 
 def _calibration_area(region: dict) -> dict:
@@ -483,6 +483,7 @@ class OverlayApp(QObject):
         self.settings.capture_toggled.connect(self._on_capture_visible)
         self.settings.ui_scale_changed.connect(self._on_ui_scale)
         self.settings.restart_requested.connect(self.restart)
+        self.settings.install_requested.connect(self._install_update)
         self.settings.reload_requested.connect(self._reload_data)
         self.settings.close_requested.connect(self.settings.hide)
         self.settings.reads_changed.connect(self._on_reads)
@@ -524,7 +525,7 @@ class OverlayApp(QObject):
         menu.addAction(act_combat)
 
         menu.addSeparator()
-        act_region = QAction("Select capture region…", self)
+        act_region = QAction("Draw capture region…", self)
         act_region.triggered.connect(self.select_region)
         menu.addAction(act_region)
 
@@ -1079,7 +1080,7 @@ class OverlayApp(QObject):
         self.settings.set_region_note(
             f"Monitor changed ({recorded['width']}×{recorded['height']} → "
             f"{now['width']}×{now['height']}): box adjusted to match. Check "
-            "SHOW PREVIEW or SHOW BOX; press SELECT if it is off."
+            "SHOW PREVIEW or SHOW BOX; press DRAW REGION if it is off."
             + (_TRACKING_DROPPED if dropped else ""))
 
     def _on_game_monitor(self, name: str) -> None:
@@ -1094,7 +1095,7 @@ class OverlayApp(QObject):
             self._apply_region(display.rescale(region, recorded, now), now, name)
             self.settings.set_region_note(
                 f"Box moved to {display.screen_label(screen)}. Check SHOW "
-                "PREVIEW or SHOW BOX; press SELECT if it is off."
+                "PREVIEW or SHOW BOX; press DRAW REGION if it is off."
                 + (_TRACKING_DROPPED if dropped else ""))
         else:
             self.cfg["game_monitor"] = name
@@ -1137,7 +1138,7 @@ class OverlayApp(QObject):
         self.scan.configure(tracking_range=self.cfg["tracking_range"])
 
     def _load_anchor(self):
-        """The pin icon saved at the last SELECT, or None (fixed box)."""
+        """The pin icon saved at the last DRAW REGION, or None (fixed box)."""
         meta = self.cfg.get("anchor")
         if not meta or self.demo:
             return None
@@ -1438,6 +1439,22 @@ class OverlayApp(QObject):
         if not started:
             self.panel.set_state("error")
             self.panel.set_scan_idle("Restart failed - quit and start again")
+            return
+        self.quit()
+
+    def _install_update(self, setup_path: str) -> None:
+        """Installed EXE: run the downloaded Setup once this copy has quit.
+
+        Setup refuses while Citizen Assistant runs, so it is started by a
+        helper that waits for this process to exit; Setup then replaces the
+        files and starts the new version (/LAUNCH=1).
+        """
+        from . import updater
+
+        try:
+            updater.run_installer(Path(setup_path))
+        except Exception as exc:          # never quit without a hand-off
+            self.settings.update_hint.setText(f"Update failed: {exc}")
             return
         self.quit()
 

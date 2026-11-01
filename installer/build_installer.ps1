@@ -3,11 +3,17 @@
 #   installer\build_installer.ps1                    # dist\CitizenAssistant -> dist\
 #   installer\build_installer.ps1 -DistDir X -OutDir Y
 #   installer\build_installer.ps1 -Test             # "Citizen Assistant Test" edition for test_installer.ps1
-param([string]$Iscc = "", [string]$DistDir = "", [string]$OutDir = "", [switch]$Test)
+#   installer\build_installer.ps1 -Test -TestVersion 1.2.99   # a "newer" test edition for the update test
+# (PowerShell names ignore case: the override must not be called $Version.)
+param([string]$Iscc = "", [string]$DistDir = "", [string]$OutDir = "", [switch]$Test, [string]$TestVersion = "")
 
 $root = Split-Path -Parent $PSScriptRoot
 $line = Select-String -Path (Join-Path $root "app\version.py") -Pattern '^VERSION\s*=\s*"([^"]+)"'
 $version = $line.Matches[0].Groups[1].Value
+if ($TestVersion) {
+    if (-not $Test) { throw "-TestVersion is only for test builds: a release must match app/version.py." }
+    $version = $TestVersion
+}
 if (-not $Iscc) {
     $Iscc = @(
         "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe",

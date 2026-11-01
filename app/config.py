@@ -81,7 +81,7 @@ DEFAULTS: dict = {
     # scanner follows the swaying signature plate, for a 2160-px-high monitor
     # (scaled by monitor height; vertical is 0.75x). 0 reads the fixed box.
     "tracking_range": 400,
-    # Pin icon found left of the box at SELECT (tracking.Anchor.save meta);
+    # Pin icon found left of the box at DRAW REGION (tracking.Anchor.save meta);
     # the picture is anchor.png in the config folder. None = fixed box only.
     "anchor": None,
     "show_debug_preview": False,

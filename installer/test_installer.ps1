@@ -8,7 +8,13 @@
 # installed program for real, which needs no Citizen Assistant running (they
 # share the single-instance mutex): quit it first. Settings in
 # %APPDATA%\Citizen Assistant must come through unchanged, and are checked.
-param([Parameter(Mandatory)][string]$Setup, [string]$Dir = "$env:TEMP\ca-install-test")
+#
+# With -NewerSetup (a test edition built with -TestVersion, e.g. 1.2.99) it also
+# checks the in-app update hand-off: the real app.updater.run_installer waits
+# for the running program to quit, runs that Setup silently, and Setup starts
+# the new version.
+param([Parameter(Mandatory)][string]$Setup, [string]$Dir = "$env:TEMP\ca-install-test",
+      [string]$NewerSetup = "")
 
 $ErrorActionPreference = "Stop"
 $Setup = (Resolve-Path $Setup).Path
@@ -45,7 +51,13 @@ function RunSetup([string[]]$extra) {
 # The installed program, run for real with a temporary settings folder.
 function StartApp {
     if (Test-Path $tmpData) { Remove-Item -Recurse -Force $tmpData }
-    New-Item -ItemType Directory $tmpData | Out-Null
+    New-Item -ItemType Directory "$tmpData\Citizen Assistant" | Out-Null
+    # Keep the program off the main (game) screen: no nav bar, and the scanner
+    # panel on the first secondary monitor (Qt logical position, from Qt).
+    $pos = & (Join-Path (Split-Path -Parent $PSScriptRoot) ".venv\Scripts\python.exe") -c "from PySide6.QtGui import QGuiApplication as G; a = G([]); p = G.primaryScreen(); s = next((x for x in G.screens() if x is not p), p).geometry(); print(s.x() + 60, s.y() + 60)"
+    $xy = ($pos -split ' ') | ForEach-Object { [int]$_ }
+    @{ nav_visible = $false; voice_enabled = $false; mining_panel_pos = $xy } | ConvertTo-Json |
+        Set-Content "$tmpData\Citizen Assistant\config.json" -Encoding utf8
     $psi = New-Object Diagnostics.ProcessStartInfo $exe
     $psi.UseShellExecute = $false
     $psi.EnvironmentVariables["APPDATA"] = $tmpData
@@ -125,6 +137,39 @@ Check "setup refuses" ($r.Code -ne 0) "(exit $($r.Code))"
 Check "says the program is still running" ((Get-Content $r.Log -Raw) -match "still running")
 Check "previous version put back intact" ((Test-Path "$Dir\_internal\python313.dll") -and (Get-FileHash $exe).Hash -eq $exeHash)
 Check "no half-moved files left" (NoLeftovers)
+
+# 5b. In-app update hand-off --------------------------------------------------
+if ($NewerSetup) {
+    Write-Host "5b. In-app update hand-off (app.updater.run_installer)"
+    $NewerSetup = (Resolve-Path $NewerSetup).Path
+    $newVersion = [regex]::Match((Split-Path $NewerSetup -Leaf), '(\d+\.\d+\.\d+)').Groups[1].Value
+    $repo = Split-Path -Parent $PSScriptRoot
+    $py = Join-Path $repo ".venv\Scripts\python.exe"
+    $app = StartApp
+    # The hand-off and the Setup/app it starts inherit this temporary settings
+    # folder, so the relaunched program never reads real settings.
+    $savedAppData = $env:APPDATA
+    $env:APPDATA = $tmpData
+    try {
+        & $py -c "import sys; sys.path.insert(0, r'$repo'); from pathlib import Path; from app import updater; updater.run_installer(Path(r'$NewerSetup'), wait_for_pid=$($app.Id))"
+    } finally { $env:APPDATA = $savedAppData }
+    Start-Sleep 3
+    Check "Setup waits while the program runs" ((Get-ItemProperty $uninstKey).DisplayVersion -eq $version -and -not $app.HasExited)
+    # The program quits, as Citizen Assistant does right after the hand-off.
+    StopApp $app
+    $end = (Get-Date).AddSeconds(90); $relaunched = $null
+    while ((Get-Date) -lt $end) {
+        $now = (Get-ItemProperty $uninstKey -ErrorAction SilentlyContinue).DisplayVersion
+        $relaunched = Get-Process CitizenAssistant -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq $exe }
+        if ($now -eq $newVersion -and $relaunched) { break }
+        Start-Sleep 1
+    }
+    Check "Setup ran after the quit: v$newVersion installed" ($now -eq $newVersion) "(DisplayVersion $now)"
+    Check "the new version was started (/LAUNCH=1)" ($null -ne $relaunched)
+    Check "no leftovers after the update" (NoLeftovers)
+    $relaunched | ForEach-Object { $_.Kill(); $_.WaitForExit(5000) | Out-Null }
+    Start-Sleep 1
+}
 
 # 6. Uninstall while the real program runs, then after quitting --------------
 Write-Host "6. Uninstall"
