@@ -46,13 +46,20 @@ jobs:
       - name: Build
         run: pyinstaller --noconfirm --clean citizen-assistant.spec
 
-      - name: Package
+      - name: Package standalone zip
         run: Compress-Archive -Path dist/CitizenAssistant/* -DestinationPath CitizenAssistant-windows-x64.zip
+
+      # Inno Setup 6 is preinstalled on windows-latest.
+      - name: Build installer
+        shell: pwsh
+        run: installer\build_installer.ps1
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: CitizenAssistant-windows-x64
-          path: CitizenAssistant-windows-x64.zip
+          path: |
+            CitizenAssistant-windows-x64.zip
+            dist/CitizenAssistant-*-Setup.exe
           if-no-files-found: error
           retention-days: 30

@@ -1,5 +1,51 @@
 # Changes
 
+## v1.2.18 — 2026-11-01
+
+Adds a Windows installer next to the standalone download. The program itself
+is unchanged from v1.2.17 (see below for its fixes).
+
+### New: installer
+
+Each release now has two downloads with the same program inside:
+
+- **CitizenAssistant-X.Y.Z-Setup.exe** — installs for the current Windows user
+  only (no administrator rights) into `%LOCALAPPDATA%\Programs\Citizen
+  Assistant`, with a Start menu entry, an uninstaller (also in *Settings →
+  Apps*), and optional desktop and *Start when Windows starts* shortcuts.
+- **CitizenAssistant-windows-x64.zip** — the standalone folder, as before.
+
+Running a newer Setup updates in place. It moves the old program files aside
+first and removes them only once the new ones are in; if the install fails, or
+Citizen Assistant is still running, it puts the old version back and says so.
+Settings in `%APPDATA%\Citizen Assistant` are never touched by install, update
+or uninstall. The script, `installer/citizen_assistant.iss` (Inno Setup 6),
+follows the Gremlin-Platforms installer.
+
+### Release and build workflows
+
+- Releases publish both downloads; a tag push releases automatically (Actions
+  is now enabled on this fork), and a release can also be run by hand for an
+  existing tag.
+- Every push to `main` runs the headless self-tests and builds both downloads
+  as a test artifact.
+- The release text comes from this file.
+
+### Tests
+
+`installer/test_installer.ps1` installs the built Setup silently into a
+throwaway folder and checks: a fresh install (files, Start menu shortcuts and
+target, *installed apps* entry and version, per-user); that the installed
+program starts and stays running with no error log; an upgrade in place; an
+upgrade while the program's files are in use (refused, previous version put
+back intact); the uninstall (files, shortcuts and entry removed); and that
+`%APPDATA%\Citizen Assistant` is byte-for-byte unchanged. All 26 checks passed
+on the v1.2.17 build.
+
+Note: building from a deep folder fails on Windows' 260-character path limit
+(the deepest bundled file is 111 characters); keep the checkout in a short
+path.
+
 ## v1.2.17 — 2026-11-01
 
 Fixes for 5K2K and mixed-scaling desks, and for game stutter while the scanner

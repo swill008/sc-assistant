@@ -92,17 +92,33 @@ Settings and notes from an older `SC-Overlay` folder (`config.json`,
 `Citizen Assistant` folder automatically on first run, so the region
 calibration and stash notes carry over.
 
-### Prebuilt EXE
+### Prebuilt EXE: installer or standalone
 
-Download **CitizenAssistant-windows-x64.zip** from the
-[Releases](https://github.com/swill008/citizen-assistant/releases) page, unzip
-it, and run `CitizenAssistant.exe`. Keep the folder intact: the executable needs
-the files next to it.
+Each [release](https://github.com/swill008/citizen-assistant/releases) has two
+downloads with the same program inside:
 
-The EXE is unsigned, so SmartScreen warns on first run — choose **More info →
-Run anyway**. It also cannot update itself, because Windows will not let a
-running `.exe` replace its own files, so a new release means downloading it
-again. The `install.bat` route updates in place from `⚙` → **UPDATE**.
+| Download | What it is |
+| --- | --- |
+| **CitizenAssistant-X.Y.Z-Setup.exe** | Installer. Installs for your Windows user only (no administrator rights) into `%LOCALAPPDATA%\Programs\Citizen Assistant` by default, adds a Start menu entry and an uninstaller (also under *Settings → Apps*), and optionally a desktop shortcut and *Start when Windows starts*. Running a newer Setup installs over the old version. |
+| **CitizenAssistant-windows-x64.zip** | Standalone. Unzip anywhere and run `CitizenAssistant.exe`; nothing is installed. Keep the folder intact: the program needs the files next to it. |
+
+Settings, notes and caches live in `%APPDATA%\Citizen Assistant` for both, so
+they carry over between versions and between the two kinds; installing,
+updating or uninstalling never touches them.
+
+**Updating with the installer.** Quit Citizen Assistant (QUIT on the nav bar)
+and run the new Setup. It moves the old program files aside first and deletes
+them only once the new ones are in; if anything fails, or the program is still
+running, it puts the old version back and says so, so the version that worked
+still starts. (`installer/citizen_assistant.iss`, same design as the
+Gremlin-Platforms installer.)
+
+**Updating the standalone.** Unzip the new release to a new folder (or over the
+old one after quitting it). A running `.exe` cannot replace its own files, so
+the in-app **UPDATE** only works for the `install.bat` route.
+
+Both are unsigned, so SmartScreen warns on first run — choose **More info →
+Run anyway**.
 
 Releases are produced by `.github/workflows/release.yml` when a `v*` tag is
 pushed, or by hand for an existing tag (Actions → *Release Windows EXE* → *Run
@@ -111,9 +127,10 @@ run push-triggered workflows until Actions has been enabled for it once, and a
 manual run works regardless. The job fails if the tag does not match `VERSION`
 in `app/version.py`, runs the headless self-tests before building, and uses
 that version's section of `CHANGES.md` as the release text (followed by
-GitHub's generated notes). `tools.scan_selftest` and `tools.scan_e2e_selftest`
-need real monitors, so run them locally before tagging.
-Pushes to `main` also build an artifact under **Actions** for testing, but those
+GitHub's generated notes). It publishes the standalone zip and the installer.
+`tools.scan_selftest` and `tools.scan_e2e_selftest` need real monitors, so run
+them locally before tagging.
+Pushes to `main` also build both under **Actions** as a test artifact, but those
 expire after 30 days and need a GitHub login.
 
 The build runs PyInstaller on `windows-latest` with the pinned versions from
@@ -125,7 +142,19 @@ To build locally on Windows:
 ```bat
 py -3.13 -m pip install -r requirements-lock.txt pyinstaller
 py -3.13 -m PyInstaller --noconfirm --clean citizen-assistant.spec
+powershell -File installer\build_installer.ps1
+powershell -File installer\test_installer.ps1 -Setup dist\CitizenAssistant-X.Y.Z-Setup.exe
 ```
+
+`build_installer.ps1` needs [Inno Setup 6](https://jrsoftware.org/isinfo.php)
+and writes `dist\CitizenAssistant-X.Y.Z-Setup.exe` (version from
+`app/version.py`). Keep the repository in a short path: the deepest bundled
+file is about 110 characters, and Windows' 260-character path limit makes the
+build fail from a deep folder. `test_installer.ps1` installs into a throwaway
+folder silently and checks a fresh install, that the program starts (skipped
+while another copy is running), an upgrade, an upgrade refused while the
+program's files are in use with the old version put back, the uninstall, and
+that `%APPDATA%\Citizen Assistant` is unchanged.
 
 The result is `dist\CitizenAssistant\CitizenAssistant.exe`.
 

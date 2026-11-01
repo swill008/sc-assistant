@@ -13,7 +13,8 @@ name: Release Windows EXE
 # The job refuses to publish when the tag does not match VERSION in
 # app/version.py, so a release can never advertise the wrong build number.
 # The release text is that version's section of CHANGES.md, followed by
-# GitHub's generated notes.
+# GitHub's generated notes. Two downloads are published: the standalone zip
+# (unzip and run) and CitizenAssistant-<version>-Setup.exe (installer).
 
 on:
   push:
@@ -97,8 +98,13 @@ jobs:
       - name: Build
         run: pyinstaller --noconfirm --clean citizen-assistant.spec
 
-      - name: Package
+      - name: Package standalone zip
         run: Compress-Archive -Path dist/CitizenAssistant/* -DestinationPath CitizenAssistant-windows-x64.zip
+
+      # Inno Setup 6 is preinstalled on windows-latest.
+      - name: Build installer
+        shell: pwsh
+        run: installer\build_installer.ps1
 
       - name: Publish release
         uses: softprops/action-gh-release@v2
@@ -106,6 +112,8 @@ jobs:
           tag_name: ${{ env.TAG }}
           name: ${{ env.TAG }}
           body_path: release_notes.md
-          files: CitizenAssistant-windows-x64.zip
+          files: |
+            CitizenAssistant-windows-x64.zip
+            dist/CitizenAssistant-*-Setup.exe
           fail_on_unmatched_files: true
           generate_release_notes: true
