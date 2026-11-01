@@ -33,6 +33,16 @@ jobs:
       - name: Import check
         run: python -c "import app.main; print('import ok')"
 
+      # Same headless self-tests as the release workflow. tools.scan_selftest
+      # and tools.scan_e2e_selftest need real monitors, so they run locally.
+      - name: Self-tests
+        run: |
+          python -m tools.selftest
+          python -m tools.workflow_selftest
+          python -m tools.refinery_selftest
+          python -m tools.combat_selftest
+          python -m tools.blueprint_selftest
+
       - name: Build
         run: pyinstaller --noconfirm --clean citizen-assistant.spec
 
