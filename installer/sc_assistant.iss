@@ -1,35 +1,49 @@
-; Citizen Assistant installer (Inno Setup 6).
+; SC Assistant installer (Inno Setup 6).
 ;
 ; Per-user install, no admin rights: Program Files would need them, and an
 ; install the user owns can be updated without a UAC prompt. Same design as
 ; the Gremlin-Platforms installer.
 ;
 ; Build with installer\build_installer.ps1 (after PyInstaller), or by hand:
-;   ISCC /DMyAppVersion=1.2.17 /DDistDir=<repo>\dist\CitizenAssistant installer\citizen_assistant.iss
+;   ISCC /DMyAppVersion=1.2.17 /DDistDir=<repo>\dist\SCAssistant installer\sc_assistant.iss
 
 #ifndef MyAppVersion
   #error Pass the version: ISCC /DMyAppVersion=X.Y.Z
 #endif
 #ifndef DistDir
-  #define DistDir "..\dist\CitizenAssistant"
+  #define DistDir "..\dist\SCAssistant"
 #endif
 #ifndef OutDir
   #define OutDir "..\dist"
 #endif
 
 #define MyAppPublisher "swill008"
-#define MyAppURL "https://github.com/swill008/citizen-assistant"
-#define MyAppExeName "CitizenAssistant.exe"
+#define MyAppURL "https://github.com/swill008/sc-assistant"
+#define MyAppExeName "SCAssistant.exe"
+; ONE-TIME (rename to SC Assistant): the program file before 1.0.0.
+#define OldExeName "CitizenAssistant.exe"
 #ifdef TestBuild
   ; installer\test_installer.ps1 builds this edition: its own name, AppId and
   ; folders, so testing never touches a real install.
-  #define MyAppName "Citizen Assistant Test"
+  #define MyAppName "SC Assistant Test"
   #define MyAppIdGuid "{{6F1D2A0B-5E51-4C59-9B67-2B7C0F3A9D14}"
-  #define MyOutputName "CitizenAssistant-" + MyAppVersion + "-TEST-Setup"
+  #define MyOutputName "SCAssistant-" + MyAppVersion + "-TEST-Setup"
+  ; ONE-TIME (rename to SC Assistant): the test edition's name before 1.0.0.
+  #define OldAppName "Citizen Assistant Test"
+  ; Only the new name: the user's real Citizen Assistant may be running while
+  ; the test runs, and the test edition must never wait on or stop it.
+  #define MyAppMutex "SCAssistantOverlay"
 #else
-  #define MyAppName "Citizen Assistant"
+  #define MyAppName "SC Assistant"
+  ; The same AppId as Citizen Assistant: 1.0.0 updates that install, it is
+  ; not a second program.
   #define MyAppIdGuid "{{C4736091-9D04-4E7B-B53D-4FA025CCB796}"
-  #define MyOutputName "CitizenAssistant-" + MyAppVersion + "-Setup"
+  #define MyOutputName "SCAssistant-" + MyAppVersion + "-Setup"
+  ; ONE-TIME (rename to SC Assistant): the name before 1.0.0.
+  #define OldAppName "Citizen Assistant"
+  ; ONE-TIME (rename to SC Assistant): CitizenAssistantOverlay is the mutex
+  ; of a running 1.2.x copy, which must quit before its folder is replaced.
+  #define MyAppMutex "SCAssistantOverlay,CitizenAssistantOverlay"
 #endif
 
 [Setup]
@@ -37,10 +51,10 @@
 AppId={#MyAppIdGuid}
 ; The app holds this mutex while it runs (app/main.py, single instance).
 ; Setup and the uninstaller check it before changing anything: interactively
-; they ask you to quit Citizen Assistant; silently they stop. Without it a
+; they ask you to quit SC Assistant; silently they stop. Without it a
 ; running copy's files were renamed aside, the update "succeeded" and the old
 ; version kept running.
-AppMutex=CitizenAssistantOverlay
+AppMutex={#MyAppMutex}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
@@ -52,9 +66,17 @@ VersionInfoVersion={#MyAppVersion}
 PrivilegesRequired=lowest
 DefaultDirName={autopf}\{#MyAppName}
 DisableDirPage=no
+; An update goes where the previous version is, except the old default folder
+; ...\Programs\Citizen Assistant: InitializeWizard sends that one to
+; ...\Programs\SC Assistant, and RemoveOldInstall deletes the old folder once
+; the install has finished.
 UsePreviousAppDir=yes
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+; The Start menu folder is always the app's name (there is no page to choose
+; it). Without this an update reuses the folder the previous version used, so
+; Citizen Assistant's folder would have held the SC Assistant shortcut.
+UsePreviousGroup=no
 LicenseFile=..\LICENSE
 OutputDir={#OutDir}
 OutputBaseFilename={#MyOutputName}
@@ -75,13 +97,14 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
-Name: "startup"; Description: "Start Citizen Assistant when Windows starts"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
+Name: "startup"; Description: "Start SC Assistant when Windows starts"; GroupDescription: "Additional shortcuts:"; Flags: unchecked
 
 ; The old version's program files are not deleted up front: PrepareToInstall
-; moves them aside (_internal.old, CitizenAssistant.exe.old) and they are
+; moves them aside (_internal.old, SCAssistant.exe.old) and they are
 ; removed only once the new ones are in, or put back if the install fails.
-; Settings, notes and caches live in %APPDATA%\Citizen Assistant and are never
-; touched, by install or uninstall.
+; Settings, notes and caches live in %APPDATA%\SC Assistant (the app moves
+; them there from %APPDATA%\Citizen Assistant) and are never touched, by
+; install or uninstall.
 
 [Files]
 Source: "{#DistDir}\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
@@ -102,6 +125,8 @@ Filename: "{app}\{#MyAppExeName}"; Flags: nowait; Check: LaunchAfterSilentUpdate
 Type: filesandordirs; Name: "{app}\_internal.old"
 Type: files; Name: "{app}\{#MyAppExeName}.old"
 Type: files; Name: "{app}\.update-in-progress"
+; ONE-TIME (rename to SC Assistant): a 1.2.x program file an update set aside.
+Type: files; Name: "{app}\{#OldExeName}.old"
 
 [Code]
 var
@@ -171,12 +196,14 @@ begin
   end;
 end;
 
-{ True when the chosen folder holds Citizen Assistant (its program, the copy
-  an update set aside, or an update that did not finish). }
+{ True when the chosen folder holds SC Assistant (its program, the copy an
+  update set aside, or an update that did not finish). ONE-TIME (rename to SC
+  Assistant): or Citizen Assistant, the same program before 1.0.0. }
 function OursIsHere: Boolean;
 begin
   Result := ExistsAt(AppFile('{#MyAppExeName}')) or
-    ExistsAt(AppFile('{#MyAppExeName}.old')) or FileExists(MarkerFile);
+    ExistsAt(AppFile('{#MyAppExeName}.old')) or FileExists(MarkerFile) or
+    ExistsAt(AppFile('{#OldExeName}')) or ExistsAt(AppFile('{#OldExeName}.old'));
 end;
 
 function PrepareToInstall(var NeedsRestart: Boolean): String;
@@ -189,7 +216,7 @@ begin
       aside and deleted, nor have ours copied into it. }
     if ExistsAt(AppFile('_internal')) then
       Result := 'The folder you chose already holds another program''s ' +
-        '_internal folder. Choose an empty folder for Citizen Assistant. ' +
+        '_internal folder. Choose an empty folder for SC Assistant. ' +
         'Nothing was changed.';
     Exit;
   end;
@@ -202,15 +229,19 @@ begin
       RemovePath(AppFile('_internal'));
     if ExistsAt(AppFile('{#MyAppExeName}.old')) then
       RemovePath(AppFile('{#MyAppExeName}'));
+    { ONE-TIME (rename to SC Assistant) }
+    if ExistsAt(AppFile('{#OldExeName}.old')) then
+      RemovePath(AppFile('{#OldExeName}'));
     MovedAside := True;
     Exit;
   end;
   { Leftovers of a finished install that could not delete them. }
   RemovePath(AppFile('_internal.old'));
   RemovePath(AppFile('{#MyAppExeName}.old'));
+  RemovePath(AppFile('{#OldExeName}.old'));   { ONE-TIME (rename to SC Assistant) }
   if not MoveAside('_internal') then
   begin
-    Result := 'Citizen Assistant is still running, so it could not be updated. ' +
+    Result := 'SC Assistant is still running, so it could not be updated. ' +
       'Quit it (QUIT on the nav bar, or the tray icon) and run setup again. ' +
       'Nothing was changed.';
     Exit;
@@ -218,14 +249,117 @@ begin
   if not MoveAside('{#MyAppExeName}') then
   begin
     PutBack('_internal');
+    Result := 'SC Assistant is still running, so it could not be updated. ' +
+      'Quit it (QUIT on the nav bar, or the tray icon) and run setup again. ' +
+      'Nothing was changed.';
+    Exit;
+  end;
+  { ONE-TIME (rename to SC Assistant): a 1.2.x install in a folder the user
+    chose is updated in place, and its CitizenAssistant.exe goes too. }
+  if not MoveAside('{#OldExeName}') then
+  begin
+    PutBack('{#MyAppExeName}');
+    PutBack('_internal');
     Result := 'Citizen Assistant is still running, so it could not be updated. ' +
       'Quit it (QUIT on the nav bar, or the tray icon) and run setup again. ' +
       'Nothing was changed.';
     Exit;
   end;
   MovedAside := True;
-  if ExistsAt(AppFile('_internal.old')) or ExistsAt(AppFile('{#MyAppExeName}.old')) then
+  if ExistsAt(AppFile('_internal.old')) or ExistsAt(AppFile('{#MyAppExeName}.old'))
+    or ExistsAt(AppFile('{#OldExeName}.old')) then
     SaveStringToFile(MarkerFile, 'update in progress', False);
+end;
+
+{ ---------------------------------------------------------------------------
+  ONE-TIME (rename to SC Assistant): moving a 1.2.x install out of
+  ...\Programs\Citizen Assistant. Can go once no 1.2.x installs remain.
+  Only the program is touched: its folder and the shortcuts that start it.
+  User data in %APPDATA% is never touched here. The test edition works on
+  "Citizen Assistant Test" names only, so it never reaches a real install.
+  --------------------------------------------------------------------------- }
+
+{ The folder 1.2.x installed into by default. }
+function OldDefaultDir: String;
+begin
+  Result := ExpandConstant('{autopf}\{#OldAppName}');
+end;
+
+function SamePath(const A, B: String): Boolean;
+begin
+  Result := CompareText(RemoveBackslashUnlessRoot(A),
+    RemoveBackslashUnlessRoot(B)) = 0;
+end;
+
+{ ONE-TIME (rename to SC Assistant): an update of a 1.2.x install in the old
+  default folder (UsePreviousAppDir offers that folder) goes to the new
+  default folder instead. A folder the user chose, or /DIR= naming another
+  folder, is kept. }
+procedure InitializeWizard;
+begin
+  if SamePath(WizardForm.DirEdit.Text, OldDefaultDir) then
+  begin
+    Log('Installing into the new folder instead of ' + OldDefaultDir);
+    WizardForm.DirEdit.Text := ExpandConstant('{autopf}\{#MyAppName}');
+  end;
+end;
+
+{ The file a shortcut starts, or '' when it can't be read. }
+function LinkTarget(const Path: String): String;
+var
+  Shell, Link: Variant;
+begin
+  Result := '';
+  try
+    Shell := CreateOleObject('WScript.Shell');
+    Link := Shell.CreateShortcut(Path);
+    Result := Link.TargetPath;
+  except
+    Result := '';
+  end;
+end;
+
+{ ONE-TIME (rename to SC Assistant): removes a shortcut named after 1.2.x
+  when it starts that program (CitizenAssistant.exe) or an uninstaller in the
+  old or the current program folder. A shortcut of that name that starts
+  anything else (e.g. a source copy) is left alone. }
+procedure RemoveOldShortcut(const Path: String);
+var
+  Target: String;
+begin
+  if not FileExists(Path) then
+    Exit;
+  Target := LinkTarget(Path);
+  if (CompareText(ExtractFileName(Target), '{#OldExeName}') = 0) or
+     ((CompareText(Copy(ExtractFileName(Target), 1, 5), 'unins') = 0) and
+      (SamePath(ExtractFileDir(Target), OldDefaultDir) or
+       SamePath(ExtractFileDir(Target), WizardDirValue))) then
+  begin
+    Log('Removing the old shortcut ' + Path);
+    DeleteFile(Path);
+  end;
+end;
+
+{ ONE-TIME (rename to SC Assistant): runs once the new version is in. }
+procedure RemoveOldInstall;
+var
+  Group: String;
+begin
+  { The old program folder: only when it holds the old program and is not
+    where this install went. }
+  if not SamePath(OldDefaultDir, WizardDirValue) and
+     FileExists(AddBackslash(OldDefaultDir) + '{#OldExeName}') then
+  begin
+    Log('Removing the old program folder ' + OldDefaultDir);
+    if not DelTree(OldDefaultDir, True, True, True) then
+      Log('Could not remove all of ' + OldDefaultDir);
+  end;
+  Group := ExpandConstant('{userprograms}\{#OldAppName}');
+  RemoveOldShortcut(AddBackslash(Group) + '{#OldAppName}.lnk');
+  RemoveOldShortcut(AddBackslash(Group) + 'Uninstall {#OldAppName}.lnk');
+  RemoveDir(Group);       { only when nothing else is left in it }
+  RemoveOldShortcut(ExpandConstant('{userdesktop}\{#OldAppName}.lnk'));
+  RemoveOldShortcut(ExpandConstant('{userstartup}\{#OldAppName}.lnk'));
 end;
 
 procedure CurStepChanged(CurStep: TSetupStep);
@@ -237,6 +371,8 @@ begin
     DeleteFile(MarkerFile);
     RemovePath(AppFile('_internal.old'));
     RemovePath(AppFile('{#MyAppExeName}.old'));
+    RemovePath(AppFile('{#OldExeName}.old'));   { ONE-TIME (rename to SC Assistant) }
+    RemoveOldInstall;                           { ONE-TIME (rename to SC Assistant) }
   end;
 end;
 
@@ -251,6 +387,7 @@ begin
     Log('Install did not finish; putting the previous version back.');
     PutBack('_internal');
     PutBack('{#MyAppExeName}');
+    PutBack('{#OldExeName}');                   { ONE-TIME (rename to SC Assistant) }
     DeleteFile(MarkerFile);
   end;
   { A silent update that didn't finish: start the version that is there
@@ -274,7 +411,7 @@ begin
   Result := ForceDirectories(Dir);
   if Result then
   begin
-    Probe := AddBackslash(Dir) + '.citizen_assistant_write_test';
+    Probe := AddBackslash(Dir) + '.sc_assistant_write_test';
     Result := SaveStringToFile(Probe, 'test', False);
     DeleteFile(Probe);
   end;

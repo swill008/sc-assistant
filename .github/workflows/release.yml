@@ -2,11 +2,11 @@ name: Release Windows EXE
 
 # Tag a commit to publish a download:
 #
-#   git tag v1.2.17
-#   git push origin v1.2.17
+#   git tag v1.0.0
+#   git push origin v1.0.0
 #
 # or run it by hand for a tag that already exists (Actions → Release Windows
-# EXE → Run workflow, or `gh workflow run release.yml -f tag=v1.2.17`). A
+# EXE → Run workflow, or `gh workflow run release.yml -f tag=v1.0.0`). A
 # fork does not run push-triggered workflows until Actions is enabled for it
 # once, and a manual run does not need that.
 #
@@ -15,7 +15,7 @@ name: Release Windows EXE
 # The release text is release-notes/<version>.md plus "How to install"
 # (tools/release_body.py), followed by GitHub's generated notes. Two
 # downloads are published: the standalone zip (unzip and run) and
-# CitizenAssistant-<version>-Setup.exe (installer).
+# SCAssistant-<version>-Setup.exe (installer).
 
 on:
   push:
@@ -24,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Existing tag to release, e.g. v1.2.17"
+        description: "Existing tag to release, e.g. v1.0.0"
         required: true
 
 permissions:
@@ -70,15 +70,20 @@ jobs:
       - name: Import check
         run: python -c "import app.main; print('import ok')"
 
-      # The headless self-tests. tools.scan_selftest and
-      # tools.scan_e2e_selftest need real monitors, so they run locally.
+      # The headless self-tests. The Qt self-tests (scan, scan_e2e, overlay,
+      # update, hotkeys, settings_persist, dataage, datasafety) need a display
+      # and tracking_selftest has a speed limit for a fast PC, so those run
+      # locally.
       - name: Self-tests
+        env:
+          PYTHONIOENCODING: utf-8
         run: |
           python -m tools.selftest
           python -m tools.workflow_selftest
           python -m tools.refinery_selftest
           python -m tools.combat_selftest
           python -m tools.blueprint_selftest
+          python -m tools.signature_selftest
 
       # RELEASE_CHECK=1 also fails when app/version.py's VERSION has no
       # release-notes/<version>.md.
@@ -86,6 +91,7 @@ jobs:
         run: python tools/release_notes_selftest.py
         env:
           RELEASE_CHECK: "1"
+          PYTHONIOENCODING: utf-8
 
       # Stops the release before the build when release-notes/<version>.md is
       # missing or its first line isn't "## What's new in <version>".
@@ -93,10 +99,10 @@ jobs:
         run: python tools/release_body.py "${{ env.TAG }}" --out release_notes.md
 
       - name: Build
-        run: pyinstaller --noconfirm --clean citizen-assistant.spec
+        run: pyinstaller --noconfirm --clean sc-assistant.spec
 
       - name: Package standalone zip
-        run: Compress-Archive -Path dist/CitizenAssistant/* -DestinationPath CitizenAssistant-windows-x64.zip
+        run: Compress-Archive -Path dist/SCAssistant/* -DestinationPath SCAssistant-windows-x64.zip
 
       # Inno Setup 6 is preinstalled on windows-latest.
       - name: Build installer
@@ -110,7 +116,7 @@ jobs:
           name: ${{ env.TAG }}
           body_path: release_notes.md
           files: |
-            CitizenAssistant-windows-x64.zip
-            dist/CitizenAssistant-*-Setup.exe
+            SCAssistant-windows-x64.zip
+            dist/SCAssistant-*-Setup.exe
           fail_on_unmatched_files: true
           generate_release_notes: true

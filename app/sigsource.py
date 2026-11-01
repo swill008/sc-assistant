@@ -25,6 +25,8 @@ import urllib.request
 from pathlib import Path
 from typing import Callable
 
+from .version import USER_AGENT
+
 BASE_URL = "https://scmdb.net/data/"
 VERSIONS_URL = BASE_URL + "versions.json"
 CACHE_NAME = "signatures_scmdb.json"
@@ -127,7 +129,7 @@ def valid(converted: dict | None) -> bool:
 
 
 def http_get(url: str, timeout: float = TIMEOUT) -> bytes:
-    req = urllib.request.Request(url, headers={"User-Agent": "CitizenAssistant"})
+    req = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         body = resp.read(MAX_BYTES + 1)
     if len(body) > MAX_BYTES:

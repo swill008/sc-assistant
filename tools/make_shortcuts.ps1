@@ -1,4 +1,4 @@
-# Create (or remove) the Citizen Assistant shortcuts.
+# Create (or remove) the SC Assistant shortcuts.
 #
 #   powershell -ExecutionPolicy Bypass -File tools\make_shortcuts.ps1
 #   powershell -ExecutionPolicy Bypass -File tools\make_shortcuts.ps1 -Startup
@@ -40,7 +40,32 @@ $searchDirs = @($desktop, $programs, $startupDir, $allUsers) |
     Where-Object { $_ -and (Test-Path $_) } |
     Select-Object -Unique
 
-$name = 'Citizen Assistant.lnk'
+$name = 'SC Assistant.lnk'
+# ONE-TIME (rename to SC Assistant): shortcuts a source copy made before
+# 1.0.0. Only ones that start a launcher.py / "-m app" through Python are
+# touched; an installed Citizen Assistant's shortcuts (CitizenAssistant.exe)
+# belong to its Setup and are left alone.
+$oldName = 'Citizen Assistant.lnk'
+
+function Test-SourceShortcut([string]$path) {
+    $lnk = (New-Object -ComObject WScript.Shell).CreateShortcut($path)
+    return ((Split-Path -Leaf $lnk.TargetPath) -like 'python*.exe')
+}
+
+function Remove-OldShortcuts {
+    foreach ($dir in $searchDirs) {
+        $path = Join-Path $dir $oldName
+        if (-not (Test-Path $path)) { continue }
+        try {
+            if (Test-SourceShortcut $path) {
+                Remove-Item $path -Force -ErrorAction Stop
+                Write-Host "Removed old shortcut $path"
+            }
+        } catch {
+            Write-Warning "Could not remove $path : $($_.Exception.Message)"
+        }
+    }
+}
 
 function Get-LinkArguments([string]$path) {
     $shell = New-Object -ComObject WScript.Shell
@@ -60,6 +85,7 @@ if ($Remove) {
             Write-Warning "Could not remove $path : $($_.Exception.Message)"
         }
     }
+    Remove-OldShortcuts         # ONE-TIME (rename to SC Assistant)
     exit 0
 }
 
@@ -92,6 +118,8 @@ foreach ($dir in $searchDirs) {
         Write-Warning "Could not update $path : $($_.Exception.Message)"
     }
 }
+
+Remove-OldShortcuts             # ONE-TIME (rename to SC Assistant)
 
 $targets = @(
     (Join-Path $desktop $name),

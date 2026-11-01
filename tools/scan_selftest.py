@@ -11,6 +11,10 @@ picker's ``cursor_pos`` hook, so it never moves the real mouse.
 """
 from __future__ import annotations
 
+from tools import _testguard
+
+_testguard.install()        # first: no focus, no hotkeys
+
 import os
 import sys
 import tempfile
@@ -19,7 +23,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
-# Never the user's %APPDATA%\Citizen Assistant: the config folder is
+# Never the user's %APPDATA%\SC Assistant: the config folder is
 # resolved when app.config is imported, so point it at a temp folder first.
 os.environ["APPDATA"] = tempfile.mkdtemp(prefix="ca_scan_selftest_")
 
@@ -486,8 +490,8 @@ def check_quit_button() -> int:
 def check_updater_source() -> int:
     from app import updater
 
-    return _check("UPDATE pulls from swill008/citizen-assistant",
-                  updater.REPO == "swill008/citizen-assistant", f"(REPO {updater.REPO})")
+    return _check("UPDATE pulls from swill008/sc-assistant",
+                  updater.REPO == "swill008/sc-assistant", f"(REPO {updater.REPO})")
 
 
 

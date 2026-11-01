@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QPushButton,
                                QSlider, QVBoxLayout, QWidget)
 
 from .. import updater
+from ..version import APP_NAME
 from ..version import label as build_label
 from . import theme
 from .pin_button import PinButton
@@ -838,7 +839,7 @@ class SettingsPanel(QWidget):
             tip = (f"This copy was unzipped, not installed: opens the Releases page "
                    f"to download v{version}")
         elif updater.is_frozen():
-            tip = (f"Download the v{version} installer; Citizen Assistant closes, "
+            tip = (f"Download the v{version} installer; {APP_NAME} closes, "
                    "installs it and starts again")
         else:
             tip = f"Copy the v{version} files from GitHub over this folder and restart"
@@ -871,7 +872,7 @@ class SettingsPanel(QWidget):
             self._installing = True
             self.update_btn.setEnabled(False)
             self.update_hint.setText(
-                f"Installing v{version} · Citizen Assistant closes and starts again by itself")
+                f"Installing v{version} · {APP_NAME} closes and starts again by itself")
             self.update_btn.setText("…")
             self.install_requested.emit(value)
             return

@@ -33,26 +33,33 @@ jobs:
       - name: Import check
         run: python -c "import app.main; print('import ok')"
 
-      # Same headless self-tests as the release workflow. tools.scan_selftest
-      # and tools.scan_e2e_selftest need real monitors, so they run locally.
+      # Same headless self-tests as the release workflow. The Qt self-tests
+      # (scan, scan_e2e, overlay, update, hotkeys, settings_persist, dataage,
+      # datasafety) need a display and tracking_selftest has a speed limit
+      # for a fast PC, so those run locally.
       - name: Self-tests
+        env:
+          PYTHONIOENCODING: utf-8
         run: |
           python -m tools.selftest
           python -m tools.workflow_selftest
           python -m tools.refinery_selftest
           python -m tools.combat_selftest
           python -m tools.blueprint_selftest
+          python -m tools.signature_selftest
 
       # Release notes tooling and the release workflow's notes step. The check
       # that app/version.py has a notes file runs only in the release workflow.
       - name: Release notes check
         run: python tools/release_notes_selftest.py
+        env:
+          PYTHONIOENCODING: utf-8
 
       - name: Build
-        run: pyinstaller --noconfirm --clean citizen-assistant.spec
+        run: pyinstaller --noconfirm --clean sc-assistant.spec
 
       - name: Package standalone zip
-        run: Compress-Archive -Path dist/CitizenAssistant/* -DestinationPath CitizenAssistant-windows-x64.zip
+        run: Compress-Archive -Path dist/SCAssistant/* -DestinationPath SCAssistant-windows-x64.zip
 
       # Inno Setup 6 is preinstalled on windows-latest.
       - name: Build installer
@@ -62,9 +69,9 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: CitizenAssistant-windows-x64
+          name: SCAssistant-windows-x64
           path: |
-            CitizenAssistant-windows-x64.zip
-            dist/CitizenAssistant-*-Setup.exe
+            SCAssistant-windows-x64.zip
+            dist/SCAssistant-*-Setup.exe
           if-no-files-found: error
           retention-days: 30

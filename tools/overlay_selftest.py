@@ -12,6 +12,10 @@ mouse never moves. APPDATA points at a temporary folder.
 """
 from __future__ import annotations
 
+from tools import _testguard
+
+_testguard.install()        # first: no focus, no hotkeys
+
 import os
 import sys
 import tempfile

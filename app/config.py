@@ -1,25 +1,32 @@
 """Persistent user settings, stored per OS outside OneDrive.
 
-Windows: %APPDATA%\\Citizen Assistant
-macOS:   ~/Library/Application Support/Citizen Assistant
-Linux:   $XDG_CONFIG_HOME/Citizen Assistant (or ~/.config)
+Windows: %APPDATA%\\SC Assistant
+macOS:   ~/Library/Application Support/SC Assistant
+Linux:   $XDG_CONFIG_HOME/SC Assistant (or ~/.config)
 
 Older builds used an "SC-Overlay" folder; the user files are copied over on
-first run so the region calibration and notes survive the rename.
+first run so the region calibration and notes survive the rename.  Builds
+before 1.0.0 were called Citizen Assistant; that folder is moved over once.
 """
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import subprocess
 import sys
 from pathlib import Path
 
+from .version import APP_NAME, OLD_APP_NAME
 
-APP_NAME = "Citizen Assistant"
+log = logging.getLogger(__name__)
+
 LEGACY_APP_NAMES = ("SC-Overlay",)
 MIGRATE_FILES = ("config.json", "inventory.json", "unlocked_blueprints.json")
+
+# Settings folder chosen for each base folder, so the move below runs once.
+_RESOLVED: dict[Path, Path] = {}
 
 
 def _migrate_legacy(base: Path, target: Path) -> None:
@@ -38,14 +45,66 @@ def _migrate_legacy(base: Path, target: Path) -> None:
                     pass
 
 
-def config_dir() -> Path:
+def _is_empty_dir(path: Path) -> bool:
+    try:
+        return path.is_dir() and not any(path.iterdir())
+    except OSError:
+        return False
+
+
+# ONE-TIME (rename to SC Assistant): move the "Citizen Assistant" settings
+# folder to "SC Assistant" on the first start of 1.0.0.  Can go once no 1.2.x
+# (Citizen Assistant) installs remain.
+def _move_old_folder(base: Path) -> Path:
+    """Return the settings folder to use, moving the old-name one if needed.
+
+    Never deletes or overwrites user data: when both folders hold files the
+    new one is used and the old one is left alone; when the folder cannot be
+    renamed (a file held open) it is copied instead; when that fails too the
+    old folder is used as it is and the move is tried again next start.
+    """
+    new = base / APP_NAME
+    old = base / OLD_APP_NAME
+    if not old.is_dir() or (new.exists() and not _is_empty_dir(new)):
+        return new
+    try:
+        if new.is_dir():
+            new.rmdir()
+        os.replace(old, new)
+        return new
+    except OSError as exc:
+        log.warning("Could not move %s to %s (%s); copying instead", old, new, exc)
+    # Copy next to the target, then rename, so a failed copy never leaves a
+    # half-filled new folder that a later start would take as the real one.
+    tmp = base / f"{APP_NAME}.moving"
+    try:
+        if tmp.exists():
+            shutil.rmtree(tmp)          # our own leftover copy, never user data
+        shutil.copytree(old, tmp)
+        if new.is_dir():
+            new.rmdir()
+        os.replace(tmp, new)
+        return new
+    except OSError as exc:
+        log.warning("Could not copy %s to %s (%s); using %s for now",
+                    old, new, exc, old)
+        shutil.rmtree(tmp, ignore_errors=True)
+        return old
+
+
+def _base_dir() -> Path:
     if sys.platform == "darwin":
-        base = Path.home() / "Library" / "Application Support"
-    elif sys.platform == "win32":
-        base = Path(os.environ.get("APPDATA") or Path.home())
-    else:
-        base = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
-    d = base / APP_NAME
+        return Path.home() / "Library" / "Application Support"
+    if sys.platform == "win32":
+        return Path(os.environ.get("APPDATA") or Path.home())
+    return Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config")
+
+
+def config_dir() -> Path:
+    base = _base_dir()
+    d = _RESOLVED.get(base)
+    if d is None:
+        d = _RESOLVED[base] = _move_old_folder(base)
     d.mkdir(parents=True, exist_ok=True)
     _migrate_legacy(base, d)
     return d

@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QSizePolicy,
                                QVBoxLayout, QWidget)
 
 from . import theme
+from ..version import APP_NAME
 
 BAR_HEIGHT = 54
 WIDTH_RATIO = 0.5        # half the monitor width
@@ -40,7 +41,7 @@ class _Brand(QWidget):
         p.setFont(theme.pfont(7, QFont.Weight.Bold, spacing=1.2))
         p.drawText(QRectF(28, 0, 164, h),
                    Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-                   "CITIZEN ASSISTANT")
+                   APP_NAME.upper())
 
 
 class NavBar(QWidget):
@@ -157,7 +158,7 @@ class NavBar(QWidget):
         self.quit_btn.setCursor(Qt.CursorShape.PointingHandCursor)
         self.quit_btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.quit_btn.setFixedHeight(theme.px(26))
-        self.quit_btn.setToolTip("Quit Citizen Assistant (click twice)")
+        self.quit_btn.setToolTip(f"Quit {APP_NAME} (click twice)")
         self.quit_btn.setProperty("armed", False)
         self.quit_btn.setStyleSheet(theme.qss("""
             QPushButton#quit {

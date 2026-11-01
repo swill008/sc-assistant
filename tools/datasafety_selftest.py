@@ -19,6 +19,10 @@ checks there, to show which ones the old code fails.
 """
 from __future__ import annotations
 
+from tools import _testguard
+
+_testguard.install()        # first: no focus, no hotkeys
+
 import argparse
 import ctypes
 import json

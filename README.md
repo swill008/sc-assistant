@@ -1,4 +1,4 @@
-# Citizen Assistant
+# SC Assistant
 
 A small Star Citizen overlay. Press **F3** for a nav bar at the top of the screen;
 the first tool is a **mining scanner** that reads the signature number from the
@@ -10,6 +10,11 @@ kills and soft deaths and feeds the **COMBAT** tab. The headless
 blueprint/inventory tracker tails the same log for blueprint unlocks and item
 acquisitions, then publishes structured events to the host overlay. Nothing
 reads game memory, injects code, or synthesises input.
+
+SC Assistant was called **Citizen Assistant** until v1.2.19; v1.0.0 is the
+first release under the new name (see *Upgrading from Citizen Assistant
+1.2.x*). It started as a fork of
+[fishtaco7/citizen-assistant](https://github.com/fishtaco7/citizen-assistant).
 
 ---
 
@@ -33,7 +38,7 @@ swaps the Win32 calls for Qt equivalents. What is different:
 | Screen capture of a game | Not applicable — Star Citizen is Windows-only |
 | Capture exclusion (`WDA_EXCLUDEFROMCAPTURE`) | No-op, windows appear in screenshots |
 | F3 / F4 | Application shortcuts: only while an overlay window has focus. Use the tray menu otherwise |
-| Config location | `~/Library/Application Support/Citizen Assistant/` |
+| Config location | `~/Library/Application Support/SC Assistant/` |
 
 Setup without Homebrew, using [uv](https://astral.sh/uv):
 
@@ -54,7 +59,7 @@ so no capture region is needed. The Windows launchers are unaffected.
 ### One-click install (Windows)
 
 Run **`install.bat`** from the folder you want to use. It sets up `C:\scov` (if
-needed), installs the requirements, creates a **Citizen Assistant** shortcut on the
+needed), installs the requirements, creates a **SC Assistant** shortcut on the
 desktop and in the Start menu, removes shortcuts left behind by a previous install,
 and asks whether it should start with Windows.
 
@@ -70,7 +75,7 @@ register the global F3/F4 hotkeys and would look like they had stopped working.
 settings and the `C:\scov` environment are left alone.
 
 Because `pythonw.exe` has no console, unhandled errors are appended to
-`%APPDATA%\Citizen Assistant\error.log` — check that file if the overlay stops starting.
+`%APPDATA%\SC Assistant\error.log` — check that file if the overlay stops starting.
 
 ### Checking which build is running
 
@@ -89,28 +94,28 @@ rather than whatever happens to be the working directory.
 
 Settings and notes from an older `SC-Overlay` folder (`config.json`,
 `inventory.json`, `unlocked_blueprints.json`) are copied into the new
-`Citizen Assistant` folder automatically on first run, so the region
+`SC Assistant` folder automatically on first run, so the region
 calibration and stash notes carry over.
 
 ### Prebuilt EXE: installer or standalone
 
-Each [release](https://github.com/swill008/citizen-assistant/releases) has two
+Each [release](https://github.com/swill008/sc-assistant/releases) has two
 downloads with the same program inside:
 
 | Download | What it is |
 | --- | --- |
-| **CitizenAssistant-X.Y.Z-Setup.exe** | Installer. Installs for your Windows user only (no administrator rights) into `%LOCALAPPDATA%\Programs\Citizen Assistant` by default, adds a Start menu entry and an uninstaller (also under *Settings → Apps*), and optionally a desktop shortcut and *Start when Windows starts*. Running a newer Setup installs over the old version. |
-| **CitizenAssistant-windows-x64.zip** | Standalone. Unzip anywhere and run `CitizenAssistant.exe`; nothing is installed. Keep the folder intact: the program needs the files next to it. |
+| **SCAssistant-X.Y.Z-Setup.exe** | Installer. Installs for your Windows user only (no administrator rights) into `%LOCALAPPDATA%\Programs\SC Assistant` by default, adds a Start menu entry and an uninstaller (also under *Settings → Apps*), and optionally a desktop shortcut and *Start when Windows starts*. Running a newer Setup installs over the old version. |
+| **SCAssistant-windows-x64.zip** | Standalone. Unzip anywhere and run `SCAssistant.exe`; nothing is installed. Keep the folder intact: the program needs the files next to it. |
 
-Settings, notes and caches live in `%APPDATA%\Citizen Assistant` for both, so
+Settings, notes and caches live in `%APPDATA%\SC Assistant` for both, so
 they carry over between versions and between the two kinds; installing,
 updating or uninstalling never touches them.
 
-**Updating with the installer.** Quit Citizen Assistant (QUIT on the nav bar)
+**Updating with the installer.** Quit SC Assistant (QUIT on the nav bar)
 and run the new Setup. It moves the old program files aside first and deletes
 them only once the new ones are in; if anything fails, or the program is still
 running, it puts the old version back and says so, so the version that worked
-still starts. (`installer/citizen_assistant.iss`, same design as the
+still starts. (`installer/sc_assistant.iss`, same design as the
 Gremlin-Platforms installer.)
 
 An installed copy can also update itself from `⚙` → **UPDATE**, which
@@ -125,7 +130,7 @@ Run anyway**.
 
 Releases are produced by `.github/workflows/release.yml` when a `v*` tag is
 pushed, or by hand for an existing tag (Actions → *Release Windows EXE* → *Run
-workflow*, or `gh workflow run release.yml -f tag=v1.2.17`); a fork does not
+workflow*, or `gh workflow run release.yml -f tag=v1.0.0`); a fork does not
 run push-triggered workflows until Actions has been enabled for it once, and a
 manual run works regardless. The job fails if the tag does not match `VERSION`
 in `app/version.py`, runs the headless self-tests before building, and uses
@@ -139,29 +144,47 @@ Pushes to `main` also build both under **Actions** as a test artifact, but those
 expire after 30 days and need a GitHub login.
 
 The build runs PyInstaller on `windows-latest` with the pinned versions from
-`requirements-lock.txt`. `citizen-assistant.spec` bundles `app/data` and
+`requirements-lock.txt`. `sc-assistant.spec` bundles `app/data` and
 `app.ico`, and collects the OCR runtime that `app/ocr.py` imports lazily.
 
 To build locally on Windows:
 
 ```bat
 py -3.13 -m pip install -r requirements-lock.txt pyinstaller
-py -3.13 -m PyInstaller --noconfirm --clean citizen-assistant.spec
+py -3.13 -m PyInstaller --noconfirm --clean sc-assistant.spec
 powershell -File installer\build_installer.ps1
-powershell -File installer\test_installer.ps1 -Setup dist\CitizenAssistant-X.Y.Z-Setup.exe
+powershell -File installer\test_installer.ps1 -Setup dist\SCAssistant-X.Y.Z-Setup.exe
 ```
 
 `build_installer.ps1` needs [Inno Setup 6](https://jrsoftware.org/isinfo.php)
-and writes `dist\CitizenAssistant-X.Y.Z-Setup.exe` (version from
+and writes `dist\SCAssistant-X.Y.Z-Setup.exe` (version from
 `app/version.py`). Keep the repository in a short path: the deepest bundled
 file is about 110 characters, and Windows' 260-character path limit makes the
 build fail from a deep folder. `test_installer.ps1` installs into a throwaway
 folder silently and checks a fresh install, that the program starts (skipped
 while another copy is running), an upgrade, an upgrade refused while the
 program's files are in use with the old version put back, the uninstall, and
-that `%APPDATA%\Citizen Assistant` is unchanged.
+that `%APPDATA%\SC Assistant` is unchanged.
 
-The result is `dist\CitizenAssistant\CitizenAssistant.exe`.
+The result is `dist\SCAssistant\SCAssistant.exe`.
+
+### Upgrading from Citizen Assistant 1.2.x
+
+Install 1.0.0 **by hand once**: download `SCAssistant-1.0.0-Setup.exe` from the
+[releases](https://github.com/swill008/sc-assistant/releases), quit Citizen
+Assistant and run it. The version number started again at 1.0.0 with the new
+name, which is lower than 1.2.19, so the old **UPDATE** button never offers it.
+From 1.0.0 on, **UPDATE** works as usual.
+
+What happens on the way:
+
+- The installer upgrades the same program (same AppId), now in
+  `%LOCALAPPDATA%\Programs\SC Assistant`. It removes the old
+  `Citizen Assistant` program folder and its Start menu entry, once.
+- On its first start SC Assistant moves `%APPDATA%\Citizen Assistant` to
+  `%APPDATA%\SC Assistant`, once. It never overwrites: if both folders exist,
+  the new one is used and the old one is left where it is.
+- Your settings, notes, inventory and blueprint registry are never deleted.
 
 ### Manual install
 
@@ -198,24 +221,24 @@ artifacts. Copy it over (or clone a private repo) and rebuild the venv:
 2. Get the folder onto the new PC — it already lives in OneDrive, so it may sync
    by itself; otherwise copy it or clone it. Skip `.venv`, `__pycache__`,
    `.DS_Store` and `tools\preview_out`; they are machine-specific or
-   regenerated. A source-only `citizen-assistant-windows.zip` is the easiest way to
+   regenerated. A source-only `sc-assistant-windows.zip` is the easiest way to
    move it without the macOS virtualenv.
 3. Run `install.bat` (or `setup.bat` if you only want the environment). It
    creates `C:\scov` and installs `requirements.txt`, then adds the shortcuts.
    For the exact versions this build was tested with, install
    `requirements-lock.txt` instead.
-4. Launch the overlay from the **Citizen Assistant** shortcut (or `run-hidden.vbs`);
+4. Launch the overlay from the **SC Assistant** shortcut (or `run-hidden.vbs`);
    both pick up `C:\scov` or a local `.venv` on their own and show no console.
 
 Not everything lives in the folder:
 
 | What | Where it lives | On the new PC |
 | --- | --- | --- |
-| Capture region, panel positions, hotkey prefs | `%APPDATA%\Citizen Assistant\config.json` | Don't copy it — press **DRAW REGION** in Settings once on the new PC |
-| Ore location cache | `%APPDATA%\Citizen Assistant\where_to_mine.json` | Re-downloaded from scminer.rocks |
-| Inventory stash notes | `%APPDATA%\Citizen Assistant\inventory.json` | Manual notes — copy this file to keep them |
-| Blueprint + inventory registry | `%APPDATA%\Citizen Assistant\unlocked_blueprints.json` | Permanent unlock history — copy this file to keep it |
-| Planner route cache | `%APPDATA%\Citizen Assistant\routes_cache.json` | Rebuilt on demand; delete it to force a full UEX sync |
+| Capture region, panel positions, hotkey prefs | `%APPDATA%\SC Assistant\config.json` | Don't copy it — press **DRAW REGION** in Settings once on the new PC |
+| Ore location cache | `%APPDATA%\SC Assistant\where_to_mine.json` | Re-downloaded from scminer.rocks |
+| Inventory stash notes | `%APPDATA%\SC Assistant\inventory.json` | Manual notes — copy this file to keep them |
+| Blueprint + inventory registry | `%APPDATA%\SC Assistant\unlocked_blueprints.json` | Permanent unlock history — copy this file to keep it |
+| Planner route cache | `%APPDATA%\SC Assistant\routes_cache.json` | Rebuilt on demand; delete it to force a full UEX sync |
 | OCR models | inside the `rapidocr-onnxruntime` wheel | Reinstalled with the deps |
 | Signature database | `app\data\signatures.json` | Travels with the code |
 
@@ -227,7 +250,7 @@ Git is the easiest way to keep two machines in sync:
 ```bat
 git init
 git add .
-git commit -m "Citizen Assistant"
+git commit -m "SC Assistant"
 ```
 
 `.gitignore` already excludes the venv, `__pycache__` and `tools\preview_out`,
@@ -249,7 +272,7 @@ that case use `run.bat` or the shortcut.
 want if something looks wrong.
 
 Starting the app with no saved region (first run, or after deleting
-`%APPDATA%\Citizen Assistant\config.json`) does not open the region picker by
+`%APPDATA%\SC Assistant\config.json`) does not open the region picker by
 itself: the scanner panel says `No capture region — press DRAW REGION in
 Settings (⚙)`, and you draw the box when the scan readout is on screen. The
 scanner loads OpenCV and the OCR model only after a region exists, so the window
@@ -382,7 +405,7 @@ was measured moving 218 px left to 250 px right and 43 px up to 227 px down
 around the drawn box, often 100 px within a tenth of a second, so a fixed box
 caught it in 19 of 300 frames. When you press **DRAW REGION** with the scan readout
 on screen, the app also saves the plate's orange **pin icon** just left of the
-digits (`%APPDATA%\Citizen Assistant\anchor.png`). Each read then captures a
+digits (`%APPDATA%\SC Assistant\anchor.png`). Each read then captures a
 larger area around the box, finds the pin in it (about 1.3 ms; it searches a
 quarter-size orange-only copy, then checks the best few spots at full size)
 and reads the digits at their fixed place right of the pin. On the same
@@ -705,7 +728,7 @@ routes, buyers, spawn rules, prices — without leaving the game.
 - Type and it saves itself: a write is queued 700 ms after the last keystroke,
   and again when the panel is hidden or the app quits.
 - The status chip reads `SAVED`, `SAVING…`, or `NOT SAVED` with the reason.
-- Stored as plain UTF-8 at `%APPDATA%\Citizen Assistant\notes.txt`, so it can be
+- Stored as plain UTF-8 at `%APPDATA%\SC Assistant\notes.txt`, so it can be
   opened, edited or backed up with any text editor. Writes go through a
   temporary file and a rename, so a crash cannot leave a half-written note,
   and the previous version is kept as `notes.txt.bak`.
@@ -870,8 +893,8 @@ engine.close()
 If `starting_capital` is omitted, the ledger starts with unknown capital and
 will not reject a run; call `set_trading_capital()` before locking a load to
 enforce the budget. State is stored under the normal per-user config directory
-(`~/Library/Application Support/Citizen Assistant/` on macOS,
-`%APPDATA%\Citizen Assistant\` on Windows): `active_run.json` is the resume cache and
+(`~/Library/Application Support/SC Assistant/` on macOS,
+`%APPDATA%\SC Assistant\` on Windows): `active_run.json` is the resume cache and
 `workflow_wallet.json` holds cash, reservations, realized profit and run counts.
 
 The log tailer looks at `SC_GAME_LOG` first, then common LIVE/PTU/EPTU install
@@ -940,8 +963,8 @@ Click any note to edit it. Click the `✕` on a row once to arm deletion and aga
 to confirm. Search filters across item, location and note. **RECENT** sorts newest
 first; **LOCATION** groups notes by where they are stored.
 
-Everything is stored locally in `%APPDATA%\Citizen Assistant\inventory.json` (or
-`~/Library/Application Support/Citizen Assistant/inventory.json` on macOS). Nothing is
+Everything is stored locally in `%APPDATA%\SC Assistant\inventory.json` (or
+`~/Library/Application Support/SC Assistant/inventory.json` on macOS). Nothing is
 sent anywhere. If the file cannot be read, the panel shows `NOT LOADED` with
 the reason and does not allow adding, editing or deleting notes until it can,
 so the file on disk is never replaced. The panel can take keyboard focus, so F3/F4 still work as
@@ -1008,10 +1031,10 @@ application shortcuts while you type.
   "What's new in vX" from that release's notes is shown under it (plain text
   only). What UPDATE does depends on the install:
   - **Installed EXE** (from the Setup): CHECK reads the latest GitHub release
-    of this fork, `swill008/citizen-assistant`. UPDATE downloads that
+    of this fork, `swill008/sc-assistant`. UPDATE downloads that
     release's Setup, checks its size and its SHA-256 digest against GitHub's,
     and names the version it actually downloaded (it can be newer than the one
-    CHECK saw). Citizen Assistant then closes, Setup installs silently and
+    CHECK saw). SC Assistant then closes, Setup installs silently and
     starts the new version. The hand-off waits for the old copy to exit with
     no time limit; if Setup stops without installing (exit code 1 or 2), the
     old version is started again.
@@ -1022,7 +1045,7 @@ application shortcuts while you type.
     `tools/`, the launchers and the requirements over this folder, then
     restarts the overlay. `opencode.jsonc` is deliberately left alone.
 
-  Settings, notes and logs live in `%APPDATA%\Citizen Assistant` and are never
+  Settings, notes and logs live in `%APPDATA%\SC Assistant` and are never
   touched. Quitting during a download cancels it.
 
 The settings window has a push-pin too, like every panel.
@@ -1036,7 +1059,7 @@ single-read lock, and `fast_confidence` sets its confidence threshold (default
 `ocr_threads` (default `1`) is how many CPU threads the OCR model may use; see
 *Game performance* below before raising it.
 
-Settings are saved to `%APPDATA%\Citizen Assistant\config.json`, next to the ore-location
+Settings are saved to `%APPDATA%\SC Assistant\config.json`, next to the ore-location
 cache (`where_to_mine.json`), inventory notes (`inventory.json`), the planner
 route cache (`routes_cache.json`) and the workflow caches (`active_run.json`,
 `workflow_wallet.json`), the scmdb signature cache (`signatures_scmdb.json`)
@@ -1066,7 +1089,7 @@ ore-finder cache all go through one shared store (`app/safe_store.py`):
 
 > If the venv was built from the Microsoft Store build of Python, Windows
 > redirects those writes into the app package container, so the files live under
-> `%LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.3.13_*\LocalCache\Roaming\Citizen Assistant\`.
+> `%LOCALAPPDATA%\Packages\PythonSoftwareFoundation.Python.3.13_*\LocalCache\Roaming\SC Assistant\`.
 > A python.org install uses the plain `%APPDATA%` path.
 
 ## Game performance
@@ -1128,7 +1151,7 @@ default, with the bundled file as the fallback (`app/sigsource.py`,
 - In a background thread, at most once a day, the app reads
   `https://scmdb.net/data/versions.json`, picks the newest build for the chosen
   channel and downloads its `mining_data-<version>.json`. The converted table
-  is cached as `signatures_scmdb.json` in `%APPDATA%\Citizen Assistant` and
+  is cached as `signatures_scmdb.json` in `%APPDATA%\SC Assistant` and
   used from then on; a failed download keeps the cache.
 - Until a cache exists, or when it cannot be used, the bundled
   `app/data/signatures.json` is used, and Settings → *Signature data* says why
@@ -1190,14 +1213,14 @@ Outbound traffic is GET requests only:
 | `api.uexcorp.uk` | trade routes and the UEX marketplace tab |
 | `scminer.rocks` | ore locations for ORE FINDER |
 | `scmdb.net` | signature data (`versions.json` and `mining_data-<version>.json`), at most once a day; never with `signature_source: "bundled"` |
-| `raw.githubusercontent.com` | hauling mission snapshot, update check for a source install (`swill008/citizen-assistant`) |
-| `api.github.com` | latest release of `swill008/citizen-assistant` and its release notes, only when you press CHECK |
+| `raw.githubusercontent.com` | hauling mission snapshot, update check for a source install (`swill008/sc-assistant`) |
+| `api.github.com` | latest release of `swill008/sc-assistant` and its release notes, only when you press CHECK |
 | `github.com` | the release's Setup download, only when you press UPDATE in the installed EXE |
-| `codeload.github.com` | the update archive from `swill008/citizen-assistant`, only when you press UPDATE in a source install |
+| `codeload.github.com` | the update archive from `swill008/sc-assistant`, only when you press UPDATE in a source install |
 
 There is no telemetry, no analytics and no account. Screenshots, notes and
 inventory data are never uploaded; everything the app stores lives in
-`%APPDATA%\Citizen Assistant`.
+`%APPDATA%\SC Assistant`.
 
 ### Updates are manual
 
@@ -1214,9 +1237,10 @@ The "What's new" text comes from `release-notes/<version>.md`, which every
 release must have (see `release-notes/README.md`); `tools/release_body.py`
 turns it into the GitHub release text.
 
-Updates come from **this fork, `swill008/citizen-assistant`** (`REPO` in
-`app/updater.py`). Until v1.2.16 they came from the original
-`fishtaco7/citizen-assistant`, so pressing UPDATE in this fork would have
+Updates come from **this fork, `swill008/sc-assistant`** (`REPO` in
+`app/version.py`; before 1.0.0 the repository was `swill008/citizen-assistant`,
+and GitHub redirects the old address). Until v1.2.16 they came from the
+original `fishtaco7/citizen-assistant`, so pressing UPDATE in this fork would have
 replaced its fixes with the upstream code. The code that reaches users is
 therefore whatever is committed to `main` in this fork; only its owner can push
 to it.
@@ -1238,13 +1262,13 @@ to it.
 | Ore finder list is empty | No internet, or scminer.rocks is down. Press `↻`; the cache is used when available. |
 | Ore finder shows `OFFLINE` | Same as above — the data on screen is the last successful sync. |
 | Combat tracker shows no events | Confirm `Game.log` is being written, or set `SC_GAME_LOG` to its path. Combat log formats are patch-dependent; update the parser patterns if a patch changes them. |
-| NOTES or INVENTORY says `NOT LOADED` | The file exists but could not be read; the reason is shown. Nothing is saved over it. Close the program that has it open (an editor, a sync or backup tool), then reopen the panel. A broken JSON file is kept as `<name>.bad-<date-time>`, and the last good save as `<name>.bak`, both in `%APPDATA%\Citizen Assistant`. |
+| NOTES or INVENTORY says `NOT LOADED` | The file exists but could not be read; the reason is shown. Nothing is saved over it. Close the program that has it open (an editor, a sync or backup tool), then reopen the panel. A broken JSON file is kept as `<name>.bad-<date-time>`, and the last good save as `<name>.bak`, both in `%APPDATA%\SC Assistant`. |
 | A hotkey does nothing | Check `⚙` → *Hotkeys*: the row may have no key (`—`). Click it and press the key you want. |
 | Settings shows `bundled` signatures with "scmdb unavailable" | scmdb.net could not be reached or its data could not be read; the bundled table is used and the next try is at the next start. |
 | NOTES says `NOT SAVED` | The footer shows the reason (normally a permissions problem on `%APPDATA%`). The text is still in the editor — copy it out before closing. A hard crash can lose the last 700 ms of typing, which is the autosave delay. |
 | Blueprint tracker misses an unlock | Confirm the log contains `<SHUDEvent_OnNotification> Added notification "Received Blueprint: ...`; set `SC_GAME_LOG` to the right `Game.log`. If a patch changes the wording, pass custom `BlueprintLogParser` patterns. Delete `unlocked_blueprints.json` only if you want to reset new-vs-duplicate detection. |
 | Bar/scanner hidden behind a browser | It re-asserts topmost every 2 s; if it still loses, run the game borderless, not exclusive fullscreen. |
-| F3/F4 do nothing while the game is focused | Fixed in v1.2.1 by polling `GetAsyncKeyState` alongside `RegisterHotKey`, because exclusive fullscreen stops `WM_HOTKEY` reaching a background thread. If it still fails, run the game borderless. |
+| F3/F4 do nothing while the game is focused | Fixed in Citizen Assistant v1.2.1 by polling `GetAsyncKeyState` alongside `RegisterHotKey`, because exclusive fullscreen stops `WM_HOTKEY` reaching a background thread. If it still fails, run the game borderless. |
 | Bar appears twice | Two copies are running. Kill the extra `python`/`pythonw` process. |
 | Start menu opens an old version | Run `install.bat` from the new folder — it repoints the shortcuts and deletes stale ones. Then compare the build stamp in `⚙`. |
 | `⚙` shows no build stamp or no screenshots button | You are running a copy from before those features. Quit it from the tray, then start `run.bat` inside the folder you downloaded. |

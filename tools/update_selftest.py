@@ -12,6 +12,10 @@ real Setup is checked by installer\\test_installer.ps1 -NewerSetup.
 """
 from __future__ import annotations
 
+from tools import _testguard
+
+_testguard.install()        # first: no focus, no hotkeys
+
 import hashlib
 import io
 import os
@@ -26,7 +30,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-_TMP = tempfile.TemporaryDirectory(prefix="ca-update-")
+_TMP = tempfile.TemporaryDirectory(prefix="sca-update-")
 os.environ["APPDATA"] = _TMP.name          # before app.config is imported
 
 from PySide6.QtCore import Qt  # noqa: E402
@@ -34,6 +38,7 @@ from PySide6.QtGui import QGuiApplication  # noqa: E402
 from PySide6.QtWidgets import QApplication  # noqa: E402
 
 from app import updater  # noqa: E402
+from app import version  # noqa: E402
 
 NOTES = """## What's new in 9.9.10
 ### Fixed
@@ -85,9 +90,9 @@ def _release(version="9.9.9", url="u", size=1, digest="", body=""):
 def check_release_parsing() -> int:
     failures = 0
     release = {"tag_name": "v1.2.20", "body": NOTES, "assets": [
-        {"name": "CitizenAssistant-windows-x64.zip", "browser_download_url": "https://x/zip", "size": 1},
-        {"name": "CitizenAssistant-1.2.20-TEST-Setup.exe", "browser_download_url": "https://x/test", "size": 2},
-        {"name": "CitizenAssistant-1.2.20-Setup.exe", "browser_download_url": "https://x/setup", "size": 3,
+        {"name": "SCAssistant-windows-x64.zip", "browser_download_url": "https://x/zip", "size": 1},
+        {"name": "SCAssistant-1.2.20-TEST-Setup.exe", "browser_download_url": "https://x/test", "size": 2},
+        {"name": "SCAssistant-1.2.20-Setup.exe", "browser_download_url": "https://x/setup", "size": 3,
          "digest": "sha256:abc"},
     ]}
     found = updater.setup_asset(release)
@@ -116,6 +121,61 @@ def check_release_parsing() -> int:
         failures += _check("EXE outside the installed folder is standalone", updater.standalone())
     with _Patch(updater, is_frozen=lambda: False):
         failures += _check("source install is never standalone", not updater.standalone())
+    return failures
+
+
+def check_names() -> int:
+    """The 1.0.0 rename: repository, User-Agent, Setup and archive names."""
+    failures = 0
+    failures += _check("updater uses the renamed repository swill008/sc-assistant",
+                       updater.REPO == version.REPO == "swill008/sc-assistant"
+                       and "/swill008/sc-assistant/" in updater.ARCHIVE
+                       and "/repos/swill008/sc-assistant/" in updater.LATEST_RELEASE
+                       and updater.RELEASES_PAGE == "https://github.com/swill008/sc-assistant/releases",
+                       f"({updater.REPO}, {updater.LATEST_RELEASE})")
+    failures += _check("User-Agent names SC Assistant and the new repository",
+                       updater.USER_AGENT == version.USER_AGENT
+                       and updater.USER_AGENT.startswith(f"SC-Assistant/{version.VERSION} ")
+                       and "github.com/swill008/sc-assistant" in updater.USER_AGENT,
+                       f"({updater.USER_AGENT})")
+
+    def pick(*names):
+        found = updater.setup_asset({"assets": [
+            {"name": n, "browser_download_url": f"https://x/{n}", "size": 1} for n in names]})
+        return found.version if found else None
+    failures += _check("accepts SCAssistant-1.0.1-Setup.exe", pick("SCAssistant-1.0.1-Setup.exe") == "1.0.1")
+    failures += _check("ignores the old CitizenAssistant-1.2.19-Setup.exe",
+                       pick("CitizenAssistant-1.2.19-Setup.exe") is None)
+    failures += _check("picks the new Setup next to an old one",
+                       pick("CitizenAssistant-1.2.19-Setup.exe", "SCAssistant-1.0.1-Setup.exe") == "1.0.1")
+    failures += _check("ignores a TEST edition and look-alikes",
+                       pick("SCAssistant-1.0.1-TEST-Setup.exe", "XSCAssistant-1.0.1-Setup.exe",
+                            "SCAssistant-1.0.1-Setup.exe.part") is None)
+    failures += _check("source update copies sc-assistant.spec, not the old spec",
+                       "sc-assistant.spec" in updater.COPY_FILES
+                       and "citizen-assistant.spec" not in updater.COPY_FILES)
+    top = getattr(updater, "archive_top", None)
+    if top is None:
+        return failures + _check("archive_top accepts any single top folder", False, "(missing)")
+    base = Path(_TMP.name) / "archive"
+    for name in ("sc-assistant-main", "anything-else"):
+        folder = base / name
+        (folder / "app").mkdir(parents=True, exist_ok=True)
+        failures += _check(f"archive_top accepts the single top folder {name}/", top(base) == folder)
+        folder.joinpath("app").rmdir()
+        folder.rmdir()
+    for made, want in (((), "empty"), (("a", "b"), "more than one")):
+        for name in made:
+            (base / name).mkdir(parents=True, exist_ok=True)
+        base.mkdir(parents=True, exist_ok=True)
+        try:
+            top(base)
+            failures += _check(f"archive_top refuses an archive with {len(made)} top folders", False)
+        except RuntimeError as exc:
+            failures += _check(f"archive_top refuses an archive with {len(made)} top folders",
+                               want in str(exc), f"({exc})")
+        for name in made:
+            (base / name).rmdir()
     return failures
 
 
@@ -152,7 +212,7 @@ def check_download() -> int:
     payload = b"MZ" + os.urandom(3_000_000)
     good = "sha256:" + hashlib.sha256(payload).hexdigest()
     bad = "sha256:" + "0" * 64
-    folder = Path(_TMP.name) / "CitizenAssistant-update"
+    folder = Path(_TMP.name) / "SCAssistant-update"
 
     def run(digest, size=len(payload), cancelled=None):
         rel = _release("9.9.10", "https://x/setup", size, digest, NOTES)
@@ -176,6 +236,9 @@ def check_download() -> int:
     got = run(good)
     path, version = (got.path, got.version) if hasattr(got, "path") else (got, None)
     failures += _check("a matching digest is accepted", Path(path).read_bytes() == payload)
+    failures += _check("the download is saved as SCAssistant-9.9.10-Setup.exe in SCAssistant-update",
+                       Path(path).name == "SCAssistant-9.9.10-Setup.exe"
+                       and Path(path).parent == folder, f"({path})")
     failures += _check("download_setup returns the version it downloaded", version == "9.9.10", f"({version})")
     Path(path).unlink()
 
@@ -208,7 +271,7 @@ def check_installer_command() -> int:
         def __init__(self, args, **kw):
             calls.append((args, kw))
 
-    setup = Path(_TMP.name) / "it's here" / "CitizenAssistant-9.9.10-Setup.exe"
+    setup = Path(_TMP.name) / "it's here" / "SCAssistant-9.9.10-Setup.exe"
     with _Patch(updater.subprocess, Popen=_Popen):
         updater.run_installer(setup, wait_for_pid=4242)
     args, kw = calls[-1]
@@ -275,7 +338,7 @@ def check_settings_flow() -> int:
     from app.ui.settings_panel import SettingsPanel
 
     failures = 0
-    fake_setup = str(Path(_TMP.name) / "CitizenAssistant-9.9.10-Setup.exe")
+    fake_setup = str(Path(_TMP.name) / "SCAssistant-9.9.10-Setup.exe")
     downloads: list[bool] = []
 
     def fake_download(t=300.0, cancelled=None):
@@ -482,8 +545,8 @@ def check_app_handoff() -> int:
     quits: list[bool] = []
     overlay.quit = lambda: quits.append(True)
     with _Patch(updater, run_installer=lambda setup, wait_for_pid=None, relaunch=None: calls.append((str(setup), wait_for_pid))):
-        overlay.settings.install_requested.emit("C:/x/CitizenAssistant-9.9.9-Setup.exe")
-        failures += _check("app starts the hand-off for that Setup", calls == [(str(Path("C:/x/CitizenAssistant-9.9.9-Setup.exe")), None)],
+        overlay.settings.install_requested.emit("C:/x/SCAssistant-9.9.9-Setup.exe")
+        failures += _check("app starts the hand-off for that Setup", calls == [(str(Path("C:/x/SCAssistant-9.9.9-Setup.exe")), None)],
                            f"({calls})")
         failures += _check("then quits so Setup can run", quits == [True])
 
@@ -491,7 +554,7 @@ def check_app_handoff() -> int:
         raise OSError("powershell missing")
     quits.clear()
     with _Patch(updater, run_installer=broken):
-        overlay.settings.install_requested.emit("C:/x/CitizenAssistant-9.9.9-Setup.exe")
+        overlay.settings.install_requested.emit("C:/x/SCAssistant-9.9.9-Setup.exe")
         failures += _check("a failed hand-off does not quit", quits == [])
         failures += _check("and says why", "powershell missing" in overlay.settings.update_hint.text(),
                            f"({overlay.settings.update_hint.text()!r})")
@@ -508,7 +571,7 @@ def check_live_release() -> int:
         return _check("latest release readable on GitHub", False, f"({exc})")
     digest = getattr(release, "digest", "")
     return _check("latest release on GitHub has an installer",
-                  url.endswith(f"CitizenAssistant-{version}-Setup.exe") and size > 10_000_000,
+                  url.endswith(version.SETUP_ASSET.format(version=version)) and size > 10_000_000,
                   f"(v{version}, {size // 1_000_000} MB, digest {'yes' if digest else 'no'}, {url})")
 
 
@@ -527,7 +590,7 @@ def main() -> int:
     if QApplication.instance() is None:
         QApplication(sys.argv)
     failures = 0
-    checks = [check_release_parsing, check_whats_new, check_download, check_installer_command,
+    checks = [check_names, check_release_parsing, check_whats_new, check_download, check_installer_command,
               check_installer_real, check_settings_flow, check_tracking_slider,
               check_setters_quiet, check_pin_and_attention, check_app_handoff]
     if "--offline" not in sys.argv:

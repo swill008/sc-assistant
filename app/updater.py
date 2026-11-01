@@ -10,15 +10,15 @@ entry to rewrite.  The work is deliberately conservative:
   launchers, the spec, requirements, README);
 * ``opencode.jsonc`` is never touched — it holds this project's agent
   permissions, which belong to the user, not to the project;
-* ``%APPDATA%\\Citizen Assistant`` is never touched — settings, notes and logs
+* ``%APPDATA%\\SC Assistant`` is never touched — settings, notes and logs
   live there, not in the install folder.
 
-The installed EXE (CitizenAssistant-X.Y.Z-Setup.exe) updates through the
+The installed EXE (SCAssistant-X.Y.Z-Setup.exe) updates through the
 installer instead: Windows will not let a running .exe replace its own files.
 CHECK reads the latest GitHub *release* (not ``main``, which can be ahead of
 what is released), UPDATE downloads that release's Setup.exe, and
 ``run_installer`` starts it silently once this process has exited — Setup
-refuses while Citizen Assistant runs (AppMutex) — with ``/LAUNCH=1`` so the
+refuses while SC Assistant runs (AppMutex) — with ``/LAUNCH=1`` so the
 new version starts by itself (and the old one again if Setup stops without
 installing). The download is checked against GitHub's sha256 digest, and
 ``whats_new`` turns the release notes into plain text for Settings. A standalone (zip) EXE is not registered as
@@ -41,27 +41,33 @@ import zipfile
 from pathlib import Path
 from typing import Callable, NamedTuple
 
+from . import version as _names
 from .version import VERSION
 
-# This fork. Upstream (fishtaco7/citizen-assistant) does not have its fixes,
-# so updating from there would undo them; see CHANGES.md v1.2.17.
-REPO = "swill008/citizen-assistant"
+# This fork; the names live in app/version.py. Upstream
+# (fishtaco7/citizen-assistant) does not have its fixes, so updating from
+# there would undo them.
+REPO = _names.REPO
 BRANCH = "main"
 RAW_VERSION = f"https://raw.githubusercontent.com/{REPO}/{BRANCH}/app/version.py"
 ARCHIVE = f"https://codeload.github.com/{REPO}/zip/refs/heads/{BRANCH}"
-USER_AGENT = (f"Citizen-Assistant/{VERSION} "
-              "(+https://github.com/swill008/citizen-assistant)")
+USER_AGENT = _names.USER_AGENT
 LATEST_RELEASE = f"https://api.github.com/repos/{REPO}/releases/latest"
 RELEASES_PAGE = f"https://github.com/{REPO}/releases"
-SETUP_ASSET = re.compile(r"^CitizenAssistant-(\d+\.\d+\.\d+)-Setup\.exe$")
-# The installer's uninstall entry (installer/citizen_assistant.iss AppId).
+# The release's Setup.exe (e.g. SCAssistant-1.0.1-Setup.exe), never a TEST
+# edition; built from version.SETUP_ASSET so the two cannot drift apart.
+_SETUP_HEAD, _SETUP_TAIL = _names.SETUP_ASSET.split("{version}")
+SETUP_ASSET = re.compile("^" + re.escape(_SETUP_HEAD) + r"(\d+\.\d+\.\d+)"
+                         + re.escape(_SETUP_TAIL) + "$")
+# The installer's uninstall entry (installer/sc_assistant.iss AppId, the same
+# GUID as before the rename, so updates still find the install).
 INSTALL_KEY = (r"Software\Microsoft\Windows\CurrentVersion\Uninstall"
                r"\{C4736091-9D04-4E7B-B53D-4FA025CCB796}_is1")
 
 COPY_DIRS = ("app", "tools")
 COPY_FILES = (
     "launcher.py",
-    "citizen-assistant.spec",
+    "sc-assistant.spec",
     "requirements.txt",
     "requirements-lock.txt",
     "install.bat",
@@ -283,8 +289,8 @@ def download_setup(timeout: float = 300.0,
     turning true) removes the partial file and raises.
     """
     release = latest_release(min(timeout, 30.0))
-    target = (Path(tempfile.gettempdir()) / "CitizenAssistant-update"
-              / f"CitizenAssistant-{release.version}-Setup.exe")
+    target = (Path(tempfile.gettempdir()) / f"{_names.EXE_NAME}-update"
+              / _names.SETUP_ASSET.format(version=release.version))
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_suffix(".part")
     algo, _, want = release.digest.partition(":")
@@ -350,7 +356,7 @@ def run_installer(setup: Path, wait_for_pid: int | None = None,
     """Run ``setup`` silently once process ``wait_for_pid`` (default: this one)
     has exited, then let it start the new version (``/LAUNCH=1``).
 
-    Setup refuses to run while Citizen Assistant is open, so a hidden
+    Setup refuses to run while SC Assistant is open, so a hidden
     PowerShell waits for the exit first; the caller quits right after this.
     If Setup stops without installing (exit 1 or 2), ``relaunch`` (default:
     this EXE, ``sys.executable``) is started again.
@@ -416,6 +422,20 @@ def _copy_tree(source: Path, root: Path) -> None:
             _copy(path, root / name)
 
 
+def archive_top(folder: Path) -> Path:
+    """The one top folder of an unpacked branch archive.
+
+    GitHub wraps the tree in "<repo>-<branch>/" (now "sc-assistant-main/"),
+    so the name follows the repository's and is not checked.
+    """
+    tops = [path for path in folder.iterdir() if path.is_dir()]
+    if not tops:
+        raise RuntimeError("the update archive was empty")
+    if len(tops) > 1:
+        raise RuntimeError("the update archive has more than one top folder")
+    return tops[0]
+
+
 def apply(timeout: float = 90.0) -> str:
     """Download the branch archive and copy it over this install.
 
@@ -432,13 +452,10 @@ def apply(timeout: float = 90.0) -> str:
         raise RuntimeError("GitHub sent an empty archive")
 
     root = install_root()
-    with tempfile.TemporaryDirectory(prefix="ca-update-") as tmp:
+    with tempfile.TemporaryDirectory(prefix="sca-update-") as tmp:
         with zipfile.ZipFile(io.BytesIO(blob)) as bundle:
             bundle.extractall(tmp)
-        # GitHub wraps the tree in a single "citizen-assistant-main/" folder.
-        source = next((path for path in Path(tmp).iterdir() if path.is_dir()), None)
-        if source is None:
-            raise RuntimeError("the update archive was empty")
+        source = archive_top(Path(tmp))
         version = _version_in(source)
         _copy_tree(source, root)
     return version

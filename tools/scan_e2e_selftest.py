@@ -41,6 +41,10 @@ Exit code = number of failed checks.
 """
 from __future__ import annotations
 
+from tools import _testguard
+
+_testguard.install()        # first: no focus, no hotkeys
+
 import json
 import os
 import sys

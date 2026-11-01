@@ -11,6 +11,10 @@ Settings and use it in the scanner.
 """
 from __future__ import annotations
 
+from tools import _testguard
+
+_testguard.install()        # first: no focus, no hotkeys
+
 import json
 import os
 import sys

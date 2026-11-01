@@ -19,10 +19,10 @@ command = """" & pythonw & """ -m app"
 On Error Resume Next
 shell.Run command, 0, False
 If Err.Number <> 0 Then
-    MsgBox "Could not start Citizen Assistant." & vbCrLf & vbCrLf & _
+    MsgBox "Could not start SC Assistant." & vbCrLf & vbCrLf & _
            "Run setup.bat once, then try again." & vbCrLf & _
            "If Windows blocks .vbs files, use run.bat or a shortcut to pythonw.exe.", _
-           16, "Citizen Assistant"
+           16, "SC Assistant"
 End If
 On Error GoTo 0
 

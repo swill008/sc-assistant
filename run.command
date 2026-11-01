@@ -1,5 +1,5 @@
 #!/bin/zsh
-# Launch the Citizen Assistant UI on macOS.
+# Launch the SC Assistant UI on macOS.
 #
 # This is the demo build: the Windows-only capture/overlay/hotkey layer is
 # stubbed out, so the panels render but there is no game to scan. Any arguments

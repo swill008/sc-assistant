@@ -1,11 +1,36 @@
 # Changes
 
-## Unreleased — wave 1 (SC Assistant 1.0)
+## v1.0.0 — 2026-11-01
 
-Data safety for the user's own files, visible HUD-tracking feedback, signature
-data from scmdb.net, release notes, update and scanner fixes, rebindable
-hotkeys, window pins and first-run guidance. No version number yet: wave 2
-sets 1.0.0.
+Citizen Assistant is now **SC Assistant**, and the version number starts again
+at 1.0.0. Also: data safety for the user's own files, visible HUD-tracking
+feedback, signature data from scmdb.net, release notes, update and scanner
+fixes, rebindable hotkeys, window pins and first-run guidance.
+
+### Rename to SC Assistant, version 1.0.0
+
+- One place for the names: `app/version.py` holds `APP_NAME`
+  (`SC Assistant`), `EXE_NAME` (`SCAssistant`), `REPO`
+  (`swill008/sc-assistant`), `MUTEX_NAME`, the release file names and the
+  User-Agent. The nav bar brand reads `SC ASSISTANT`.
+- Program `SCAssistant.exe`, built by `sc-assistant.spec`; installer
+  `installer/sc_assistant.iss`. Release files `SCAssistant-<version>-Setup.exe`
+  and `SCAssistant-windows-x64.zip`; the updater looks for these names.
+- The installer keeps the same AppId, so it upgrades Citizen Assistant rather
+  than adding a second program. It installs to
+  `%LOCALAPPDATA%\Programs\SC Assistant` and removes the old Citizen Assistant
+  program folder and Start menu entry once (one-time code). Its AppMutex lists
+  the new and the old name, so a running Citizen Assistant is never
+  overwritten.
+- Settings folder `%APPDATA%\SC Assistant`. On first start
+  `%APPDATA%\Citizen Assistant` is moved there once (one-time code); it never
+  overwrites, and when both folders exist the new one is used.
+- The GitHub repository moves from `swill008/citizen-assistant` to
+  `swill008/sc-assistant`; GitHub redirects the old address.
+- Version 1.0.0 is lower than 1.2.19, so an installed 1.2.19 never offers it
+  under UPDATE: install 1.0.0 by hand once; updates work normally after that.
+- The fork's v1.2.17 and v1.2.18 releases are withdrawn; their history stays
+  below under *Earlier (1.2.x, as Citizen Assistant)*.
 
 ### Data safety
 
@@ -154,11 +179,13 @@ hand-off command run against a fake Setup, the TRACKING slider),
 `tools/scan_selftest.py`, `tools/scan_e2e_selftest.py` and
 `tools/settings_persist_selftest.py`.
 
-## v1.2.19 — 2026-11-01
+## Earlier (1.2.x, as Citizen Assistant)
+
+### v1.2.19 — 2026-11-01
 
 The scanner follows the signature plate as the HUD sways in flight.
 
-### New: HUD tracking
+#### New: HUD tracking
 
 **What happened.** In flight Star Citizen's HUD moves with the ship's
 "physics". A 30-second recording of the user's 5120×2160 screen at 10 frames a
@@ -197,7 +224,7 @@ checked at full resolution in colour; matches from 0.6 up count (every match
 from 0.55 up on the recording was a real, tinted or blurred plate; frames
 without one scored 0.34 or less).
 
-### Tests
+#### Tests
 
 - `tools/tracking_selftest.py` with `tools/fixtures/hud_track/`: 25 frames of
   the recording, labelled by eye (value and pin position; 4 without a plate,
@@ -218,19 +245,19 @@ without one scored 0.34 or less).
   fails while the game shows a real plate in the search area (correctly tracked);
   run `--primary` with the game closed.
 
-### Known limits
+#### Known limits
 
 - The OCR sometimes drops a zero on a blurred 80,000 plate and reads 8,000,
   which is a valid signature (debris ×4). 80,000 itself is above the 60,000
   limit and correctly ignored. Not changed in this release.
 - Very heavy scan tint can turn a 5 into a 6 (one labelled frame).
 
-## v1.2.18 — 2026-11-01
+### v1.2.18 — 2026-11-01
 
 Adds a Windows installer next to the standalone download. The program itself
 is unchanged from v1.2.17 (see below for its fixes).
 
-### New: installer
+#### New: installer
 
 Each release now has two downloads with the same program inside:
 
@@ -247,7 +274,7 @@ Settings in `%APPDATA%\Citizen Assistant` are never touched by install, update
 or uninstall. The script, `installer/citizen_assistant.iss` (Inno Setup 6),
 follows the Gremlin-Platforms installer.
 
-### Release and build workflows
+#### Release and build workflows
 
 - Releases publish both downloads; a tag push releases automatically (Actions
   is now enabled on this fork), and a release can also be run by hand for an
@@ -256,7 +283,7 @@ follows the Gremlin-Platforms installer.
   as a test artifact.
 - The release text comes from this file.
 
-### Tests
+#### Tests
 
 `installer/test_installer.ps1` installs the built Setup silently into a
 throwaway folder and checks: a fresh install (files, Start menu shortcuts and
@@ -271,7 +298,7 @@ Note: building from a deep folder fails on Windows' 260-character path limit
 (the deepest bundled file is 111 characters); keep the checkout in a short
 path.
 
-## v1.2.17 — 2026-11-01
+### v1.2.17 — 2026-11-01
 
 Fixes for 5K2K and mixed-scaling desks, and for game stutter while the scanner
 runs; new scanner settings; a QUIT button; updates now come from this fork.
@@ -279,7 +306,7 @@ Measured on Windows 11, Ryzen 7 9800X3D (8 cores, SMT off), RTX 4090, main
 monitor 5120×2160 at 150% beside two 1920×1080 at 125% and a 3840×2160 TV at
 300%.
 
-### Fixed: the scanner read nothing on a 5K2K screen
+#### Fixed: the scanner read nothing on a 5K2K screen
 
 **What happened.** Calibrating on the 5120×2160 monitor stored a 28×14 box
 around a signature whose digits are about 56×28, and OCR returned no text.
@@ -303,7 +330,7 @@ no longer needs about 1 GB of image memory for a desk-sized window.
 
 **Action needed.** If you calibrated with an older build, press SELECT again.
 
-### Fixed: frame hitches while the scanner runs
+#### Fixed: frame hitches while the scanner runs
 
 **What happened.** With the overlay running, Star Citizen had about 10× more
 frame hitches than with it closed (PresentMon, 150 s per phase, both orders:
@@ -327,7 +354,7 @@ low priority (`app/main.py`).
 | Before | 37.7 ms | 6.3 | 6 ms |
 | After (`ocr_threads: 1`) | 6.4 ms | 0.4 | 17 ms |
 
-### New: scanner settings for resolution, scaling and read rate
+#### New: scanner settings for resolution, scaling and read rate
 
 - **MONITOR** (*Signature capture region*): every monitor with its real
   resolution and Windows scaling, read from Windows. SELECT opens on the chosen
@@ -345,19 +372,19 @@ low priority (`app/main.py`).
   (`WDA_EXCLUDEFROMCAPTURE`); it is placed in physical pixels so it is exact on
   any monitor scale. Off by default (`show_region_outline`).
 
-### New: QUIT on the nav bar
+#### New: QUIT on the nav bar
 
 `✕` only hides the overlay; QUIT ends it. One click arms it (red, `QUIT?`), a
 second within 2.5 s quits; otherwise it disarms.
 
-### Changed: updates come from this fork
+#### Changed: updates come from this fork
 
 `app/updater.py` pointed at `fishtaco7/citizen-assistant`, so UPDATE in this
 fork would have replaced its fixes with the upstream code. CHECK and UPDATE now
 use `swill008/citizen-assistant`; the HTTP User-Agent names the fork. Nothing
 updates by itself.
 
-### Tests
+#### Tests
 
 - `tools/scan_selftest.py`: OCR thread cap; one picker window per monitor at
   that monitor's scale; exact drag on all four monitors; picker on the chosen
@@ -374,7 +401,7 @@ updates by itself.
 - The existing `selftest`, `workflow_selftest`, `refinery_selftest`,
   `combat_selftest` and `blueprint_selftest` still pass.
 
-### Known limits
+#### Known limits
 
 - A box moved for a new resolution or aspect ratio is a best estimate of where
   the HUD went; check SHOW BOX or SHOW PREVIEW and press SELECT if it is off.

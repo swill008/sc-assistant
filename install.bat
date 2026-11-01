@@ -5,12 +5,12 @@ setlocal
 cd /d "%~dp0"
 
 echo.
-echo  Citizen Assistant - install
+echo  SC Assistant - install
 echo  --------------------
 echo.
 
 if not exist "app\main.py" (
-    echo Run install.bat from inside the citizen-assistant folder.
+    echo Run install.bat from inside the sc-assistant folder.
     pause
     exit /b 1
 )
@@ -43,14 +43,14 @@ if exist "%~dp0.venv\Scripts\python.exe" set "PY=%~dp0.venv\Scripts\python.exe"
 if exist "%PY%" "%PY%" -m app --version
 echo  The desktop and Start menu shortcuts now launch this folder.
 
-choice /C YN /N /M "Start Citizen Assistant automatically with Windows? [Y/N] "
+choice /C YN /N /M "Start SC Assistant automatically with Windows? [Y/N] "
 if errorlevel 2 goto skip_startup
 powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\make_shortcuts.ps1" -Startup
 if errorlevel 1 echo Warning: could not create the startup shortcut.
 :skip_startup
 
 echo.
-echo Done. Use the "Citizen Assistant" shortcut on the desktop or in the Start menu.
+echo Done. Use the "SC Assistant" shortcut on the desktop or in the Start menu.
 choice /C YN /N /M "Start it now, without a console window? [Y/N] "
 if errorlevel 2 goto finish
 start "" wscript.exe "%~dp0run-hidden.vbs"

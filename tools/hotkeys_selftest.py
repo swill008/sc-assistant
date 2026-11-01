@@ -3,11 +3,15 @@
     python -m tools.hotkeys_selftest
 
 No real global hotkey is registered (it could take a key from a running
-Citizen Assistant or the game): user32 is replaced by a fake that records
+SC Assistant or the game): user32 is replaced by a fake that records
 RegisterHotKey / UnregisterHotKey calls and answers GetAsyncKeyState from a
 set of "held" keys. The thread, its loop and the swap are the real ones.
 """
 from __future__ import annotations
+
+from tools import _testguard
+
+_testguard.install()        # first: no focus, no hotkeys
 
 import os
 import sys

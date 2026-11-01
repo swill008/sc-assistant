@@ -22,6 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from app import version  # noqa: E402
 from tools import release_body  # noqa: E402
 
 WORKFLOWS = ROOT / ".github" / "workflows"
@@ -55,6 +56,10 @@ def test_body(notes: Path) -> None:
     check("body: has How to install", "\n## How to install\n" in body)
     setup = release_body.SETUP_ASSET.format(version="9.8.7")
     check("body: names both downloads", setup in body and release_body.ZIP_ASSET in body)
+    check("body: download names come from app/version.py",
+          release_body.SETUP_ASSET == version.SETUP_ASSET and release_body.ZIP_ASSET == version.ZIP_ASSET
+          and "SCAssistant-9.8.7-Setup.exe" in body and "SCAssistant-windows-x64.zip" in body
+          and "CitizenAssistant" not in body)
     check("body: SmartScreen hint", "More info" in body and "Run anyway" in body)
     check("body: notes come before How to install",
           body.index("- Another.") < body.index("## How to install"))
@@ -118,6 +123,49 @@ def test_workflows() -> None:
         runs = [str(s.get("run", "")) for s in build_doc["jobs"]["build"]["steps"]]
         check("build-exe.yml: runs the release notes self-test",
               any("release_notes_selftest" in run for run in runs))
+
+    for name, doc in docs.items():
+        if isinstance(doc, dict):
+            test_names(name, doc)
+
+
+def test_names(name: str, doc: dict) -> None:
+    """Build, zip, Setup and artifact names match app/version.py and exist."""
+    text = (WORKFLOWS / name).read_text(encoding="utf-8")
+    steps = next(iter(doc["jobs"].values()))["steps"]
+    runs = {str(s.get("name", "")): str(s.get("run", "")) for s in steps}
+    exe, zip_name = version.EXE_NAME, version.ZIP_ASSET
+    setup_glob = "dist/" + version.SETUP_ASSET.format(version="*")
+    check(f"{name}: no old Citizen Assistant names",
+          not re.search(r"citizen.?assistant", text, re.I))
+    build = runs.get("Build", "")
+    spec = re.search(r"(\S+\.spec)", build)
+    check(f"{name}: Build uses sc-assistant.spec and it exists",
+          bool(spec) and spec.group(1) == "sc-assistant.spec" and (ROOT / spec.group(1)).is_file(), build)
+    package = runs.get("Package standalone zip", "")
+    check(f"{name}: zip packs dist/{exe} into {zip_name}",
+          f"dist/{exe}/*" in package and package.rstrip().endswith(zip_name), package)
+    installer = runs.get("Build installer", "")
+    check(f"{name}: installer step's script exists",
+          (ROOT / installer.strip().replace("\\", "/")).is_file(), installer)
+    check(f"{name}: installer/sc_assistant.iss exists", (ROOT / "installer" / "sc_assistant.iss").is_file())
+    script = ROOT / "installer" / "build_installer.ps1"
+    body = script.read_text(encoding="utf-8-sig") if script.is_file() else ""
+    check(f"{name}: build_installer.ps1 reads dist\\{exe} and builds sc_assistant.iss",
+          f"dist\\{exe}\"" in body and "sc_assistant.iss" in body and "citizen_assistant.iss" not in body)
+    iss = ROOT / "installer" / "sc_assistant.iss"
+    iss_text = iss.read_text(encoding="utf-8-sig") if iss.is_file() else ""
+    check(f"{name}: sc_assistant.iss names the Setup {version.SETUP_ASSET}",
+          f'"{exe}-" + MyAppVersion + "-Setup"' in iss_text)
+    uploads = [s for s in steps if "upload-artifact" in str(s.get("uses", ""))
+               or "action-gh-release" in str(s.get("uses", ""))]
+    files = str((uploads[0].get("with") or {}).get("path") or (uploads[0].get("with") or {}).get("files")
+                ) if uploads else ""
+    check(f"{name}: publishes {zip_name} and {setup_glob}",
+          zip_name in files.split() and setup_glob in files.split(), files)
+    tests = [s for s in steps if "selftest" in str(s.get("run", ""))]
+    check(f"{name}: self-test steps set PYTHONIOENCODING=utf-8",
+          bool(tests) and all((s.get("env") or {}).get("PYTHONIOENCODING") == "utf-8" for s in tests))
 
 
 def test_version_has_notes() -> None:

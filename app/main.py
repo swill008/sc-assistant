@@ -37,10 +37,11 @@ from .ui.region_selector import RegionSelector
 from .ui.settings_panel import SettingsPanel
 from .ui.uex_panel import UexPanel
 from .ui import theme
+from .version import APP_NAME, MUTEX_NAME, OLD_MUTEX_NAME
 from .version import label as version_label
 from .voice import Voice, spoken_text
 
-APP_TITLE = "Citizen Assistant"
+APP_TITLE = APP_NAME
 ICON_PATH = Path(__file__).resolve().parents[1] / "app.ico"
 
 TOOLS = [
@@ -420,6 +421,18 @@ def _install_crash_log() -> Path:
 _MUTEX_HANDLE = None        # held open for the life of the process
 
 
+# ONE-TIME (rename to SC Assistant): a Citizen Assistant (1.2.x or older) copy
+# still running would fight this one for F3/F4, so refuse to start while its
+# mutex exists. Can go once no 1.2.x installs remain.
+def _old_name_running(kernel32) -> bool:
+    handle = kernel32.OpenMutexW(0x00100000, False,     # SYNCHRONIZE
+                                 f"Local\\{OLD_MUTEX_NAME}")
+    if not handle:
+        return False
+    kernel32.CloseHandle(handle)
+    return True
+
+
 def _acquire_single_instance(replacing: bool = False) -> bool:
     """Windows named mutex: only one overlay may own the global hotkeys.
 
@@ -437,12 +450,20 @@ def _acquire_single_instance(replacing: bool = False) -> bool:
                                       wintypes.LPCWSTR]
     kernel32.CreateMutexW.restype = wintypes.HANDLE
     kernel32.CloseHandle.argtypes = [wintypes.HANDLE]
+    kernel32.OpenMutexW.argtypes = [wintypes.DWORD, wintypes.BOOL,
+                                    wintypes.LPCWSTR]
+    kernel32.OpenMutexW.restype = wintypes.HANDLE
 
-    name = "Local\\CitizenAssistantOverlay"
+    name = f"Local\\{MUTEX_NAME}"
     # Restarting ourselves spawns the new copy before this one quits, so the
     # replacement waits for the old process to let go of the mutex.
     deadline = time.monotonic() + (10.0 if replacing else 0.0)
     while True:
+        if _old_name_running(kernel32):
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.25)
+            continue
         handle = kernel32.CreateMutexW(None, False, name)
         if not handle:
             return True             # no mutex: never block the app
@@ -462,7 +483,7 @@ def _already_running_notice() -> None:
 
     ctypes.windll.user32.MessageBoxW(
         None,
-        "Citizen Assistant is already running.\n\n"
+        f"{APP_NAME} is already running.\n\n"
         "Use its tray icon, or press F3 to show the nav bar.\n\n"
         f"This copy is {version_label()}. If the running copy is older, "
         "quit it from the tray and start this one.",
@@ -1806,7 +1827,7 @@ class OverlayApp(QObject):
     def _install_update(self, setup_path: str) -> None:
         """Installed EXE: run the downloaded Setup once this copy has quit.
 
-        Setup refuses while Citizen Assistant runs, so it is started by a
+        Setup refuses while SC Assistant runs, so it is started by a
         helper that waits for this process to exit; Setup then replaces the
         files and starts the new version (/LAUNCH=1).
         """
@@ -1864,7 +1885,7 @@ class OverlayApp(QObject):
 # ---------------------------------------------------------------------------
 def main(argv: list[str] | None = None) -> int:
     _install_crash_log()
-    parser = argparse.ArgumentParser(prog="citizen-assistant", description="Star Citizen overlay")
+    parser = argparse.ArgumentParser(prog="sc-assistant", description="Star Citizen overlay")
     parser.add_argument("--demo", action="store_true",
                         help="run the mining scanner against a synthetic signature")
     parser.add_argument("--capture-visible", action="store_true",
@@ -1876,7 +1897,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--restart", action="store_true",
                         help=argparse.SUPPRESS)
     parser.add_argument("--version", action="version",
-                        version=f"Citizen Assistant {version_label()}")
+                        version=f"{APP_NAME} {version_label()}")
     args = parser.parse_args(argv)
 
     if not _acquire_single_instance(replacing=args.restart):

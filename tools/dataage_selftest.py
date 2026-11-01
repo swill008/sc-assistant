@@ -10,6 +10,10 @@ monitor when there is one. Exit code = number of failures.
 """
 from __future__ import annotations
 
+from tools import _testguard
+
+_testguard.install()        # first: no focus, no hotkeys
+
 import os
 import sys
 import tempfile

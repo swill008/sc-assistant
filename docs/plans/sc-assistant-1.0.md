@@ -1,7 +1,15 @@
-# Plan: SC Assistant 1.0 (approved 2026-11-01, not started)
+# Plan: SC Assistant 1.0 (approved 2026-11-01)
 
-Status: **planned, no code yet** — waiting for the user's go. Approved answers:
-1a, 2a, 3a, 4b ("SC Assistant"), 5a; 6: do not code yet.
+Status (2026-11-01): **wave 1 done** (A, B, C, F, H, I, J; see CHANGES.md
+v1.0.0). **Wave 2 in progress** (D rename + E version 1.0.0, then
+release-notes/1.0.0.md). Wave 3 (release) waits for the user's word.
+Approved answers: 1a, 2a, 3a, 4b ("SC Assistant"), 5a.
+
+User's choices recorded during wave 1 (2026-11-01):
+- PTU signature data stays a config-file setting only
+  (`signature_channel: "ptu"` in config.json); no Settings control.
+- Data safety keeps a single `<name>.bak` (the previous save), not a rotating
+  set.
 
 ## A. Tracking feedback (design agreed earlier: 1a, 2a, 3a)
 - Scanner panel chip, always: TRACKING (cyan) / SEARCHING (amber) / FIXED BOX (grey).
@@ -99,13 +107,29 @@ docs/reviews/2026-11-01-code-review.md (findings 1-6).
 Merge feature/hud-tracking → main, release 1.0.0 with notes.
 
 ## Order
-- Wave 1 (parallel agents): H first (data safety), then A, B, C, F, I and J —
+- Wave 1 (parallel agents) — **done 2026-11-01**: H first (data safety), then A, B, C, F, I and J —
   split table before starting; shared files (main.py, settings_panel.py) get
   one owner each.
-- Wave 2: D + E (touch files everywhere), then release-notes/1.0.0.md.
+- Wave 2: D + E (touch files everywhere), then release-notes/1.0.0.md —
+  **in progress 2026-11-01**.
 - Wave 3: G on the user's word.
 Effort: no timing data for this repo; rough guess 2½–3½ hours plus in-game
 testing between waves.
+
+## One-time code (rename to SC Assistant)
+Marked `ONE-TIME (rename to SC Assistant)` in the code; it can go once no
+1.2.x (Citizen Assistant) installs remain. Listed here before each release.
+- app/version.py: `OLD_APP_NAME`, `OLD_EXE_NAME`, `OLD_MUTEX_NAME`.
+- app/config.py: `_move_old_folder`, `_is_empty_dir` (settings folder move).
+- app/main.py: `_old_name_running` and its call in `_acquire_single_instance`.
+- installer/sc_assistant.iss: old-name defines; `CitizenAssistant.exe.old`
+  clean-up; `OursIsHere` old exe; PrepareToInstall/DeinitializeSetup old exe
+  move-aside; `RemoveOldInstall`, `RemoveOldShortcut`, `LinkTarget`,
+  `OldDefaultDir`, `SamePath`, `InitializeWizard` folder redirect; the old
+  mutex in the real edition's AppMutex.
+- installer/test_installer.ps1: step 8 and `BuildOldSetup`.
+- tools/make_shortcuts.ps1: `$oldName`, `Test-SourceShortcut`,
+  `Remove-OldShortcuts`; uninstall.bat comment.
 
 ## Parked (2026-11-01): SuperCargo button
 A CARGO nav-bar button that shows/hides SuperCargo and its overlay. Planned

@@ -12,12 +12,18 @@ import argparse
 import sys
 from pathlib import Path
 
-NOTES_DIR = Path(__file__).resolve().parent.parent / "release-notes"
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:          # run as a script by release.yml
+    sys.path.insert(0, str(ROOT))
+
+from app import version as _names  # noqa: E402
+
+NOTES_DIR = ROOT / "release-notes"
 
 # Release download names; the workflows and installer build these files.
-# A rename touches only this.
-SETUP_ASSET = "CitizenAssistant-{version}-Setup.exe"
-ZIP_ASSET = "CitizenAssistant-windows-x64.zip"
+# They come from app/version.py, the one place a rename touches.
+SETUP_ASSET = _names.SETUP_ASSET
+ZIP_ASSET = _names.ZIP_ASSET
 
 
 class ReleaseNotesError(Exception):
