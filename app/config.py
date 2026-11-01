@@ -195,6 +195,10 @@ DEFAULTS: dict = {
     # Settings sections left open (ui/settings_panel.SECTION_IDS); SCANNER is
     # also forced open while no box is drawn.
     "settings_open": ["scanner"],
+    # Settings → DEBUG. SCAN HISTORY keeps the last reads in scan_history.txt;
+    # SAVE BAD READS keeps pictures of unreadable tracked plates in bad_reads/.
+    "debug_scan_history": False,
+    "debug_save_bad_reads": False,
 }
 
 
@@ -212,7 +216,7 @@ def open_folder(path) -> None:
 
 # Settings → RESET SETTINGS. Names in the settings folder (shell patterns; a
 # pattern also covers its ".bak" copy). RESET_REMOVE: the settings, the pin
-# picture, downloaded caches and the unmatched recorder. RESET_KEEP: the
+# picture, downloaded caches, the unmatched recorder and the DEBUG files. RESET_KEEP: the
 # user's own data; anything on neither list is kept too.
 RESET_REMOVE: tuple[str, ...] = (
     "config.json", "config.tmp",            # settings (Config.save)
@@ -222,6 +226,8 @@ RESET_REMOVE: tuple[str, ...] = (
     "where_to_mine.json",                   # ore finder (scminer)
     "signatures_scmdb.json",                # signature data (scmdb)
     "unmatched",                            # unmatched readings (folder)
+    "scan_history.txt", "scan_history.tmp",  # DEBUG → SCAN HISTORY
+    "bad_reads",                            # DEBUG → SAVE BAD READS (folder)
 )
 RESET_KEEP: tuple[str, ...] = (
     "notes.txt",                            # notes

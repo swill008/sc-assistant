@@ -29,6 +29,7 @@ SECTION_HEADINGS = (
     ("hotkeys", "HOTKEYS"),
     ("look", "LOOK & SOUND"),
     ("update", "UPDATE & RESET"),
+    ("debug", "DEBUG"),
 )
 SECTION_IDS = tuple(section_id for section_id, _ in SECTION_HEADINGS)
 
@@ -399,6 +400,10 @@ class SettingsPanel(QWidget):
     open_unmatched_folder = Signal()  # UNMATCHED READINGS -> OPEN FOLDER
     clear_unmatched = Signal()        # UNMATCHED READINGS -> CLEAR, second click
     sections_changed = Signal(list)   # open group ids (SECTION_IDS order), user clicks only
+    history_toggled = Signal(bool)    # DEBUG -> SCAN HISTORY switch, user clicks only
+    bad_reads_toggled = Signal(bool)  # DEBUG -> SAVE BAD READS switch, user clicks only
+    open_history = Signal()           # DEBUG -> OPEN HISTORY
+    open_bad_reads = Signal()         # DEBUG -> OPEN FOLDER
 
     # Two-click buttons (like QUIT on the nav bar): the first click arms,
     # a second within ARM_MS acts; otherwise the button reverts.
@@ -487,7 +492,7 @@ class SettingsPanel(QWidget):
         builders = {
             "scanner": self._build_scanner, "scan_data": self._build_scan_data,
             "hotkeys": self._build_hotkeys, "look": self._build_look,
-            "update": self._build_update,
+            "update": self._build_update, "debug": self._build_debug,
         }
         for section_id, heading in SECTION_HEADINGS:
             builders[section_id](self._add_group(root, section_id, heading))
@@ -955,6 +960,74 @@ class SettingsPanel(QWidget):
         self.reset_note.hide()
         root.addWidget(self.reset_note)
 
+    def _build_debug(self, root: QVBoxLayout) -> None:
+        """SCAN HISTORY and SAVE BAD READS: switch and open button each."""
+        root.addWidget(_section("Scan debugging"))
+        self.history_btn, self.history_open_btn = self._debug_row(
+            root, "SCAN HISTORY", "OPEN HISTORY",
+            "Keep the last 50 reads in scan_history.txt in the settings folder",
+            "Open scan_history.txt")
+        self.history_btn.toggled.connect(self._on_history)
+        self.history_open_btn.clicked.connect(self.open_history.emit)
+        self.bad_reads_btn, self.bad_reads_open_btn = self._debug_row(
+            root, "SAVE BAD READS", "OPEN FOLDER",
+            "Save a picture (at most one a second, newest 200 kept) when the "
+            "plate is on screen but its number cannot be read",
+            "Open the bad_reads folder")
+        self.bad_reads_btn.toggled.connect(self._on_bad_reads)
+        self.bad_reads_open_btn.clicked.connect(self.open_bad_reads.emit)
+
+    def _debug_row(self, root: QVBoxLayout, name: str, open_text: str,
+                   tip: str, open_tip: str) -> tuple[QPushButton, QPushButton]:
+        row = QHBoxLayout()
+        row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
+        # Tighter than the other rows: SAVE BAD READS, the switch and OPEN
+        # HISTORY only just fit the width.
+        row.setSpacing(theme.px(6))
+        label = QLabel(name)
+        label.setFont(theme.font(8, QFont.Weight.DemiBold, spacing=0.4))
+        label.setStyleSheet(theme.qss(
+            "color: rgba(150,166,182,0.95); background: transparent;"))
+        label.setToolTip(tip)
+        switch = _button("OFF", checkable=True)
+        switch.setFixedWidth(theme.px(52))
+        switch.setToolTip(tip)
+        opener = _button(open_text)
+        opener.setToolTip(open_tip)
+        row.addWidget(label, 1)
+        row.addWidget(switch)
+        row.addWidget(opener)
+        root.addLayout(row)
+        return switch, opener
+
+    def _on_history(self, checked: bool) -> None:
+        self.history_btn.setText("ON" if checked else "OFF")
+        self._update_summaries()
+        self.history_toggled.emit(checked)
+
+    def _on_bad_reads(self, checked: bool) -> None:
+        self.bad_reads_btn.setText("ON" if checked else "OFF")
+        self._update_summaries()
+        self.bad_reads_toggled.emit(checked)
+
+    @staticmethod
+    def _set_switch(button: QPushButton, on: bool) -> None:
+        if button.isChecked() != on:
+            button.blockSignals(True)
+            button.setChecked(on)
+            button.blockSignals(False)
+        button.setText("ON" if on else "OFF")
+
+    def set_history(self, enabled: bool) -> None:
+        """Show the SCAN HISTORY switch; emits nothing."""
+        self._set_switch(self.history_btn, bool(enabled))
+        self._update_summaries()
+
+    def set_bad_reads(self, enabled: bool) -> None:
+        """Show the SAVE BAD READS switch; emits nothing."""
+        self._set_switch(self.bad_reads_btn, bool(enabled))
+        self._update_summaries()
+
     # -- collapsible groups ------------------------------------------------
     def _add_group(self, root: QVBoxLayout, section_id: str, heading: str) -> QVBoxLayout:
         """Heading row plus a body; returns the body's layout to fill."""
@@ -1055,6 +1128,8 @@ class SettingsPanel(QWidget):
             "update": (self._download_summary() if self._download is not None
                        else f"v{self._pending_version} available" if self._pending_version
                        else f"v{VERSION} installed"),
+            "debug": (f"history {'on' if self.history_btn.isChecked() else 'off'} · "
+                      f"saver {'on' if self.bad_reads_btn.isChecked() else 'off'}"),
         }
         for section_id, text in summaries.items():
             self._groups[section_id][0].set_summary(text)

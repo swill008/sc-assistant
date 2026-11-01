@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import subprocess
 import sys
 import time
@@ -45,6 +46,7 @@ from .voice import Voice, spoken_text
 
 APP_TITLE = APP_NAME
 ICON_PATH = Path(__file__).resolve().parents[1] / "app.ico"
+log = logging.getLogger(__name__)
 
 TOOLS = [
     {"id": "mining", "label": "MINING", "enabled": True,
@@ -74,6 +76,103 @@ DRAW_FRAME_MS = 120
 # Seconds in a row the tracked plate must stay unreadable before the result
 # border turns red ("noread"); single dropped frames never do.
 NOREAD_SECONDS = 1.0
+# Settings → DEBUG. SCAN HISTORY: the last HISTORY_KEEP reads, newest last, in
+# <settings folder>/scan_history.txt, rewritten at most every HISTORY_WRITE_MS.
+# SAVE BAD READS: a PNG of the digits when the tracked plate is on screen but
+# unreadable, at most one per BAD_READ_SECONDS, the newest BAD_READS_KEEP kept.
+HISTORY_NAME = "scan_history.txt"
+HISTORY_KEEP = 50
+HISTORY_WRITE_MS = 1000
+BAD_READS_FOLDER = "bad_reads"
+BAD_READS_KEEP = 200
+BAD_READ_SECONDS = 1.0
+
+
+class ScanHistory:
+    """The last reads as text lines; flush() rewrites the (small) file."""
+
+    def __init__(self, path: Path, keep: int = HISTORY_KEEP):
+        self.path = Path(path)
+        self.lines: deque[str] = deque(maxlen=keep)
+        self.dirty = False
+
+    def load(self) -> None:
+        """Carry on from the lines already in the file."""
+        try:
+            text = self.path.read_text(encoding="utf-8")
+        except OSError:
+            return
+        self.lines.extend(line for line in text.splitlines() if line.strip())
+
+    def add(self, line: str) -> None:
+        self.lines.append(line)
+        self.dirty = True
+
+    def flush(self) -> None:
+        if not self.dirty:
+            return
+        self.dirty = False
+        tmp = self.path.with_suffix(".tmp")
+        try:
+            tmp.write_text("\n".join(self.lines) + "\n", encoding="utf-8")
+            tmp.replace(self.path)
+        except OSError as exc:          # a full disk must not stop the scanner
+            log.warning("scan history: could not write %s (%s)", self.path, exc)
+
+
+def history_line(when: float, res, matches, confirmed: bool, shown: bool,
+                 border: str | None, track: str | None) -> str:
+    """One SCAN HISTORY line: time, read, confidence, top and second exact
+    match, confirmed, shown, border result and track state."""
+    stamp = datetime.fromtimestamp(when).strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    value = getattr(res, "value", None)
+    read = f"{int(value):,}" if value is not None else "—"
+    try:
+        conf = f"{float(getattr(res, 'confidence', 0.0)):.2f}"
+    except (TypeError, ValueError):
+        conf = "?"
+
+    def name(m) -> str:
+        return f"{m.label} ×{m.count}"
+    top = matches[0] if matches else None
+    top_text = f"{name(top)} {'exact' if top.exact else '~'}" if top is not None else "none"
+    second = next((m for m in (matches or [])[1:] if m.exact), None)
+    second_text = name(second) if second is not None else "none"
+    return (f"{stamp} | read {read} | conf {conf} | top {top_text} | 2nd {second_text}"
+            f" | confirmed {'yes' if confirmed else 'no'} | shown {'yes' if shown else 'no'}"
+            f" | border {border or 'none'} | track {track or 'none'}")
+
+
+def save_bad_read(folder: Path, crop, when: float, track: dict | None,
+                  seq: int, keep: int = BAD_READS_KEEP) -> Path | None:
+    """Write the crop as PNG (time and track info in the name), then delete
+    all but the newest ``keep`` pictures. None when it could not be saved."""
+    try:
+        import cv2
+        ok, buf = cv2.imencode(".png", crop)
+    except Exception as exc:            # not an image cv2 understands
+        log.warning("bad reads: could not encode the crop (%s)", exc)
+        return None
+    if not ok:
+        return None
+    stamp = datetime.fromtimestamp(when).strftime("%Y%m%d-%H%M%S-%f")[:-3]
+    info = (track or {}).get("state") or "none"
+    digits = (track or {}).get("digits") or {}
+    if digits:
+        info += (f"-x{digits.get('left')}-y{digits.get('top')}"
+                 f"-{digits.get('width')}x{digits.get('height')}")
+    path = Path(folder) / f"{stamp}-{seq:06d}-{info}.png"
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(buf.tobytes())
+        # Names start with the time, so name order is age order.
+        old = sorted(path.parent.glob("*.png"))[:-keep] if keep > 0 else []
+        for extra in old:
+            extra.unlink(missing_ok=True)
+    except OSError as exc:
+        log.warning("bad reads: could not save %s (%s)", path, exc)
+        return None
+    return path
 
 
 # ---------------------------------------------------------------------------
@@ -650,6 +749,7 @@ class OverlayApp(QObject):
         self._paused = False
         self._last_match_name = ""
         self._init_result_state()
+        self._init_debug_state()
         # RESET SETTINGS in progress: nothing may write the old settings back.
         self._resetting = False
         # QUIT or dispose ran: the debounced window save is off for good.
@@ -793,6 +893,10 @@ class OverlayApp(QObject):
         self.settings.clear_unmatched.connect(self._clear_unmatched)
         self.settings.reset_requested.connect(self._reset_settings)
         self.settings.sections_changed.connect(self._on_sections_changed)
+        self.settings.history_toggled.connect(self._on_history_switch)
+        self.settings.bad_reads_toggled.connect(self._on_bad_reads_switch)
+        self.settings.open_history.connect(self._open_history)
+        self.settings.open_bad_reads.connect(self._open_bad_reads)
         for panel_id, widget in self._panels().items():
             widget.pin_toggled.connect(
                 lambda pinned, pid=panel_id: self._on_pin(pid, pinned))
@@ -897,6 +1001,9 @@ class OverlayApp(QObject):
         self.settings.set_voice_hint(
             "" if self.voice.available else "No speech engine available")
         self._show_unmatched()
+        self.settings.set_history(bool(self.cfg.get("debug_scan_history")))
+        self.settings.set_bad_reads(bool(self.cfg.get("debug_save_bad_reads")))
+        self._apply_debug()
 
         self.panel.show()
         # The other tools default to a spot beside the (now shown) scanner.
@@ -1890,6 +1997,11 @@ class OverlayApp(QObject):
 
     # ------------------------------------------------------------------
     def _on_result(self, res, matches) -> None:
+        confirmed = self._handle_result(res, matches)
+        self._debug_read(res, matches, confirmed)
+
+    def _handle_result(self, res, matches) -> bool:
+        """Show one read; True when it passed confirmation (shown as stable)."""
         if res is not self._last_res:
             self._last_res = res
             if self._plate_view is None:    # else _on_plate_view shows the window
@@ -1898,7 +2010,7 @@ class OverlayApp(QObject):
         if not res.ok:
             self._recent.clear()
             self._on_unreadable(res)
-            return
+            return False
 
         self._noread_since = None
         self.panel.set_scanned(res.value)
@@ -1929,7 +2041,7 @@ class OverlayApp(QObject):
         if not stable and not fast_lock:
             self.panel.set_state("reading")
             self._set_result(None)          # only a confirmed result colours it
-            return
+            return False
 
         self._last_value = value
         self._last_matches = matches
@@ -1958,6 +2070,80 @@ class OverlayApp(QObject):
             self._announce_signature(value, top)
         # Here the value is shown (fast single read or identical reads).
         self._maybe_learn_pin(top)
+        return True
+
+    # -- Settings → DEBUG: scan history and bad-read pictures ------------
+    def _init_debug_state(self) -> None:
+        folder = config_dir()
+        self._history: ScanHistory | None = None      # None while SCAN HISTORY is off
+        self._history_path = folder / HISTORY_NAME
+        self._history_timer = QTimer(self)
+        self._history_timer.setSingleShot(True)
+        self._history_timer.setInterval(HISTORY_WRITE_MS)
+        self._history_timer.timeout.connect(self._flush_history)
+        self._bad_reads_folder = folder / BAD_READS_FOLDER
+        self._bad_read_at: float | None = None       # monotonic time of the last picture
+        self._bad_read_seq = 0
+
+    def _apply_debug(self) -> None:
+        """Start or stop SCAN HISTORY from the settings."""
+        if self.cfg.get("debug_scan_history") and not self._resetting:
+            if self._history is None:
+                self._history = ScanHistory(self._history_path)
+                self._history.load()
+        elif self._history is not None:
+            self._flush_history()
+            self._history = None
+
+    def _on_history_switch(self, enabled: bool) -> None:
+        self.cfg["debug_scan_history"] = bool(enabled)
+        self.cfg.save()
+        self._apply_debug()
+
+    def _on_bad_reads_switch(self, enabled: bool) -> None:
+        self.cfg["debug_save_bad_reads"] = bool(enabled)
+        self.cfg.save()
+
+    def _flush_history(self) -> None:
+        self._history_timer.stop()
+        if self._history is not None and not self._resetting:
+            self._history.flush()
+
+    def _open_history(self) -> None:
+        """OPEN HISTORY: the file when there is one, else its folder."""
+        self._flush_history()
+        path = self._history_path
+        app_config.open_folder(path if path.is_file() else path.parent)
+
+    def _open_bad_reads(self) -> None:
+        try:
+            self._bad_reads_folder.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        app_config.open_folder(self._bad_reads_folder)
+
+    def _debug_read(self, res, matches, confirmed: bool) -> None:
+        """After each read (GUI thread): the history line and the bad-read
+        picture. "no plate" is not a read (the reader did not run)."""
+        if self._resetting or getattr(res, "raw", "") == "no plate":
+            return
+        state = self._track_info.get("state")
+        if self._history is not None:
+            value = getattr(res, "value", None)
+            shown = value is not None and value == self._last_value
+            self._history.add(history_line(time.time(), res, matches, confirmed,
+                                           shown, self._result, state))
+            if not self._history_timer.isActive():
+                self._history_timer.start()
+        if (self.cfg.get("debug_save_bad_reads") and not res.ok and state == "locked"
+                and getattr(res, "crop", None) is not None):
+            now = time.monotonic()
+            if self._bad_read_at is not None and now - self._bad_read_at < BAD_READ_SECONDS:
+                return
+            self._bad_read_at = now
+            self._bad_read_seq += 1
+            save_bad_read(self._bad_reads_folder, res.crop, time.time(),
+                          self._track_info, self._bad_read_seq)
 
     def _init_result_state(self) -> None:
         self._result: str | None = None          # what the border shows now
@@ -2040,6 +2226,7 @@ class OverlayApp(QObject):
         """aboutToQuit: write the settings, unless they were just reset."""
         if not self._resetting:
             self.cfg.save()
+            self._flush_history()
 
     def _announce_signature(self, value: int, top) -> None:
         """Speak a locked rock once, not on every read while flying at it.

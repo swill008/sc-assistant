@@ -9,10 +9,12 @@ image the way DRAW REGION does, and quits with QUIT. The file on disk must hold
 every change; the second run, started from that file, must show each one in
 Settings and use it in the scanner. The open Settings sections (headings
 opened and closed in the first run) must come back the same, an unknown id in
-the file is dropped, and SCANNER is forced open only while no box is drawn. A third run uses UNMATCHED READINGS (OPEN
+the file is dropped, and SCANNER is forced open only while no box is drawn. The DEBUG switches (SCAN HISTORY, SAVE
+BAD READS) are turned on by clicks and come back on. A third run uses UNMATCHED READINGS (OPEN
 FOLDER, CLEAR) and RESET SETTINGS: the restart is caught, the settings file
 must stay gone after the restart and quit (nothing old written back), a dated
-backup holds it, and a fourth run starts on the defaults.
+backup holds it, scan_history.txt and bad_reads/ are removed, and a fourth run
+starts on the defaults (both DEBUG switches off).
 """
 from __future__ import annotations
 
@@ -104,6 +106,19 @@ def _reset_run(app, saved: dict) -> int:
         failures += _check("CLEAR (two clicks) empties the unmatched readings",
                            three.unmatched.entries() == [], f"({three.unmatched.entries()})")
 
+        # DEBUG files on disk (both switches on from the first run).
+        import numpy as np
+
+        history = getattr(three, "_history", None)
+        if history is not None:
+            history.add("one read")
+            three._flush_history()
+        main_mod.save_bad_read(config_dir() / "bad_reads", np.zeros((20, 50, 3), np.uint8),
+                               time.time(), {"state": "locked", "digits": None}, 1)
+        failures += _check("DEBUG files exist before the reset",
+                           (config_dir() / "scan_history.txt").is_file()
+                           and any((config_dir() / "bad_reads").glob("*.png")))
+
         s.reset_btn.click()
         _pump(0.1)
         failures += _check("one RESET click keeps the settings", CONFIG_PATH.is_file() and not launched)
@@ -119,6 +134,10 @@ def _reset_run(app, saved: dict) -> int:
                        not CONFIG_PATH.is_file(),
                        f"({CONFIG_PATH.read_text(encoding='utf-8')[:80] if CONFIG_PATH.is_file() else ''})")
     failures += _check("pin removed", not (config_dir() / "anchor.png").is_file())
+    failures += _check("reset removed scan_history.txt and bad_reads/",
+                       not (config_dir() / "scan_history.txt").exists()
+                       and not (config_dir() / "bad_reads").exists(),
+                       f"({sorted(p.name for p in config_dir().iterdir())})")
     folder = config_dir()
     backups = [p for p in folder.parent.iterdir() if p.name.startswith(f"{folder.name} backup ")]
     kept = [json.loads((b / "config.json").read_text(encoding="utf-8")) for b in backups
@@ -138,6 +157,12 @@ def _reset_run(app, saved: dict) -> int:
                        four.scan._interval == int(DEFAULTS["poll_ms"]), f"(interval {four.scan._interval})")
     failures += _check("no box and no pin after the reset",
                        four.cfg["region"] == DEFAULTS["region"] and not four.scan.tracking)
+    failures += _check("DEBUG switches back to off",
+                       four.cfg.get("debug_scan_history") is False
+                       and four.cfg.get("debug_save_bad_reads") is False
+                       and not four.settings.history_btn.isChecked()
+                       and not four.settings.bad_reads_btn.isChecked()
+                       and getattr(four, "_history", "missing") is None)
     failures += _check("open Settings sections back to SCANNER only",
                        four.cfg["settings_open"] == ["scanner"] and four.settings.open_sections == ["scanner"],
                        f"(cfg {four.cfg['settings_open']}, panel {four.settings.open_sections})")
@@ -192,6 +217,9 @@ def main() -> int:
     s.reads_slider.setValue(6)
     s.tracking_slider.setValue(250 // TRACKING_STEP)  # the slider counts 50 px steps
     s.outline_btn.setChecked(True)
+    if hasattr(s, "history_btn"):
+        s.history_btn.click()
+        s.bad_reads_btn.click()
     want_open = ["scanner", "hotkeys", "look"]
     _user_opens(s, want_open)
     # DRAW REGION on the new box (the digits of the 5K2K image, which works on
@@ -234,6 +262,9 @@ def main() -> int:
     failures += _check("pin saved", bool(meta) and (config_dir() / meta.get("file", "")).is_file(), f"({meta})")
     failures += _check("plate saved", saved.get("plate") == one.cfg.get("plate") and bool(saved.get("plate")),
                        f"({saved.get('plate')})")
+    failures += _check("DEBUG switches saved on",
+                       saved.get("debug_scan_history") is True and saved.get("debug_save_bad_reads") is True,
+                       f"({saved.get('debug_scan_history')}, {saved.get('debug_save_bad_reads')})")
     failures += _check("open Settings sections saved", saved.get("settings_open") == want_open,
                        f"({saved.get('settings_open')})")
     # A hand-edited or older file may name a section that no longer exists.
@@ -267,6 +298,10 @@ def main() -> int:
                        getattr(two.scan, "_plate", None) == want_plate,
                        f"(scanner {getattr(two.scan, '_plate', '<missing>')}, saved {want_plate})")
     failures += _check("no amber note", not s.region_note.text(), f"({s.region_note.text()!r})")
+    failures += _check("DEBUG switches show on and SCAN HISTORY records",
+                       getattr(s, "history_btn", None) is not None and s.history_btn.isChecked()
+                       and s.bad_reads_btn.isChecked() and s.section_summary("debug") == "history on · saver on"
+                       and getattr(two, "_history", None) is not None)
     failures += _check("open Settings sections come back, unknown id dropped",
                        s.open_sections == want_open and two.cfg["settings_open"] == want_open,
                        f"(panel {s.open_sections}, cfg {two.cfg['settings_open']})")
@@ -281,7 +316,7 @@ def main() -> int:
     failures += _check("quitting again keeps every setting",
                        all(resaved.get(k) == saved.get(k) for k in
                            ("poll_ms", "tracking_range", "show_region_outline", "game_monitor", "region", "anchor", "plate",
-                            "settings_open")))
+                            "settings_open", "debug_scan_history", "debug_save_bad_reads")))
 
     # ---- RESET SETTINGS: defaults after the restart, nothing written back --
     failures += _reset_run(app, saved)

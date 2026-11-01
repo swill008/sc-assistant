@@ -5,7 +5,7 @@
 Drives the real SettingsPanel with real mouse clicks (QTest), off-screen:
 the two-click RESET SETTINGS button (arms, reverts, emits once), its error
 note, the UNMATCHED READINGS list (count, newest rows, OPEN FOLDER, two-click
-CLEAR), the five collapsible groups (no Support group or donation text) (heading clicks, summaries, remembered and
+CLEAR), the six collapsible groups (no Support group or donation text; DEBUG last) (heading clicks, summaries, remembered and
 forced-open groups, the window fitting itself), and the layout at UI scale 1.0
 and 1.5 in every open/closed combination checked (no widgets overlap, no text
 cut off, armed texts fit), and the scanner preview (whole signature window
@@ -220,8 +220,13 @@ def check_layout() -> None:
                 check(f"UI {scale} {tag}: everything inside the window", not outside,
                       f"({outside[:4]})")
                 cut = [w.text() for w in (panel.reset_btn, panel.unmatched_clear_btn,
-                                          panel.unmatched_open_btn, panel.unmatched_label)
+                                          panel.unmatched_open_btn, panel.unmatched_label,
+                                          panel.history_btn, panel.history_open_btn,
+                                          panel.bad_reads_btn, panel.bad_reads_open_btn)
                        if w.width() < w.sizeHint().width()]
+                cut += [w.text() for w in panel.findChildren(QLabel)
+                        if w.text() in ("SCAN HISTORY", "SAVE BAD READS")
+                        and w.width() < w.sizeHint().width()]
                 cut += [v.text() for v, t in panel._unmatched_row_labels
                         if v.isVisible() and v.width() < v.sizeHint().width()]
                 cut += [t.text() for v, t in panel._unmatched_row_labels
@@ -258,20 +263,20 @@ def check_sections() -> None:
     from app.version import VERSION
 
     print("COLLAPSIBLE GROUPS")
-    check("five group ids in order (no Support)",
-          sp.SECTION_IDS == ("scanner", "scan_data", "hotkeys", "look", "update"),
+    check("six group ids in order (no Support, DEBUG last)",
+          sp.SECTION_IDS == ("scanner", "scan_data", "hotkeys", "look", "update", "debug"),
           f"({sp.SECTION_IDS})")
     panel = _panel()
     got: list[list] = []
     panel.sections_changed.connect(lambda ids: got.append(list(ids)))
 
     tops = [panel.section_header(s).y() for s in sp.SECTION_IDS]
-    check("headings top to bottom in SECTION_IDS order (Update & Reset last)",
-          tops == sorted(tops) and len(set(tops)) == 5, f"({tops})")
+    check("headings top to bottom in SECTION_IDS order (DEBUG last)",
+          tops == sorted(tops) and len(set(tops)) == 6, f"({tops})")
     titles = [panel.section_header(s).title.text()[2:] for s in sp.SECTION_IDS]
-    check("headings read SCANNER ... UPDATE & RESET",
+    check("headings read SCANNER ... UPDATE & RESET, DEBUG",
           titles == ["SCANNER", "SCAN DATA", "HOTKEYS", "LOOK & SOUND",
-                     "UPDATE & RESET"], f"({titles})")
+                     "UPDATE & RESET", "DEBUG"], f"({titles})")
     words = [w.text() for w in panel.findChildren(QLabel) + panel.findChildren(QPushButton)]
     donation = [t for t in words if any(k in t.lower() for k in
                                         ("coffee", "btc", "bitcoin", "bc1q", "donat", "support"))]
@@ -351,6 +356,39 @@ def check_sections() -> None:
     check("update summary: vX available after CHECK found one",
           panel.section_summary("update") == "v999.0.0 available",
           f"({panel.section_summary('update')!r})")
+    check("debug summary: history off · saver off",
+          panel.section_summary("debug") == "history off · saver off",
+          f"({panel.section_summary('debug')!r})")
+    panel.set_history(True)
+    check("debug summary follows set_history; switch reads ON",
+          panel.section_summary("debug") == "history on · saver off"
+          and panel.history_btn.isChecked() and panel.history_btn.text() == "ON",
+          f"({panel.section_summary('debug')!r}, {panel.history_btn.text()!r})")
+    panel.set_history(False)
+    flips: list = []
+    panel.history_toggled.connect(lambda on: flips.append(("history", on)))
+    panel.bad_reads_toggled.connect(lambda on: flips.append(("saver", on)))
+    opens: list = []
+    panel.open_history.connect(lambda: opens.append("history"))
+    panel.open_bad_reads.connect(lambda: opens.append("bad_reads"))
+    panel.set_bad_reads(True)
+    panel.set_bad_reads(False)
+    check("set_history / set_bad_reads emit nothing", flips == [], f"({flips})")
+    panel.bad_reads_btn.click()
+    check("SAVE BAD READS click: ON, emits True, summary saver on",
+          flips == [("saver", True)] and panel.bad_reads_btn.text() == "ON"
+          and panel.section_summary("debug") == "history off · saver on",
+          f"({flips}, {panel.section_summary('debug')!r})")
+    panel.history_btn.click()
+    panel.history_btn.click()
+    panel.bad_reads_btn.click()
+    check("switch clicks toggle and emit each change",
+          flips == [("saver", True), ("history", True), ("history", False), ("saver", False)],
+          f"({flips})")
+    panel.history_open_btn.click()
+    panel.bad_reads_open_btn.click()
+    check("OPEN HISTORY and OPEN FOLDER emit their signals",
+          opens == ["history", "bad_reads"], f"({opens})")
     header = panel.section_header("scanner")
     panel.set_monitors([("X" * 120, "long")], "X" * 120)
     QApplication.processEvents()
@@ -408,7 +446,7 @@ def check_section_layouts() -> None:
     print("GROUP LAYOUTS")
     combos = [[]] + [[s] for s in SECTION_IDS] + [
         ["scanner", "scan_data"], ["hotkeys", "look"], ["look", "update"],
-        ["scanner", "look", "update"], list(SECTION_IDS)]
+        ["scanner", "look", "update"], ["update", "debug"], list(SECTION_IDS)]
     for scale in (1.0, 1.5):
         theme.set_scale(scale)
         try:

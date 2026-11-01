@@ -646,6 +646,8 @@ def _bare_overlay(cfg):
         o._init_tracking_state()
     if hasattr(o, "_init_result_state"):         # missing before plan L
         o._init_result_state()
+    if hasattr(o, "_init_debug_state"):          # missing before Settings → DEBUG
+        o._init_debug_state()
     o._resetting = False
     o._closed = False
     o._settings_placed = False
