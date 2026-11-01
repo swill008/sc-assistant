@@ -16,7 +16,16 @@ on a secondary monitor, or the primary if there is only one, then:
    %APPDATA% settings are never touched) and checks the running scanner reads
    42,000, READS / S changes the live scan interval and the saved config, SHOW
    BOX shows and F4 hides the outline, a monitor resolution change rescales the
-   box and says so, the monitor choice is saved, and QUIT stops the scanner.
+   box and says so, the monitor choice is saved, and QUIT stops the scanner;
+5. HUD tracking, inside that app: SELECT on the box saves the pin anchor;
+   with the signature moved by a HUD-sized sway (+150, +100 px) the scanner
+   still reads it, its ``tracked`` rect sits on the moved digits and the fixed
+   box alone would not read it; SHOW BOX follows the digits; with the
+   signature gone nothing is read and the OCR is never run (counted by
+   wrapping SignatureOCR.read for calls off the GUI thread); TRACKING at 0
+   goes back to the fixed box.
+
+Exit code = number of failed checks.
 """
 from __future__ import annotations
 
@@ -24,6 +33,7 @@ import json
 import os
 import sys
 import tempfile
+import threading
 import time
 from pathlib import Path
 
@@ -45,6 +55,27 @@ from PySide6.QtWidgets import QApplication, QWidget  # noqa: E402
 FIXTURE = ROOT / "tools" / "fixtures" / "signal_42000_5k2k.png"
 DIGITS = {"left": 76, "top": 38, "width": 56, "height": 28}   # inside the fixture
 EXPECTED = 42000
+SWAY = (150, 100)        # physical px the HUD moves the plate (right, down)
+NEAR = 3                 # px a tracked rect may be off the true digits
+
+# SignatureOCR.read calls made by the scan thread (not the test's own reads).
+_SCAN_OCR_CALLS = [0]
+
+
+def _count_scan_ocr() -> None:
+    from app.ocr import SignatureOCR
+
+    real = SignatureOCR.read
+    if getattr(real, "_e2e_counted", False):
+        return
+
+    def read(self, *args, **kwargs):
+        if threading.current_thread() is not threading.main_thread():
+            _SCAN_OCR_CALLS[0] += 1
+        return real(self, *args, **kwargs)
+
+    read._e2e_counted = True
+    SignatureOCR.read = read
 
 
 def _check(label: str, ok: bool, detail: str = "") -> int:
@@ -72,6 +103,51 @@ class _Fixture(QWidget):
         pix = QPixmap.fromImage(self._image)
         pix.setDevicePixelRatio(self.devicePixelRatio())
         QPainter(self).drawPixmap(0, 0, pix)
+
+
+def _wait(cond, seconds: float = 8.0) -> bool:
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        if cond():
+            return True
+        _pump(0.05)
+    return bool(cond())
+
+
+def _move(widget, rect: dict) -> None:
+    from app import win32
+
+    win32.place_physical(widget, rect)
+    _pump(0.2)
+    win32.place_physical(widget, rect)
+    _pump(0.2)
+
+
+def _on_digits(rect, digits: dict) -> bool:
+    """A tracked rect sits on the digits: same top-left and height (within
+    NEAR), at least as wide (it may cover up to 6 digits)."""
+    if not rect:
+        return False
+    return (abs(rect["left"] - digits["left"]) <= NEAR
+            and abs(rect["top"] - digits["top"]) <= NEAR
+            and abs(rect["height"] - digits["height"]) <= NEAR
+            and rect["left"] + rect["width"] >= digits["left"] + digits["width"] - NEAR)
+
+
+def _close_to(a, b, tol: int = 2) -> bool:
+    return bool(a) and bool(b) and all(abs(a[k] - b[k]) <= tol
+                                       for k in ("left", "top", "width", "height"))
+
+
+def _inside(ring):
+    """The box an outline window surrounds (inverse of outline_rect)."""
+    from app.ui.region_outline import GAP, LINE
+
+    if not ring:
+        return None
+    pad = GAP + LINE
+    return {"left": ring["left"] + pad, "top": ring["top"] + pad,
+            "width": ring["width"] - 2 * pad, "height": ring["height"] - 2 * pad}
 
 
 def _show_fixture(screen):
@@ -178,7 +254,15 @@ def part_app(screen, shown: dict) -> int:
     cfg.save()
 
     app = QApplication.instance()
+    _count_scan_ocr()
     overlay = OverlayApp(app, Config.load())
+    seen = {"results": [], "tracked": []}
+    overlay.scan.result.connect(
+        lambda res, _m: seen["results"].append((time.monotonic(), getattr(res, "value", None))))
+    has_tracked = hasattr(overlay.scan, "tracked")
+    if has_tracked:
+        overlay.scan.tracked.connect(
+            lambda rect: seen["tracked"].append((time.monotonic(), rect)))
     overlay.start()
 
     # The real scan thread (low priority, 1 OCR thread) reads the live box.
@@ -190,6 +274,12 @@ def part_app(screen, shown: dict) -> int:
     failures += _check("scanner thread runs at low priority",
                        overlay.scan.priority() == overlay.scan.Priority.LowPriority,
                        f"(priority {overlay.scan.priority()})")
+
+    print("  -- HUD tracking --")
+    failures += _check("ScanThread has the tracked signal", has_tracked)
+    if has_tracked:
+        failures += part_tracking(overlay, shown, seen)
+    print("  -- settings --")
 
     # READS / S: live interval and saved config.
     overlay.settings.reads_slider.setValue(2)
@@ -254,6 +344,122 @@ def part_app(screen, shown: dict) -> int:
     return failures
 
 
+def part_tracking(overlay, shown: dict, seen: dict) -> int:
+    from app import win32
+    from app.capture import ScreenGrabber
+    from app.config import CONFIG_PATH, config_dir
+    from app.ocr import SignatureOCR
+    from app.ui.region_outline import outline_rect
+
+    failures = 0
+    fixture, frect, region = shown["fixture"], shown["rect"], shown["region"]
+    dx, dy = SWAY
+    moved_rect = dict(frect, left=frect["left"] + dx, top=frect["top"] + dy)
+    moved_digits = dict(region, left=region["left"] + dx, top=region["top"] + dy)
+
+    def last_tracked():
+        return seen["tracked"][-1][1] if seen["tracked"] else None
+
+    def values_since(t0):
+        return [v for t, v in seen["results"] if t >= t0]
+
+    def outline_now():
+        return win32.physical_window_rect(overlay.outline) if overlay.outline.isVisible() else None
+
+    # 1. SELECT through the app with the plate on the drawn box: the app grabs
+    #    the screen around it and saves the pin anchor.
+    overlay._on_region_selected(dict(region))
+    _pump(0.3)
+    meta = overlay.cfg.get("anchor")
+    saved = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    failures += _check("SELECT saves the pin anchor in the config",
+                       bool(meta) and saved.get("anchor") == meta, f"(anchor {meta})")
+    png = config_dir() / "anchor.png"
+    failures += _check("SELECT writes anchor.png in the config folder", png.is_file(), f"({png})")
+    note = overlay.settings.region_note
+    failures += _check("no 'No pin icon' note after SELECT", "No pin icon" not in note.text(),
+                       f"(note {note.text()!r})")
+    ok = _wait(lambda: overlay._last_value == EXPECTED and _on_digits(last_tracked(), region))
+    failures += _check(f"tracking reads {EXPECTED:,} on the calibrated box", ok,
+                       f"(last value {overlay._last_value}, tracked {last_tracked()})")
+
+    # 2. HUD sway: the plate moves off the box.
+    _move(fixture, moved_rect)
+    overlay._last_value = None
+    t_move = time.monotonic()
+    _wait(lambda: overlay._last_value == EXPECTED and _on_digits(last_tracked(), moved_digits))
+    failures += _check(f"plate moved {dx:+d},{dy:+d} px: scanner still reads {EXPECTED:,}",
+                       overlay._last_value == EXPECTED and EXPECTED in values_since(t_move),
+                       f"(last value {overlay._last_value}, took {time.monotonic() - t_move:.1f} s)")
+    failures += _check("tracked rect sits on the moved digits", _on_digits(last_tracked(), moved_digits),
+                       f"(want ~{moved_digits}, got {last_tracked()})")
+    grab = ScreenGrabber()
+    fixed = SignatureOCR(threads=1).read(grab.grab(region))
+    grab.close()
+    failures += _check(f"the fixed box alone does not read {EXPECTED:,} there", fixed.value != EXPECTED,
+                       f"(fixed box read {fixed.value})")
+
+    # 3. SHOW BOX follows the tracked digits.
+    overlay.settings.outline_btn.setChecked(True)
+    _wait(lambda: _on_digits(_inside(outline_now()), moved_digits), 3.0)
+    got = outline_now()
+    failures += _check("SHOW BOX outline follows the tracked digits",
+                       _on_digits(_inside(got), moved_digits),
+                       f"(outline {got}, want around {moved_digits})")
+
+    # 4. Plate gone: results with no value, and no OCR while no pin is found.
+    fixture.hide()
+    _pump(0.8)              # let a read already in flight finish
+    t_gone, calls = time.monotonic(), _SCAN_OCR_CALLS[0]
+    _pump(2.5)
+    gone = values_since(t_gone)
+    failures += _check("plate gone: scanner still reports (empty) results", len(gone) > 0,
+                       f"({len(gone)} results)")
+    failures += _check("plate gone: no value read", all(v is None for v in gone),
+                       f"(values {sorted(set(map(str, gone)))})")
+    failures += _check("plate gone: OCR never run", _SCAN_OCR_CALLS[0] == calls,
+                       f"({_SCAN_OCR_CALLS[0] - calls} scan-thread OCR calls in 2.5 s)")
+    failures += _check("plate gone: tracked reports None", last_tracked() is None,
+                       f"(tracked {last_tracked()})")
+
+    fixture.show()
+    _move(fixture, moved_rect)
+    overlay._last_value = None
+    ok = _wait(lambda: overlay._last_value == EXPECTED and _on_digits(last_tracked(), moved_digits))
+    failures += _check(f"plate back: tracking reads {EXPECTED:,} again", ok,
+                       f"(last value {overlay._last_value}, tracked {last_tracked()})")
+
+    # 5. TRACKING at 0: back to the fixed box.
+    overlay.settings.tracking_slider.setValue(0)
+    _pump(0.3)
+    saved = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    failures += _check("TRACKING 0 is saved", saved.get("tracking_range") == 0,
+                       f"(saved {saved.get('tracking_range')})")
+    failures += _check("TRACKING 0 shows OFF", overlay.settings.tracking_label.text() == "OFF",
+                       f"({overlay.settings.tracking_label.text()!r})")
+    overlay._last_value = None
+    _pump(0.8)
+    t_off = time.monotonic()
+    _pump(2.5)
+    off = values_since(t_off)
+    failures += _check("TRACKING 0: the moved plate is not read",
+                       EXPECTED not in off and overlay._last_value != EXPECTED and len(off) > 0,
+                       f"({len(off)} results, values {sorted(set(map(str, off)))})")
+    _wait(lambda: _close_to(outline_now(), outline_rect(region)), 3.0)
+    failures += _check("TRACKING 0: SHOW BOX outline back on the fixed box",
+                       _close_to(outline_now(), outline_rect(region)),
+                       f"(outline {outline_now()}, want {outline_rect(region)})")
+    _move(fixture, frect)
+    t_back = time.monotonic()
+    ok = _wait(lambda: overlay._last_value == EXPECTED)
+    failures += _check(f"TRACKING 0: plate back on the box reads {EXPECTED:,}", ok,
+                       f"(last value {overlay._last_value}, took {time.monotonic() - t_back:.1f} s)")
+
+    overlay.settings.outline_btn.setChecked(False)
+    _pump(0.3)
+    return failures
+
+
 def main() -> int:
     if sys.platform != "win32":
         print("Windows only (physical-pixel capture); skipped.")
@@ -277,7 +483,7 @@ def main() -> int:
         shown["fixture"].close()
     print("-" * 78)
     print("ALL CHECKS PASSED" if failures == 0 else f"{failures} CHECK(S) FAILED")
-    return 0 if failures == 0 else 1
+    return failures
 
 
 if __name__ == "__main__":

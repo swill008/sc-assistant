@@ -37,6 +37,11 @@ class RegionOutline(QWidget):
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self._region: dict | None = None
 
+    @property
+    def region(self) -> dict | None:
+        """The box the outline is drawn around (None before the first show)."""
+        return dict(self._region) if self._region is not None else None
+
     def show_region(self, region: dict) -> None:
         self._region = dict(region)
         rect = outline_rect(region)

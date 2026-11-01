@@ -72,6 +72,19 @@ def _slider() -> QSlider:
     return slider
 
 
+TRACKING_MAX = 800     # px each side at 2160 px high
+TRACKING_STEP = 50
+
+
+def _snap_tracking(value) -> int:
+    value = max(0, min(TRACKING_MAX, int(value)))
+    return int(round(value / TRACKING_STEP)) * TRACKING_STEP
+
+
+def _tracking_text(value: int) -> str:
+    return f"±{value} px" if value > 0 else "OFF"
+
+
 def _button(text: str, checkable: bool = False) -> QPushButton:
     btn = QPushButton(text)
     btn.setCheckable(checkable)
@@ -113,6 +126,7 @@ class SettingsPanel(QWidget):
     monitor_changed = Signal(str)     # Qt screen name of the game monitor
     reads_changed = Signal(int)       # scans per second, 1-8
     outline_toggled = Signal(bool)    # draw the capture box on screen
+    tracking_changed = Signal(int)    # HUD tracking range in px, 0 = off
 
     def __init__(self, parent=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint
@@ -391,6 +405,38 @@ class SettingsPanel(QWidget):
         reads_row.addWidget(self.reads_label)
         root.addLayout(reads_row)
 
+        # How far the scanner follows the swaying HUD plate (at 2160 px high;
+        # scaled to the game monitor). 0 reads the fixed box only.
+        tracking_row = QHBoxLayout()
+        tracking_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
+        tracking_row.setSpacing(theme.px(8))
+        tracking_name = QLabel("TRACKING")
+        tracking_name.setFixedWidth(theme.px(58))
+        tracking_name.setFont(theme.font(8, QFont.Weight.DemiBold, spacing=0.8))
+        tracking_name.setStyleSheet(theme.qss(
+            "color: rgba(150,166,182,0.95); background: transparent;"))
+        self.tracking_slider = _slider()
+        self.tracking_slider.setRange(0, TRACKING_MAX)
+        self.tracking_slider.setSingleStep(TRACKING_STEP)
+        self.tracking_slider.setPageStep(TRACKING_STEP)
+        self.tracking_slider.setValue(400)
+        self.tracking_slider.setToolTip(
+            "How far the scanner follows the signature when the HUD sways. "
+            "OFF reads the fixed box only. Needs the pin icon left of the box "
+            "when you press SELECT.")
+        self.tracking_slider.valueChanged.connect(self._on_tracking)
+        self.tracking_label = QLabel(_tracking_text(400))
+        self.tracking_label.setFixedWidth(theme.px(48))
+        self.tracking_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.tracking_label.setFont(theme.font(9))
+        self.tracking_label.setStyleSheet(theme.qss(
+            "color: rgba(150,166,182,0.95); background: transparent;"))
+        tracking_row.addWidget(tracking_name)
+        tracking_row.addWidget(self.tracking_slider, 1)
+        tracking_row.addWidget(self.tracking_label)
+        root.addLayout(tracking_row)
+
         scan_row = QHBoxLayout()
         scan_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
         scan_row.setSpacing(theme.px(8))
@@ -500,6 +546,16 @@ class SettingsPanel(QWidget):
         value = max(1, min(8, int(value)))
         self.reads_label.setText(f"{value} / s")
         self.reads_changed.emit(value)
+
+    def _on_tracking(self, value: int) -> None:
+        snapped = _snap_tracking(value)
+        if snapped != value:
+            # Dragging lands between steps; the setValue re-enters with the
+            # snapped value and emits that one.
+            self.tracking_slider.setValue(snapped)
+            return
+        self.tracking_label.setText(_tracking_text(snapped))
+        self.tracking_changed.emit(snapped)
 
     def _on_monitor(self, index: int) -> None:
         name = self.monitor_box.itemData(index)
@@ -633,6 +689,14 @@ class SettingsPanel(QWidget):
             self.reads_slider.setValue(value)
             self.reads_slider.blockSignals(False)
         self.reads_label.setText(f"{value} / s")
+
+    def set_tracking(self, range_px: int) -> None:
+        value = _snap_tracking(range_px)
+        if self.tracking_slider.value() != value:
+            self.tracking_slider.blockSignals(True)
+            self.tracking_slider.setValue(value)
+            self.tracking_slider.blockSignals(False)
+        self.tracking_label.setText(_tracking_text(value))
 
     def set_paused(self, paused: bool) -> None:
         if self.pause_btn.isChecked() != paused:

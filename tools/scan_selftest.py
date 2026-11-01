@@ -1,6 +1,7 @@
 """Scanner plumbing checks: OCR thread cap, the per-monitor region picker,
-keeping the box right when the monitor changes, the scanner settings and the
-update source.
+keeping the box right when the monitor changes, the scanner settings, HUD
+tracking (search area, OCR only on a match, anchor at SELECT and cleared on a
+monitor change) and the update source.
 
     python -m tools.scan_selftest
 
@@ -240,6 +241,269 @@ def check_outline() -> int:
     return failures
 
 
+def check_tracking_controls() -> int:
+    from app import config as config_mod
+    from app.ui.settings_panel import SettingsPanel
+
+    failures = 0
+    failures += _check("config: tracking_range defaults to 400, anchor to None, max_value 60000",
+                       config_mod.DEFAULTS.get("tracking_range") == 400
+                       and "anchor" in config_mod.DEFAULTS and config_mod.DEFAULTS["anchor"] is None
+                       and config_mod.DEFAULTS["max_value"] == 60000)
+    panel = SettingsPanel()
+    emitted: list[int] = []
+    panel.tracking_changed.connect(emitted.append)
+    s = panel.tracking_slider
+    failures += _check("tracking slider range is 0-800, step 50",
+                       (s.minimum(), s.maximum(), s.singleStep(), s.pageStep()) == (0, 800, 50, 50))
+    panel.set_tracking(400)
+    failures += _check("tracking slider shows ±400 px", panel.tracking_label.text() == "±400 px"
+                       and s.value() == 400 and emitted == [], f"(label {panel.tracking_label.text()!r})")
+    s.setValue(600)
+    failures += _check("moving the slider to 600 emits 600", emitted == [600], f"(emitted {emitted})")
+    s.setValue(230)
+    failures += _check("a value between steps snaps to 250", s.value() == 250 and emitted[-1] == 250,
+                       f"(value {s.value()}, emitted {emitted})")
+    s.setValue(0)
+    failures += _check("0 shows OFF and emits 0", panel.tracking_label.text() == "OFF" and emitted[-1] == 0,
+                       f"(label {panel.tracking_label.text()!r}, emitted {emitted})")
+    panel.deleteLater()
+    return failures
+
+
+class _FakeOCR:
+    def __init__(self):
+        self.calls: list = []
+
+    def read(self, crop):
+        from app.ocr import OCRResult
+
+        self.calls.append(crop.shape)
+        return OCRResult(value=42000, confidence=0.99, crop=crop)
+
+
+class _FakeData:
+    def lookup(self, value, tolerance):
+        return []
+
+
+def check_scan_tracking() -> int:
+    """ScanThread.scan_once: fixed box without an anchor or at range 0; with
+    one, grab the search area and OCR only the digits when the pin is found."""
+    import numpy as np
+
+    from app import main as main_mod
+    from app import tracking
+    from app.config import Config
+
+    failures = 0
+    mon = win32.monitors()[0]
+    region = {"left": mon["left"] + mon["width"] // 2 - 28, "top": mon["top"] + mon["height"] // 2 - 12,
+              "width": 57, "height": 25}
+    cfg = Config()
+    cfg["region"] = region
+    template = np.zeros((32, 28, 3), np.uint8)
+    anchor = tracking.Anchor(template=template, digits=(35, 2, 90, 28))
+
+    grabs: list[dict] = []
+
+    def grab(rect):
+        grabs.append(dict(rect))
+        return np.full((int(rect["height"]), int(rect["width"]), 3), 7, np.uint8)
+
+    def listen(thread):
+        results, tracked = [], []
+        thread.result.connect(lambda res, matches: results.append(res))
+        thread.tracked.connect(tracked.append)
+        return results, tracked
+
+    # No anchor: today's fixed box.
+    thread = main_mod.ScanThread(_FakeData(), cfg)
+    ocr = _FakeOCR()
+    results, tracked = listen(thread)
+    grabs.clear()
+    thread.scan_once(grab, ocr, region)
+    failures += _check("no anchor: grabs the fixed box and OCRs it",
+                       grabs == [region] and ocr.calls == [(25, 57, 3)] and tracked == [],
+                       f"(grabs {grabs}, ocr {ocr.calls}, tracked {tracked})")
+
+    # Anchor + default range: search area, OCR only the digits.
+    real_locate = tracking.locate
+    hits: list = []
+    try:
+        tracking.locate = lambda image, a, min_score=0.7: hits[0] if hits else None
+        thread = main_mod.ScanThread(_FakeData(), cfg, anchor=anchor)
+        ocr = _FakeOCR()
+        results, tracked = listen(thread)
+        screen = main_mod.display.screen_of_region(region)
+        height = main_mod.display.physical_rect(screen)["height"]
+        rx = round(400 * height / 2160)
+        want = main_mod._clip(tracking.search_area(region, rx, round(0.75 * rx)),
+                              main_mod.display.physical_rect(screen))
+        failures += _check("anchor loaded: tracking is on", thread.tracking)
+
+        grabs.clear()
+        thread.scan_once(grab, ocr, region)
+        failures += _check("plate not found: grabs the search area, no OCR, no value",
+                           grabs == [want] and ocr.calls == [] and len(results) == 1
+                           and not results[0].ok and tracked == [],
+                           f"(want {want}, grabs {grabs}, ocr {ocr.calls}, tracked {tracked})")
+
+        hits.append(tracking.Match(x=100, y=60, score=0.95))
+        dx, dy, dw, dh = tracking.digits_rect(hits[0], anchor)
+        thread.scan_once(grab, ocr, region)
+        want_rect = {"left": want["left"] + dx, "top": want["top"] + dy, "width": dw, "height": dh}
+        failures += _check("plate found: OCRs only the digits crop",
+                           ocr.calls == [(dh, dw, 3)] and results[-1].ok,
+                           f"(ocr {ocr.calls}, want {(dh, dw, 3)})")
+        failures += _check("plate found: emits the physical digits rect",
+                           tracked == [want_rect], f"(want {want_rect}, got {tracked})")
+        thread.scan_once(grab, ocr, region)
+        failures += _check("unchanged digits: OCR skipped, rect not re-emitted",
+                           len(ocr.calls) == 1 and len(tracked) == 1 and results[-1].ok,
+                           f"(ocr calls {len(ocr.calls)}, tracked {tracked})")
+
+        hits.clear()
+        thread.scan_once(grab, ocr, region)
+        failures += _check("plate lost: no OCR, no value, rect cleared",
+                           len(ocr.calls) == 1 and not results[-1].ok and tracked[-1] is None,
+                           f"(ocr calls {len(ocr.calls)}, tracked {tracked})")
+
+        hits.append(tracking.Match(x=100, y=60, score=0.95))
+        thread.configure(tracking_range=0)
+        grabs.clear()
+        thread.scan_once(grab, ocr, region)
+        failures += _check("TRACKING 0: back to the fixed box",
+                           not thread.tracking and grabs == [region] and ocr.calls[-1] == (25, 57, 3),
+                           f"(grabs {grabs}, ocr {ocr.calls})")
+        thread.configure(tracking_range=400)
+        failures += _check("TRACKING back on resumes tracking", thread.tracking)
+        thread.configure(anchor=None)
+        failures += _check("anchor cleared: tracking off", not thread.tracking)
+    finally:
+        tracking.locate = real_locate
+    return failures
+
+
+class _FakeScan:
+    def __init__(self):
+        self.calls: list[dict] = []
+
+    def configure(self, **kwargs):
+        self.calls.append(kwargs)
+
+
+class _FakeSettings:
+    note = ""
+
+    def set_region_note(self, text):
+        self.note = text
+
+
+def check_anchor_dropped_on_rescale() -> int:
+    """A monitor change rescales the box; the saved pin is for the old
+    resolution, so tracking goes off and the note says to press SELECT."""
+    from app import main as main_mod
+    from app.config import Config
+
+    class _Fake:
+        _check_display = main_mod.OverlayApp._check_display
+        _on_game_monitor = main_mod.OverlayApp._on_game_monitor
+        _drop_anchor = main_mod.OverlayApp._drop_anchor
+
+        def __init__(self, cfg):
+            self.cfg = cfg
+            self.scan = _FakeScan()
+            self.settings = _FakeSettings()
+            self.applied: list = []
+
+        def _apply_region(self, region, monitor, name):
+            self.applied.append(region)
+            self.cfg["region"] = region
+            self.cfg["region_monitor"] = monitor
+
+        def _refresh_monitor_list(self, current=None):
+            pass
+
+    failures = 0
+    screen = QGuiApplication.primaryScreen()
+    now = main_mod.display.physical_rect(screen)
+    old = {"left": now["left"], "top": now["top"], "width": now["width"] * 2, "height": now["height"] * 2}
+    region = {"left": now["left"] + now["width"] // 2, "top": now["top"] + now["height"] // 2,
+              "width": 57, "height": 25}
+    for label, call in (("monitor change", lambda f: f._check_display()),
+                        ("MONITOR picked", lambda f: f._on_game_monitor(screen.name()))):
+        cfg = Config()
+        cfg.save = lambda: None           # never write the real config
+        cfg["region"] = dict(region)
+        cfg["region_monitor"] = dict(old)
+        cfg["anchor"] = {"file": "anchor.png", "digits": [35, 2, 90, 28]}
+        fake = _Fake(cfg)
+        call(fake)
+        failures += _check(f"{label}: box rescaled and anchor cleared",
+                           len(fake.applied) == 1 and cfg["anchor"] is None
+                           and {"anchor": None} in fake.scan.calls,
+                           f"(applied {fake.applied}, anchor {cfg['anchor']}, scan {fake.scan.calls})")
+        failures += _check(f"{label}: note says press SELECT to turn tracking back on",
+                           "press SELECT to turn it back on" in fake.settings.note,
+                           f"(note {fake.settings.note!r})")
+    return failures
+
+
+def check_calibration_anchor() -> int:
+    """SELECT looks for the pin around the new box: saved and handed to the
+    scanner when found, otherwise the fixed box and the amber note."""
+    import tempfile
+
+    import numpy as np
+
+    from app import main as main_mod
+    from app import tracking
+    from app.config import Config
+
+    class _Fake:
+        _calibrate_anchor = main_mod.OverlayApp._calibrate_anchor
+
+        def __init__(self, cfg):
+            self.cfg = cfg
+            self.scan = _FakeScan()
+            self.settings = _FakeSettings()
+
+    failures = 0
+    region = {"left": 1100, "top": 600, "width": 57, "height": 25}
+    image = np.zeros((300, 400, 3), np.uint8)
+    seen: list = []
+    found = tracking.Anchor(template=np.zeros((32, 28, 3), np.uint8), digits=(35, 2, 90, 28))
+    real_find, real_dir = tracking.find_anchor, main_mod.config_dir
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            main_mod.config_dir = lambda: Path(tmp)
+            for result in (found, None):
+                tracking.find_anchor = lambda img, box, r=result: seen.append(box) or r
+                cfg = Config()
+                cfg.save = lambda: None
+                cfg["anchor"] = {"file": "old.png", "digits": [1, 1, 9, 9]}
+                fake = _Fake(cfg)
+                on = fake._calibrate_anchor(region, image=image, origin=(1000, 500))
+                if result is not None:
+                    failures += _check("pin found: box passed in image coordinates",
+                                       seen[-1] == (100, 100, 57, 25), f"(got {seen[-1]})")
+                    failures += _check("pin found: anchor saved and handed to the scanner",
+                                       on and cfg["anchor"] == {"file": "anchor.png", "digits": [35, 2, 90, 28]}
+                                       and (Path(tmp) / "anchor.png").is_file()
+                                       and fake.scan.calls == [{"anchor": found}] and fake.settings.note == "",
+                                       f"(anchor {cfg['anchor']}, scan {fake.scan.calls})")
+                else:
+                    failures += _check("no pin: fixed box, anchor cleared, amber note",
+                                       not on and cfg["anchor"] is None and fake.scan.calls == [{"anchor": None}]
+                                       and fake.settings.note == main_mod._NO_PIN_NOTE
+                                       and fake.settings.note.startswith("No pin icon found left of the box"),
+                                       f"(anchor {cfg['anchor']}, note {fake.settings.note!r})")
+        finally:
+            tracking.find_anchor, main_mod.config_dir = real_find, real_dir
+    return failures
+
+
 def check_quit_button() -> int:
     from app.ui.navbar import NavBar
 
@@ -287,6 +551,10 @@ def main() -> int:
     failures += check_config_migration()
     print("-" * 78)
     failures += check_settings_controls()
+    failures += check_tracking_controls()
+    failures += check_scan_tracking()
+    failures += check_anchor_dropped_on_rescale()
+    failures += check_calibration_anchor()
     failures += check_outline()
     failures += check_quit_button()
     failures += check_updater_source()

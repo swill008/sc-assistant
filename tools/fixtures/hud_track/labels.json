@@ -1,0 +1,228 @@
+{
+  "box": {
+    "left": 2559,
+    "top": 773,
+    "width": 57,
+    "height": 25
+  },
+  "crop_origin": [
+    2059,
+    373
+  ],
+  "frames": [
+    {
+      "file": "f0000.jpg",
+      "value": null,
+      "pin": null,
+      "note": "no plate; WARNING text and blue scan wave visible"
+    },
+    {
+      "file": "f0002.jpg",
+      "value": null,
+      "pin": null,
+      "note": "no plate; red WARNING text over a blue scan wave"
+    },
+    {
+      "file": "f0007.jpg",
+      "value": null,
+      "pin": null,
+      "note": "no plate; plain HUD"
+    },
+    {
+      "file": "f0010.jpg",
+      "value": null,
+      "pin": null,
+      "note": "no plate; hard negative: UNKNOWN marker pins and red WARNING text near the box"
+    },
+    {
+      "file": "f0160.jpg",
+      "value": 51000,
+      "pin": [
+        466,
+        404
+      ],
+      "note": "plate on the calibrated box (offset ~0,0)",
+      "calibration": true
+    },
+    {
+      "file": "f0218.jpg",
+      "value": 51000,
+      "pin": [
+        249,
+        379
+      ],
+      "note": "largest left offset in the recording"
+    },
+    {
+      "file": "f0232.jpg",
+      "value": 17020,
+      "pin": [
+        731,
+        383
+      ],
+      "note": "largest right offset in the recording"
+    },
+    {
+      "file": "f0169.jpg",
+      "value": 51000,
+      "pin": [
+        466,
+        617
+      ],
+      "note": "near the largest down offset (f0170 ~628 is motion-blurred)"
+    },
+    {
+      "file": "f0156.jpg",
+      "value": 51000,
+      "pin": [
+        465,
+        358
+      ],
+      "note": "largest up offset in the recording"
+    },
+    {
+      "file": "f0021.jpg",
+      "value": 51000,
+      "pin": [
+        584,
+        482
+      ],
+      "note": "right and down; UNKNOWN markers above"
+    },
+    {
+      "file": "f0046.jpg",
+      "value": 80000,
+      "pin": [
+        602,
+        488
+      ],
+      "note": "right and down; 80000 is above the app's 60000 limit: a correct reader rejects it"
+    },
+    {
+      "file": "f0061.jpg",
+      "value": 52000,
+      "pin": [
+        330,
+        487
+      ],
+      "note": "left and down"
+    },
+    {
+      "file": "f0206.jpg",
+      "value": 17020,
+      "pin": [
+        658,
+        390
+      ],
+      "note": "right, level with the box"
+    },
+    {
+      "file": "f0246.jpg",
+      "value": 17020,
+      "pin": [
+        381,
+        383
+      ],
+      "note": "left, level with the box"
+    },
+    {
+      "file": "f0261.jpg",
+      "value": 17020,
+      "pin": [
+        501,
+        428
+      ],
+      "note": "slightly right and down"
+    },
+    {
+      "file": "f0114.jpg",
+      "value": 51000,
+      "pin": [
+        464,
+        560
+      ],
+      "note": "straight down"
+    },
+    {
+      "file": "f0014.jpg",
+      "value": 52000,
+      "pin": [
+        456,
+        481
+      ],
+      "note": "down; light background behind the plate"
+    },
+    {
+      "file": "f0050.jpg",
+      "value": 17020,
+      "pin": [
+        540,
+        487
+      ],
+      "note": "right and down"
+    },
+    {
+      "file": "f0079.jpg",
+      "value": 80000,
+      "pin": [
+        510,
+        493
+      ],
+      "note": "80000 is above the app's 60000 limit: a correct reader rejects it"
+    },
+    {
+      "file": "f0222.jpg",
+      "value": 52000,
+      "pin": [
+        359,
+        385
+      ],
+      "note": "left, dark background"
+    },
+    {
+      "file": "f0188.jpg",
+      "value": 51000,
+      "pin": [
+        467,
+        396
+      ],
+      "note": "blue scan tint over the whole frame; plate near the box"
+    },
+    {
+      "file": "f0224.jpg",
+      "value": 52000,
+      "pin": [
+        446,
+        389
+      ],
+      "note": "blue scan tint; plate near the box"
+    },
+    {
+      "file": "f0280.jpg",
+      "value": 17020,
+      "pin": [
+        468,
+        417
+      ],
+      "note": "blue scan tint and motion blur; pin +-2 px"
+    },
+    {
+      "file": "f0135.jpg",
+      "value": 51000,
+      "pin": [
+        463,
+        478
+      ],
+      "note": "heavy blue scan tint, faint plate partly broken by the tint pattern; pin +-3 px"
+    },
+    {
+      "file": "f0204.jpg",
+      "value": 17020,
+      "pin": [
+        614,
+        395
+      ],
+      "note": "motion blur (fast sweep right)"
+    }
+  ]
+}

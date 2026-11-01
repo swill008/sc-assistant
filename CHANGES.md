@@ -1,5 +1,76 @@
 # Changes
 
+## v1.2.19 — 2026-11-01
+
+The scanner follows the signature plate as the HUD sways in flight.
+
+### New: HUD tracking
+
+**What happened.** In flight Star Citizen's HUD moves with the ship's
+"physics". A 30-second recording of the user's 5120×2160 screen at 10 frames a
+second showed the signature plate moving 218 px left to 250 px right and 43 px
+up to 227 px down around the calibrated box, often 100+ px within 0.1 s. The
+fixed box read a signature in 19 of 300 frames.
+
+**Change.** SELECT now also saves the plate's orange pin icon from just left of
+the digits (`anchor.png` in `%APPDATA%\Citizen Assistant`, `anchor` in
+`config.json`). Each read captures the box plus a search range around it, finds
+the pin and OCRs the digits at their fixed offset right of it
+(`app/tracking.py`). The pin is the anchor because it is the same in every
+ship; the rest of the HUD (compass, dashes) differs per ship. With no plate on
+screen the OCR is not run.
+
+- **TRACKING** in Settings → *Scanning*: `OFF` or ±50…±800 px (default ±400
+  across, ±300 up and down for a 2160-px-high screen, scaled for other heights;
+  saved as `tracking_range`). `OFF`, or no saved pin, is the fixed box as before.
+- SHOW BOX follows the digits being read.
+- No pin next to the box at SELECT: amber note, tracking off.
+- A box rescaled for a new resolution or monitor turns tracking off until the
+  next SELECT (the saved pin is for the old size).
+
+**Result** on the recording (same ±400×±300 range, app OCR, 60,000 limit):
+
+| | Fixed box | Prototype | Tracking |
+| --- | --- | --- | --- |
+| Frames with the pin found | — | 203 | 281 |
+| Frames read | 19 | 188 | 259 |
+| Search time per read | — | 41 ms | 1.25 ms (95%: 3.8 ms) |
+| Matches on frames with no plate | — | 0 | 0 |
+
+The plate was visible in all but the first ~11 frames. The search is
+coarse-to-fine: a quarter-size orange (R − B) map picks five candidates, each
+checked at full resolution in colour; matches from 0.6 up count (every match
+from 0.55 up on the recording was a real, tinted or blurred plate; frames
+without one scored 0.34 or less).
+
+### Tests
+
+- `tools/tracking_selftest.py` with `tools/fixtures/hud_track/`: 25 frames of
+  the recording, labelled by eye (value and pin position; 4 without a plate,
+  including UNKNOWN markers and WARNING text by the box; blue-tinted and
+  motion-blurred plates; the largest offsets in each direction). The anchor is
+  built from the frame where the plate sits on the box; the pin is found within
+  0–1 px in all 21 plate frames, no match in the 4 without; OCR reads the
+  labelled value in 20 (f0135: the tint makes 51,000 read as 61,000, listed as
+  known); median search time ≤ 5 ms is checked.
+- `tools/scan_selftest.py`: the TRACKING control, the scan step (search area,
+  OCR only on a match, none without one, the fixed box at `OFF`), calibration
+  saving the pin or showing the note, and tracking turned off on a rescale.
+- `tools/scan_e2e_selftest.py`: on the real screen, calibrate on the 5K
+  signature, move it 150 px right and 100 px down, and the running app still
+  reads 42,000 while the fixed box alone reads nothing there; SHOW BOX follows;
+  with the plate gone no value and no OCR call; TRACKING `OFF` goes back to the
+  fixed box. 42/42 on a 125% monitor. On the game monitor the "plate gone" step
+  fails while the game shows a real plate in the search area (correctly tracked);
+  run `--primary` with the game closed.
+
+### Known limits
+
+- The OCR sometimes drops a zero on a blurred 80,000 plate and reads 8,000,
+  which is a valid signature (debris ×4). 80,000 itself is above the 60,000
+  limit and correctly ignored. Not changed in this release.
+- Very heavy scan tint can turn a 5 into a 6 (one labelled frame).
+
 ## v1.2.18 — 2026-11-01
 
 Adds a Windows installer next to the standalone download. The program itself

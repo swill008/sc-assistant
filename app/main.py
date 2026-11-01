@@ -67,8 +67,14 @@ class ScanThread(QThread):
 
     result = Signal(object, object)   # OCRResult, list[Match]
     failed = Signal(str)
+    # Physical rect of the digits read this frame while tracking, None when
+    # the plate was not found or tracking is off. Emitted on change only.
+    tracked = Signal(object)
 
-    def __init__(self, data: MiningData, cfg: Config, demo: bool = False, parent=None):
+    _NO_ANCHOR = object()     # configure(): leave the anchor as it is
+
+    def __init__(self, data: MiningData, cfg: Config, demo: bool = False,
+                 anchor=None, parent=None):
         super().__init__(parent)
         self.data = data
         self.demo = demo
@@ -82,15 +88,51 @@ class ScanThread(QThread):
         self._ocr_threads = int(cfg.get("ocr_threads", 1))
         self._last_hash: int | None = None
         self._last_payload: tuple | None = None
+        self._tracking_range = max(0, int(cfg.get("tracking_range", 0) or 0))
+        self._anchor = anchor
+        # (anchor, physical search area), or None for the fixed box. Swapped
+        # as one object so the scanner thread never sees half an update.
+        self._track: tuple | None = None
+        self._last_tracked: dict | None = None
+        self._update_track()
 
     # -- setters are called from the GUI thread -------------------------
-    def configure(self, region=None, interval_ms=None, tolerance=None) -> None:
+    def configure(self, region=None, interval_ms=None, tolerance=None,
+                  tracking_range=None, anchor=_NO_ANCHOR) -> None:
+        """``anchor=None`` turns tracking off; leave it out to keep it."""
         if region is not None:
             self._region = region
         if interval_ms is not None:
             self._interval = max(50, int(interval_ms))
         if tolerance is not None:
             self._tolerance = float(tolerance)
+        if tracking_range is not None:
+            self._tracking_range = max(0, int(tracking_range))
+        if anchor is not ScanThread._NO_ANCHOR:
+            self._anchor = anchor
+        if region is not None or tracking_range is not None \
+                or anchor is not ScanThread._NO_ANCHOR:
+            self._update_track()
+
+    def _update_track(self) -> None:
+        # The range is set for a 2160-px-high monitor; the HUD scales with
+        # height, so does the range. Worked out here, not per frame.
+        if self._anchor is None or self._tracking_range <= 0 \
+                or not is_region_valid(self._region):
+            self._track = None
+            return
+        from . import tracking
+
+        screen = display.screen_of_region(self._region)
+        mon = display.physical_rect(screen) if screen is not None else None
+        height = (mon or {}).get("height") or 2160
+        rx = round(self._tracking_range * height / 2160)
+        area = tracking.search_area(self._region, rx, round(0.75 * rx))
+        self._track = (self._anchor, _clip(area, mon))
+
+    @property
+    def tracking(self) -> bool:
+        return self._track is not None
 
     def set_enabled(self, enabled: bool) -> None:
         self._enabled = enabled
@@ -128,19 +170,10 @@ class ScanThread(QThread):
                         return
 
                     try:
-                        crop = (demo_mod.signature_crop() if self.demo
-                                else grabber.grab(region))
-                        # A static screen means the OCR result cannot change;
-                        # re-running the model would only burn CPU.
-                        digest = hash(crop.tobytes())
-                        if digest == self._last_hash and self._last_payload is not None:
-                            self.result.emit(*self._last_payload)
+                        if self.demo:
+                            self._read_crop(demo_mod.signature_crop(), ocr)
                         else:
-                            res = ocr.read(crop)
-                            matches = self.data.lookup(res.value, self._tolerance) if res.ok else []
-                            self._last_hash = digest
-                            self._last_payload = (res, matches)
-                            self.result.emit(res, matches)
+                            self.scan_once(grabber.grab, ocr, region)
                     except Exception as exc:  # keep the loop alive
                         self.failed.emit(str(exc))
                 elapsed = (time.perf_counter() - started) * 1000.0
@@ -149,8 +182,95 @@ class ScanThread(QThread):
             if grabber is not None:
                 grabber.close()
 
+    def scan_once(self, grab, ocr, region: dict) -> None:
+        """One poll: grab, (track,) OCR and emit. ``grab(rect)`` returns BGR."""
+        track = self._track
+        if track is None:
+            self._set_tracked(None)
+            self._read_crop(grab(region), ocr)
+            return
+        from . import tracking
+
+        anchor, area = track
+        frame = grab(area)
+        match = tracking.locate(frame, anchor)
+        if match is None:
+            # No plate on screen: nothing to read, so the OCR model is not run.
+            self._set_tracked(None)
+            if self._last_hash != -1:
+                from .ocr import OCRResult
+
+                self._last_hash = -1      # never a real crop hash
+                self._last_payload = (OCRResult(raw="no plate"), [])
+            self.result.emit(*self._last_payload)
+            return
+        x, y, w, h = tracking.digits_rect(match, anchor)
+        fh, fw = frame.shape[:2]
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(fw, x + w), min(fh, y + h)
+        if x1 - x0 < 8 or y1 - y0 < 8:
+            # Plate at the edge of the search area: the digits are cut off.
+            self._set_tracked(None)
+            self._read_crop(None, ocr)
+            return
+        self._set_tracked({"left": int(area["left"] + x0), "top": int(area["top"] + y0),
+                           "width": int(x1 - x0), "height": int(y1 - y0)})
+        self._read_crop(frame[y0:y1, x0:x1], ocr)
+
+    def _read_crop(self, crop, ocr) -> None:
+        if crop is None:
+            from .ocr import OCRResult
+
+            self._last_hash = None
+            self._last_payload = None
+            self.result.emit(OCRResult(raw="no plate"), [])
+            return
+        # A static screen means the OCR result cannot change; re-running the
+        # model would only burn CPU.
+        digest = hash((crop.shape, crop.tobytes()))
+        if digest == self._last_hash and self._last_payload is not None:
+            self.result.emit(*self._last_payload)
+            return
+        res = ocr.read(crop)
+        matches = self.data.lookup(res.value, self._tolerance) if res.ok else []
+        self._last_hash = digest
+        self._last_payload = (res, matches)
+        self.result.emit(res, matches)
+
+    def _set_tracked(self, rect: dict | None) -> None:
+        if rect != self._last_tracked:
+            self._last_tracked = rect
+            self.tracked.emit(rect)
+
 
 # ---------------------------------------------------------------------------
+_NO_PIN_NOTE = ("No pin icon found left of the box: tracking is off. Press "
+                "SELECT with the scan readout on screen to turn it on.")
+_TRACKING_DROPPED = (" Tracking is off (the saved pin was for the old "
+                     "resolution): press SELECT to turn it back on.")
+
+
+def _calibration_area(region: dict) -> dict:
+    """Screen around a drawn box to look for the pin in: 4 box heights each
+    side, kept on the box's monitor."""
+    pad = 4 * int(region["height"])
+    area = {"left": region["left"] - pad, "top": region["top"] - pad,
+            "width": region["width"] + 2 * pad, "height": region["height"] + 2 * pad}
+    screen = display.screen_of_region(region)
+    return _clip(area, display.physical_rect(screen) if screen is not None else None)
+
+
+def _clip(area: dict, mon: dict | None) -> dict:
+    """``area`` cut to the monitor rect (unchanged when ``mon`` is None)."""
+    if mon is None:
+        return area
+    left = max(area["left"], mon["left"])
+    top = max(area["top"], mon["top"])
+    right = min(area["left"] + area["width"], mon["left"] + mon["width"])
+    bottom = min(area["top"] + area["height"], mon["top"] + mon["height"])
+    return {"left": left, "top": top, "width": right - left, "height": bottom - top}
+
+
 def _tray_icon(size: int = 64) -> QIcon:
     pix = QPixmap(size, size)
     pix.fill(Qt.GlobalColor.transparent)
@@ -302,9 +422,12 @@ class OverlayApp(QObject):
         self.blueprint_tracker = BlueprintTracker()
         self.blueprint_tracker.subscribe(self._on_inventory_event)
 
-        self.scan = ScanThread(self.data, cfg, demo=demo)
+        # Digits rect the scanner is tracking now (physical), for SHOW BOX.
+        self._tracked_rect: dict | None = None
+        self.scan = ScanThread(self.data, cfg, demo=demo, anchor=self._load_anchor())
         self.scan.result.connect(self._on_result)
         self.scan.failed.connect(self._on_scan_error)
+        self.scan.tracked.connect(self._on_tracked)
 
         self.hotkeys = HotkeyThread({1: int(cfg["hotkey_toggle_nav"]),
                                      2: int(cfg["hotkey_panic"])})
@@ -365,6 +488,7 @@ class OverlayApp(QObject):
         self.settings.reads_changed.connect(self._on_reads)
         self.settings.monitor_changed.connect(self._on_game_monitor)
         self.settings.outline_toggled.connect(self._on_outline)
+        self.settings.tracking_changed.connect(self._on_tracking)
 
         # Monitors plugged in, unplugged, or changed (resolution, scaling,
         # position): re-list them and keep the box on the signature. Debounced
@@ -443,6 +567,7 @@ class OverlayApp(QObject):
             self.panel.place_default()
 
         self.settings.set_reads(self._reads_per_second())
+        self.settings.set_tracking(self._tracking_range())
         self._check_display()
         has_region = is_region_valid(self.cfg["region"])
         self.settings.set_region(self.cfg["region"] if has_region else None)
@@ -949,11 +1074,13 @@ class OverlayApp(QObject):
         if display.same_rect(recorded, now):
             return
         moved = display.rescale(region, recorded, now)
+        dropped = self._drop_anchor()
         self._apply_region(moved, now, screen.name())
         self.settings.set_region_note(
             f"Monitor changed ({recorded['width']}×{recorded['height']} → "
             f"{now['width']}×{now['height']}): box adjusted to match. Check "
-            "SHOW PREVIEW or SHOW BOX; press SELECT if it is off.")
+            "SHOW PREVIEW or SHOW BOX; press SELECT if it is off."
+            + (_TRACKING_DROPPED if dropped else ""))
 
     def _on_game_monitor(self, name: str) -> None:
         screen = display.find_screen(name)
@@ -963,10 +1090,12 @@ class OverlayApp(QObject):
         recorded = self.cfg.get("region_monitor")
         now = display.physical_rect(screen)
         if is_region_valid(region) and recorded and not display.same_rect(recorded, now):
+            dropped = self._drop_anchor()
             self._apply_region(display.rescale(region, recorded, now), now, name)
             self.settings.set_region_note(
                 f"Box moved to {display.screen_label(screen)}. Check SHOW "
-                "PREVIEW or SHOW BOX; press SELECT if it is off.")
+                "PREVIEW or SHOW BOX; press SELECT if it is off."
+                + (_TRACKING_DROPPED if dropped else ""))
         else:
             self.cfg["game_monitor"] = name
             self.cfg.save()
@@ -980,9 +1109,90 @@ class OverlayApp(QObject):
     def _update_outline(self) -> None:
         region = self.cfg["region"]
         if self.cfg.get("show_region_outline") and is_region_valid(region):
-            self.outline.show_region(region)
+            self.outline.show_region(self._tracked_rect or region)
         else:
             self.outline.hide()
+
+    def _on_tracked(self, rect) -> None:
+        """The scanner found the plate somewhere else (or lost it)."""
+        self._tracked_rect = rect
+        region = self.cfg["region"]
+        if not (self.cfg.get("show_region_outline") and is_region_valid(region)):
+            return
+        want = rect or region
+        if self.outline.isVisible() and self.outline.region == want:
+            return
+        self.outline.show_region(want)
+
+    # -- HUD tracking ---------------------------------------------------
+    def _tracking_range(self) -> int:
+        try:
+            return max(0, int(self.cfg.get("tracking_range", 400)))
+        except (TypeError, ValueError):
+            return 400
+
+    def _on_tracking(self, range_px: int) -> None:
+        self.cfg["tracking_range"] = max(0, int(range_px))
+        self.cfg.save()
+        self.scan.configure(tracking_range=self.cfg["tracking_range"])
+
+    def _load_anchor(self):
+        """The pin icon saved at the last SELECT, or None (fixed box)."""
+        meta = self.cfg.get("anchor")
+        if not meta or self.demo:
+            return None
+        try:
+            from . import tracking
+
+            return tracking.Anchor.load(config_dir(), meta)
+        except Exception:
+            return None
+
+    def _drop_anchor(self) -> bool:
+        """Turn tracking off: the saved pin is for another resolution.
+
+        Returns whether there was an anchor to drop.
+        """
+        had = self.cfg.get("anchor") is not None
+        self.cfg["anchor"] = None
+        self.cfg.save()
+        self.scan.configure(anchor=None)
+        return had
+
+    def _calibrate_anchor(self, region: dict, image=None, origin=None) -> bool:
+        """Find the plate's pin icon left of a freshly drawn box.
+
+        ``image``/``origin`` (the physical top-left of ``image``) are for
+        tests; normally the screen around the box is grabbed. Returns whether
+        tracking is on.
+        """
+        anchor = None
+        try:
+            from . import tracking
+
+            if image is None:
+                area = _calibration_area(region)
+                from .capture import ScreenGrabber
+
+                grabber = ScreenGrabber()
+                try:
+                    image = grabber.grab(area)
+                finally:
+                    grabber.close()
+                origin = (area["left"], area["top"])
+            box = (region["left"] - origin[0], region["top"] - origin[1],
+                   region["width"], region["height"])
+            anchor = tracking.find_anchor(image, box)
+            if anchor is not None:
+                self.cfg["anchor"] = anchor.save(config_dir())
+        except Exception:
+            anchor = None
+        if anchor is None:
+            self.cfg["anchor"] = None
+        self.cfg.save()
+        self.scan.configure(anchor=anchor)
+        self.settings.set_region_note("" if anchor is not None else _NO_PIN_NOTE)
+        return anchor is not None
 
     def _apply_region(self, region: dict, monitor: dict, monitor_name: str) -> None:
         """Store a new box (and its monitor) and point the scanner at it."""
@@ -992,6 +1202,7 @@ class OverlayApp(QObject):
         self.cfg.save()
 
         self.scan.configure(region=region)
+        self._tracked_rect = None
         self._recent.clear()
         self._last_value = None
         self._last_matches = []
@@ -1027,10 +1238,17 @@ class OverlayApp(QObject):
     def _on_region_selected(self, region: dict) -> None:
         self._selector = None
         screen = display.screen_of_region(region) or QGuiApplication.primaryScreen()
+        # The old pin belongs to the old box; a new one is looked for below.
+        self.scan.configure(anchor=None)
         self._apply_region(region, display.physical_rect(screen), screen.name())
         self.settings.set_region_note("")
         self.panel.set_scan_idle(f"Scanning {region['width']} × {region['height']} px")
         self.panel.set_state("reading")
+        if not self.demo:
+            # Give Windows a moment to take the picker's dimming off the
+            # screen before grabbing the pin around the box.
+            QTimer.singleShot(150, lambda: self._calibrate_anchor(region)
+                              if self.cfg["region"] == region else None)
 
     def _scan_sig_reset(self) -> None:
         self.panel.reset_cache()

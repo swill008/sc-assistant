@@ -77,6 +77,13 @@ DEFAULTS: dict = {
     # Physical rect of that monitor when the box was drawn. If the monitor's
     # resolution or position changes later, the box is rescaled to match.
     "region_monitor": None,
+    # HUD tracking (Settings → TRACKING): how far, in px either side, the
+    # scanner follows the swaying signature plate, for a 2160-px-high monitor
+    # (scaled by monitor height; vertical is 0.75x). 0 reads the fixed box.
+    "tracking_range": 400,
+    # Pin icon found left of the box at SELECT (tracking.Anchor.save meta);
+    # the picture is anchor.png in the config folder. None = fixed box only.
+    "anchor": None,
     "show_debug_preview": False,
     # Draw an outline around the capture box on screen (Settings → SHOW BOX).
     # Off by default: any window over the game makes Windows composite it.

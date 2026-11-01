@@ -345,6 +345,27 @@ from the screen centre and both are scaled by the height ratio
 proportional scaling. Check SHOW BOX or SHOW PREVIEW afterwards, and press
 **SELECT** if the HUD sits somewhere else. Changing only Windows scaling needs
 nothing: the box is stored in physical pixels, which scaling does not change.
+A box moved this way turns HUD tracking off (the saved pin is for the old
+resolution); press **SELECT** again to turn it back on.
+
+**Following the HUD as it sways (tracking).** In flight Star Citizen's HUD
+moves with the ship's "physics" — on a 5120×2160 screen the signature plate
+was measured moving 218 px left to 250 px right and 43 px up to 227 px down
+around the drawn box, often 100 px within a tenth of a second, so a fixed box
+caught it in 19 of 300 frames. When you press **SELECT** with the scan readout
+on screen, the app also saves the plate's orange **pin icon** just left of the
+digits (`%APPDATA%\Citizen Assistant\anchor.png`). Each read then captures a
+larger area around the box, finds the pin in it (about 1.3 ms; it searches a
+quarter-size orange-only copy, then checks the best few spots at full size)
+and reads the digits at their fixed place right of the pin. On the same
+recording that read 259 of 300 frames, and when no plate is on screen the OCR
+is not run at all. The pin is the anchor because it looks the same in every
+ship, whatever the rest of the HUD looks like. **TRACKING** in *Scanning* sets
+how far it searches (default ±400 px across and ±300 px up and down on a
+2160-px-high screen, scaled for other heights); `OFF` reads the fixed box as
+before. If SELECT finds no pin next to the box, an amber note says tracking is
+off — press SELECT again with the readout showing. With **SHOW BOX** on, the
+outline follows the digits being read.
 
 The scanner reads that box **4 times a second** by default (`⚙` → *Scanning* →
 **READS / S**, 1–8) and ignores frames that have not changed. A
@@ -893,10 +914,16 @@ application shortcuts while you type.
 - **READS / S** — how many times a second the box is read, 1–8 (default 4).
   Applies immediately and is saved as `poll_ms`. Fewer reads use less CPU; more
   reads lock onto a new rock sooner.
+- **TRACKING** — how far the scanner looks for the plate's pin around the box
+  as the HUD sways, `OFF` or ±50 to ±800 px (default ±400 across, ±300 up and
+  down, for a 2160-px-high screen; scaled for others). Applies immediately and
+  is saved as `tracking_range`. Needs a pin saved by **SELECT** (see
+  *Calibrating the scanner*).
 - **PAUSE / RESUME** — stop OCR without closing anything.
 - **SHOW PREVIEW** — show the raw pixels being read; useful for checking the box.
-- **SHOW BOX** — draw a thin outline on screen around the box being read. It
-  sits just outside the box, lets clicks through, and is always hidden from
+- **SHOW BOX** — draw a thin outline on screen around the box being read
+  (with tracking on, around the digits it has found). It sits just outside the
+  box, lets clicks through, and is always hidden from
   screen capture, so neither the scanner nor screenshots ever see it. F4 hides
   it with everything else. Off by default (`show_region_outline`): like any
   window over the game it can cost frames, so use it to check the box, then
@@ -973,6 +1000,10 @@ window too, which is why it is off by default.
 
 **Reads per second.** Each read costs about 6 ms of CPU on one core, so the
 default 4 a second is about 2.5% of one core; 8 a second doubles that.
+
+**Tracking.** Finding the pin costs about 1.3 ms per read (95% under 4 ms) on
+the default search area, and saves the OCR's 6 ms whenever no plate is on
+screen, so with tracking on the scanner usually uses less CPU than without.
 
 To check your own system, Intel's free
 [PresentMon](https://github.com/GameTechDev/PresentMon) records every frame:
@@ -1056,6 +1087,8 @@ to it.
 | Nothing ever reads | Re-calibrate; the box must contain only the digits. Check the preview. |
 | Nothing reads on a 5K / high-DPI screen next to monitors with other scaling | Calibrated with a build before the mixed-scale fix: the box was stored too small. Run **SELECT** again; the label shows the size in physical pixels while you drag. |
 | The game stutters while the overlay runs | Check `ocr_threads` is `1` in `config.json`, and **SHOW PREVIEW** and **SHOW BOX** are off; try fewer **READS / S**. See *Game performance*. |
+| Reads only now and then while flying | The HUD sways away from the box. Press **SELECT** with the scan readout on screen so the pin is saved, and check **TRACKING** is not `OFF`. A larger range follows bigger sways. |
+| Amber note "No pin icon found left of the box" | The readout was not on screen (or the box was drawn somewhere else) when you pressed SELECT. Open the scan HUD and press **SELECT** again around the digits. |
 | Scanner stopped reading after changing resolution or monitor | Look for the amber note under *Signature capture region*: the box was moved to match. Turn on **SHOW BOX** to see where it is now; press **SELECT** if the HUD is elsewhere. |
 | Not sure where the scanner is reading | Turn on **SHOW BOX**: the outline is drawn around the exact box. It is hidden from capture, so it cannot affect the reading. |
 | Reads the wrong number | Box too large or too small, or the HUD is scaled differently — re-calibrate. |
@@ -1085,7 +1118,8 @@ to it.
 C:\scov\Scripts\python.exe -m tools.selftest     REM OCR + lookup regression checks
 C:\scov\Scripts\python.exe -m tools.scan_selftest REM OCR threads, picker, rescale, settings, outline, QUIT, update source (needs a desktop)
 C:\scov\Scripts\python.exe -m tools.scan_e2e_selftest REM real screen: 5K2K signature -> picker -> capture -> OCR, outline, live app (secondary monitor)
-C:\scov\Scripts\python.exe -m tools.scan_e2e_selftest --primary REM the same on the main/game monitor
+C:\scov\Scripts\python.exe -m tools.scan_e2e_selftest --primary REM the same on the main/game monitor (close the game first: a real plate on screen fails the "plate gone" step)
+C:\scov\Scripts\python.exe -m tools.tracking_selftest REM pin tracking on 25 hand-labelled frames of a real flight (tools\fixtures\hud_track), speed limit
 C:\scov\Scripts\python.exe -m tools.workflow_selftest REM workflow + Game.log checks
 C:\scov\Scripts\python.exe -m tools.refinery_selftest REM refinery parser + timers
 C:\scov\Scripts\python.exe -m tools.combat_selftest REM combat parser + tracker + queue
