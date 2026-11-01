@@ -1,6 +1,6 @@
 # Changes
 
-## Unreleased
+## v1.0.3 — 2026-11-01
 
 DRAW REGION takes the whole signature window.
 
