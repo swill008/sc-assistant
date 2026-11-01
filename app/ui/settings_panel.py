@@ -16,6 +16,8 @@ from ..version import label as build_label
 from . import theme
 from .pin_button import PinButton
 
+PREVIEW_HEIGHT = 132      # design px: a whole signature window fits
+
 WIDTH = 384
 
 
@@ -646,8 +648,12 @@ class SettingsPanel(QWidget):
         scan_row.addWidget(self.outline_btn, 1)
         root.addLayout(scan_row)
 
+        # Tall enough for the whole signature window (about 2.2 : 1) across
+        # the Settings width; a digits-only crop just sits in the middle.
         self.preview = QLabel()
-        self.preview.setFixedHeight(theme.px(78))
+        self.preview.setFixedHeight(theme.px(PREVIEW_HEIGHT))
+        self.preview.setMinimumWidth(0)
+        self.preview_rects: dict[str, QRectF] = {}   # last outlines, in pixmap pixels
         self.preview.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview.setStyleSheet(theme.qss(
             "background: rgba(0,0,0,0.35); border: 1px dashed rgba(79,209,224,0.25);"
@@ -1690,16 +1696,41 @@ class SettingsPanel(QWidget):
             self._ore_count = None
         self._update_summaries()
 
-    def set_preview(self, crop) -> None:
+    def set_preview(self, crop, pin=None, digits=None) -> None:
+        """Show a scanner crop scaled to fit the preview box (aspect kept).
+
+        ``pin`` and ``digits`` are optional (x, y, w, h) rects in crop
+        pixels, outlined cyan and green on the whole signature window.
+        """
         if crop is None or not self.preview.isVisible():
             return
         try:
             rgb = crop[:, :, ::-1].copy()
             h, w = rgb.shape[:2]
             image = QImage(rgb.data, w, h, 3 * w, QImage.Format.Format_RGB888).copy()
-            pix = QPixmap.fromImage(image).scaledToHeight(
-                self.preview.height() - 10,
+            box_w = max(1, self.preview.width() - 10)
+            box_h = max(1, self.preview.height() - 10)
+            pix = QPixmap.fromImage(image).scaled(
+                box_w, box_h, Qt.AspectRatioMode.KeepAspectRatio,
                 Qt.TransformationMode.SmoothTransformation)
+            sx, sy = pix.width() / w, pix.height() / h
+            self.preview_rects = {}
+            outlines = [(name, rect, color) for name, rect, color in
+                        (("pin", pin, theme.ACCENT), ("digits", digits, theme.GOOD))
+                        if rect is not None]
+            if outlines:
+                painter = QPainter(pix)
+                for name, rect, color in outlines:
+                    x, y, rw, rh = (float(v) for v in rect)
+                    r = QRectF(x * sx, y * sy, rw * sx, rh * sy)
+                    pen = QPen(color)
+                    pen.setWidth(2)
+                    pen.setJoinStyle(Qt.PenJoinStyle.MiterJoin)
+                    painter.setPen(pen)
+                    painter.setBrush(Qt.BrushStyle.NoBrush)
+                    painter.drawRect(r.adjusted(1, 1, -1, -1))
+                    self.preview_rects[name] = r
+                painter.end()
             self.preview.setPixmap(pix)
         except Exception:
             self.preview.setText("preview unavailable")

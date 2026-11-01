@@ -21,7 +21,10 @@ import cv2                                   # noqa: E402
 import numpy as np                           # noqa: E402
 
 from app.ocr import SignatureOCR             # noqa: E402
-from app.tracking import Anchor, digits_rect, find_anchor, locate, search_area  # noqa: E402
+from app.tracking import (  # noqa: E402
+    PIN_MARGIN, PIN_REFERENCE, Anchor, digits_rect, find_anchor, find_anchor_in_box, locate,
+    reference_anchor, search_area,
+)
 
 FIXTURES = ROOT / "tools" / "fixtures"
 TRACK = FIXTURES / "hud_track"
@@ -35,6 +38,21 @@ MEDIAN_MS = 5.0
 OCR_KNOWN = {
     "f0135.jpg": "the scan tint's blocks turn the 5 into a 6 (61,000 by eye too); "
                  "OCR, not tracking",
+}
+# Windows drawn round the whole signature plate, relative to the labelled pin
+# top-left (24x28 at 5K2K), and the fewest frames (of 21) each must find the
+# pin on: docs/reviews/2026-11-01-plate-capture-analysis.md
+PLATE_BOXES = {
+    "tight": ((-12, -8, 150, 44), 17),
+    "loose": ((-35, -25, 195, 80), 19),
+    "very loose": ((-70, -40, 260, 150), 19),
+    "pin at left edge": ((-4, -6, 150, 40), 17),
+}
+DIGITS_ONLY = ((33, 1, 57, 25), 19)     # today's box round the digits
+BOX_PIN_TOL = 6         # px; the orange-mark fallback cuts the bright part only
+# misreads in a plate box that are the reader's, not the locating's
+OCR_KNOWN_BOX = {
+    "f0261.jpg": "reads 77,020 for 17,020 with every method, today's included",
 }
 
 
@@ -145,6 +163,72 @@ def main() -> int:
               and Anchor.load(Path(tmp), {}) is None
               and Anchor.load(Path(tmp), {"file": "anchor.png", "digits": "x"}) is None,
               "load returns None for a missing file or bad meta")
+
+    print("\nfind_anchor_in_box (whole signature window)")
+    check(PIN_REFERENCE.is_file() and reference_anchor(2160) is not None,
+          f"bundled reference pin loads ({PIN_REFERENCE.name})")
+    frames = list(zip(labels["frames"], imgs))
+    table = []
+    for name, ((ox, oy, w, h), need) in [*PLATE_BOXES.items(), ("digits only", DIGITS_ONLY)]:
+        found = read_ok = known = false_pin = 0
+        notes = []
+        for fr, img in frames:
+            # no plate: the window drawn where the plate sits when calibrated
+            px, py = fr["pin"] or cal["pin"]
+            bx, by = px + ox, py + oy
+            r = find_anchor_in_box(img, (bx, by, w, h), 2160)
+            if fr["pin"] is None:
+                false_pin += r is not None
+                continue
+            if r is None:
+                notes.append(f"{fr['file']} missed")
+                continue
+            a, (pdx, pdy, pw, ph) = r
+            tx, ty = bx - pdx, by - pdy
+            # digits only: find_anchor cuts the bright part only, which can sit a
+            # few px off the labelled icon corner; the read checks it instead
+            err = 0 if name == "digits only" else max(abs(tx + PIN_MARGIN - px),
+                                                      abs(ty + PIN_MARGIN - py))
+            if err > BOX_PIN_TOL or (pw, ph) != (w, h):
+                notes.append(f"{fr['file']} pin off by {err} px, plate {pw}x{ph}")
+                continue
+            found += 1
+            dx, dy, dw, dh = a.digits
+            val = ocr.read(img[max(0, ty + dy):ty + dy + dh, max(0, tx + dx):tx + dx + dw]).value
+            if val == fr["value"]:
+                read_ok += 1
+            elif fr["file"] in OCR_KNOWN_BOX or fr["file"] in OCR_KNOWN:
+                known += 1
+                notes.append(f"{fr['file']} KNOWN read {val}")
+            else:
+                notes.append(f"{fr['file']} read {val} (label {fr['value']})")
+        table.append((name, found, read_ok, false_pin))
+        check(found >= need, f"{name}: pin found on {found} of 21 (need {need})")
+        check(read_ok + known == found, f"{name}: digits read the label on {read_ok} of {found}"
+              + (f" + {known} known OCR misread(s)" if known else ""))
+        check(false_pin == 0, f"{name}: no pin on the 4 no-plate frames (got {false_pin})")
+        for n in notes:
+            print(f"         {n}")
+    print("\n         box               found  read  false pin")
+    for name, found, read_ok, false_pin in table:
+        print(f"         {name:17} {found:5}  {read_ok:4}  {false_pin:9}")
+
+    s = 1440 / 2160
+    (ox, oy, w, h), need = PLATE_BOXES["loose"]
+    found = false_pin = 0
+    for fr, img in frames:
+        small = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+        px, py = fr["pin"] or cal["pin"]
+        bx, by = round((px + ox) * s), round((py + oy) * s)
+        r = find_anchor_in_box(small, (bx, by, round(w * s), round(h * s)), 1440)
+        if fr["pin"] is None:
+            false_pin += r is not None
+        elif r is not None:
+            tx, ty = bx - r[1][0], by - r[1][1]
+            found += max(abs(tx + PIN_MARGIN - px * s), abs(ty + PIN_MARGIN - py * s)) <= BOX_PIN_TOL
+    check(found >= need and false_pin == 0,
+          f"1440-high resize, loose window, screen_height 1440: pin found on {found} of 21 "
+          f"(need {need}), {false_pin} on the no-plate frames")
 
     print("\nsearch_area")
     area = search_area(box, 400, 300)

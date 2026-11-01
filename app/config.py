@@ -148,6 +148,10 @@ DEFAULTS: dict = {
     # Pin icon found left of the box at DRAW REGION (tracking.Anchor.save meta);
     # the picture is anchor.png in the config folder. None = fixed box only.
     "anchor": None,
+    # The signature window drawn at DRAW REGION, saved with the pin: the
+    # rect {"dx", "dy", "w", "h"} from the pin template's top-left, for the
+    # Settings preview. None = preview the digits only. Dropped with the pin.
+    "plate": None,
     # Signature data: "scmdb" refreshes from scmdb.net game data (cached, the
     # bundled app/data/signatures.json is the fallback); "bundled" never
     # downloads. Channel picks the live servers or the test server (PTU).

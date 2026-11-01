@@ -89,6 +89,13 @@ def _orange(bgr: np.ndarray) -> np.ndarray:
 
 def find_anchor(image: np.ndarray, digits: tuple[int, int, int, int]) -> Anchor | None:
     """Cut the pin icon out of the strip just left of the digits box."""
+    found = _find_anchor_at(image, digits)
+    return found[0] if found else None
+
+
+def _find_anchor_at(image: np.ndarray, digits: tuple[int, int, int, int]
+                    ) -> tuple[Anchor, int, int] | None:
+    """find_anchor, plus the template's top-left in `image`."""
     bx, by, bw, bh = (int(v) for v in digits)
     if bh < 8 or image is None or image.ndim != 3:
         return None
@@ -140,7 +147,122 @@ def find_anchor(image: np.ndarray, digits: tuple[int, int, int, int]) -> Anchor 
     # cover the user's box too, within reason
     w = max(w, bx + bw - (tx + dx))
     w = int(min(w, round(_DIGITS_W_MAX * ph)))
-    return Anchor(template, (int(dx), int(dy), w, int(ph) + 2))
+    return Anchor(template, (int(dx), int(dy), w, int(ph) + 2)), tx, ty
+
+
+def _digits_for(tw: int, ph: int) -> tuple[int, int, int, int]:
+    """Digits rect from the template's top-left for a template `tw` wide
+    around a pin `ph` high (the bright run is centred in the template); the
+    same geometry as find_anchor."""
+    px = (tw - _PIN_W * ph) / 2
+    dx = round(px + _DIGITS_X * ph) - _DIGITS_SLACK
+    return int(dx), PIN_MARGIN - 1, int(round(_DIGITS_W * ph)), int(ph) + 2
+
+
+# Bundled pin (cut by find_anchor from tools/fixtures/signal_42000_5k2k.png),
+# matched inside a drawn window at DRAW REGION; scaled by screen height.
+PIN_REFERENCE = Path(__file__).with_name("data") / "pin_reference.png"
+_REF_HEIGHT = 2160
+_REF_PIN_H = 28         # pin height at _REF_HEIGHT
+_ref_cache: dict[int, Anchor | None] = {}
+
+
+def reference_anchor(screen_height: int) -> Anchor | None:
+    """The bundled pin scaled to `screen_height`; None when it can't be read."""
+    key = int(screen_height)
+    if key not in _ref_cache:
+        _ref_cache[key] = _load_reference(key)
+    return _ref_cache[key]
+
+
+def _load_reference(screen_height: int) -> Anchor | None:
+    try:
+        data = np.fromfile(str(PIN_REFERENCE), dtype=np.uint8)
+    except OSError:
+        return None
+    tpl = cv2.imdecode(data, cv2.IMREAD_COLOR) if data.size else None
+    if tpl is None or screen_height <= 0:
+        return None
+    s = screen_height / _REF_HEIGHT
+    if abs(s - 1.0) > 1e-3:
+        tw, th = max(4, round(tpl.shape[1] * s)), max(4, round(tpl.shape[0] * s))
+        interp = cv2.INTER_AREA if s < 1 else cv2.INTER_CUBIC
+        tpl = cv2.resize(tpl, (tw, th), interpolation=interp)
+    if tpl.shape[0] < 8 or tpl.shape[1] < 8:
+        return None
+    th, tw = tpl.shape[:2]
+    return Anchor(tpl, _digits_for(tw, th - 2 * PIN_MARGIN))
+
+
+def _pin_blob(image: np.ndarray, box: tuple[int, int, int, int],
+              pin_h: float) -> tuple[int, int, int, int] | None:
+    """Left-most pin-shaped orange mark in `box` as (x, y, w, h) in image pixels."""
+    x, y, w, h = box
+    sub = image[y:y + h, x:x + w]
+    if sub.size == 0:
+        return None
+    ob = _orange(sub).astype(np.float32)
+    peak = float(np.percentile(ob, 99.5))
+    if peak < 60:
+        return None
+    mask = (ob >= 0.75 * peak).astype(np.uint8)
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((3, 3), np.uint8))
+    n, _, stats, _ = cv2.connectedComponentsWithStats(mask, connectivity=8)
+    best = None
+    for i in range(1, n):
+        cx, cy, cw, ch, area = (int(v) for v in stats[i])
+        if not 0.6 * pin_h <= ch <= 1.6 * pin_h:
+            continue
+        if not 0.45 * ch <= cw <= 1.2 * ch or area < 0.25 * cw * ch:
+            continue
+        if best is None or cx < best[0]:
+            best = (cx, cy, cw, ch)
+    if best is None:
+        return None
+    return best[0] + x, best[1] + y, best[2], best[3]
+
+
+def find_anchor_in_box(image: np.ndarray, box: tuple[int, int, int, int],
+                       screen_height: int
+                       ) -> tuple[Anchor, tuple[int, int, int, int]] | None:
+    """Find the pin inside a drawn signature window and cut the user's own pin.
+
+    Tries the bundled reference pin, then the left-most pin-shaped orange mark,
+    then `find_anchor` with the box taken as a digits box (a box drawn round
+    the digits only). Returns the Anchor and the drawn box relative to its
+    template's top-left (dx, dy, w, h); None when no pin is found.
+    """
+    if image is None or image.ndim != 3:
+        return None
+    ih, iw = image.shape[:2]
+    bx, by, bw, bh = (int(v) for v in box)
+    x0, y0 = max(0, bx), max(0, by)
+    x1, y1 = min(iw, bx + bw), min(ih, by + bh)
+    if x1 - x0 < 4 or y1 - y0 < 4:
+        return None
+    anchor = None
+    ref = reference_anchor(screen_height)
+    if ref is not None:
+        m = locate(image[y0:y1, x0:x1], ref)
+        if m is not None:
+            th, tw = ref.template.shape[:2]
+            tx, ty = x0 + m.x, y0 + m.y
+            anchor = Anchor(image[ty:ty + th, tx:tx + tw].copy(), ref.digits)
+    if anchor is None:
+        pin = _pin_blob(image, (x0, y0, x1 - x0, y1 - y0),
+                        _REF_PIN_H * screen_height / _REF_HEIGHT)
+        if pin is not None:
+            px, py, pw, ph = pin
+            tx, ty = px - PIN_MARGIN, py - PIN_MARGIN
+            tx1, ty1 = px + pw + PIN_MARGIN, py + ph + PIN_MARGIN
+            if tx >= 0 and ty >= 0 and tx1 <= iw and ty1 <= ih:
+                anchor = Anchor(image[ty:ty1, tx:tx1].copy(), _digits_for(tx1 - tx, ph))
+    if anchor is None:
+        found = _find_anchor_at(image, (bx, by, bw, bh))
+        if found is None:
+            return None
+        anchor, tx, ty = found
+    return anchor, (bx - tx, by - ty, bw, bh)
 
 
 def locate(image: np.ndarray, anchor: Anchor, min_score: float = 0.6) -> Match | None:

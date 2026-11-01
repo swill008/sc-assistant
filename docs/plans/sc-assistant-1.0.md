@@ -186,7 +186,7 @@ every scannable item; visible feedback for every read (no silent discards).
   caches; notes, inventory and blueprints are kept. Click twice like QUIT;
   a dated backup folder is kept next to the settings; then the app restarts.
 
-## After 1.0.1 (planning, 2026-11-01) — O, P, Q built for 1.0.2
+## After 1.0.1 (planning, 2026-11-01) — O, P, Q built for 1.0.2; R built, not released
 - O. Download progress (decided 2a, 3a; built, 1.0.2): the UPDATE line reads "Downloading
   v<x> · NN% · <got> of <total> MB", updated every MB (download_setup reads
   1 MB chunks and knows release.size); without a size only "<got> MB". The
@@ -202,6 +202,17 @@ every scannable item; visible feedback for every read (no silent discards).
   ends and when a window opens or closes; all 7 panels plus Settings (the nav
   bar keeps its edge spot); every window pulled fully onto the nearest
   connected screen at start; sizes saved for panels that can be resized.
+- R. Whole-window DRAW REGION (decided 1a, 2a, 3a, 2026-11-01; built, not
+  released). Analysis: docs/reviews/2026-11-01-plate-capture-analysis.md
+  (pin found on 19 of 21 plate frames with a loose box, as today's digits
+  box; no false pin on 4 no-plate frames). Decisions: 1a draw around the
+  whole signature window (pin, number, orange plate), a digits-only box still
+  works; 2a the preview shows the whole window with the pin outlined cyan and
+  the digits green; 3a no pin found -> fixed box and "NO PIN FOUND — FIXED
+  BOX" as today. Build: find the pin in the box by the bundled reference pin,
+  then the orange-mark test, then today's strip left of the box; save the
+  user's own pin as today; try up to 5 frames over ~0.5 s; save the window
+  as `plate` beside the digits box.
 
 ## Parked (2026-11-01): SuperCargo button
 A CARGO nav-bar button that shows/hides SuperCargo and its overlay. Planned

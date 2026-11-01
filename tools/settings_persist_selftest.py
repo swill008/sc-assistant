@@ -4,7 +4,7 @@
 
 Runs the real OverlayApp twice against a temporary settings folder (your own
 %APPDATA% is never touched). The first run changes READS / S, TRACKING, SHOW
-BOX and MONITOR through the Settings controls, saves a pin from the 5K2K test
+BOX and MONITOR through the Settings controls, saves a pin and plate from the 5K2K test
 image the way DRAW REGION does, and quits with QUIT. The file on disk must hold
 every change; the second run, started from that file, must show each one in
 Settings and use it in the scanner. The open Settings sections (headings
@@ -194,12 +194,28 @@ def main() -> int:
     s.outline_btn.setChecked(True)
     want_open = ["scanner", "hotkeys", "look"]
     _user_opens(s, want_open)
-    # Save a pin the way DRAW REGION does, from the 5K2K image, on the new box.
-    box = one.cfg["region"]
+    # DRAW REGION on the new box (the digits of the 5K2K image, which works on
+    # any monitor height), its screen faked: the pin, digits box and plate.
+    box = dict(one.cfg["region"], width=DIGITS[2], height=DIGITS[3])
+    one.cfg["region"] = dict(box)
     image = cv2.imread(str(FIXTURE))
     origin = (box["left"] - DIGITS[0], box["top"] - DIGITS[1])
-    pinned = one._calibrate_anchor(dict(box, width=DIGITS[2], height=DIGITS[3]), image=image, origin=origin)
-    failures += _check("pin saved from the 5K2K image", pinned)
+
+    def grab(rect):
+        import numpy as np
+
+        out = np.zeros((int(rect["height"]), int(rect["width"]), 3), np.uint8)
+        x, y = origin[0] - rect["left"], origin[1] - rect["top"]
+        ih, iw = image.shape[:2]
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(out.shape[1], x + iw), min(out.shape[0], y + ih)
+        out[y0:y1, x0:x1] = image[y0 - y:y1 - y, x0 - x:x1 - x]
+        return out
+    one._calibrate_drawn(dict(box), grab=grab)
+    _pump(1.0)
+    failures += _check("pin and plate saved from the 5K2K image by DRAW REGION",
+                       bool(one.cfg["anchor"]) and bool(one.cfg.get("plate")),
+                       f"(anchor {one.cfg['anchor']}, plate {one.cfg.get('plate')})")
     box_after = dict(one.cfg["region"])
     _pump(0.3)
     one.nav.quit_btn.click()
@@ -216,6 +232,8 @@ def main() -> int:
     failures += _check("box saved", saved.get("region") == box_after, f"({saved.get('region')})")
     meta = saved.get("anchor")
     failures += _check("pin saved", bool(meta) and (config_dir() / meta.get("file", "")).is_file(), f"({meta})")
+    failures += _check("plate saved", saved.get("plate") == one.cfg.get("plate") and bool(saved.get("plate")),
+                       f"({saved.get('plate')})")
     failures += _check("open Settings sections saved", saved.get("settings_open") == want_open,
                        f"({saved.get('settings_open')})")
     # A hand-edited or older file may name a section that no longer exists.
@@ -244,6 +262,10 @@ def main() -> int:
                        f"({s.monitor_box.currentData()!r})")
     failures += _check("scanner uses the saved box", two.scan._region == box_after, f"({two.scan._region})")
     failures += _check("saved pin loaded: tracking is on", two.scan.tracking)
+    want_plate = tuple(saved.get("plate", {}).get(k) for k in ("dx", "dy", "w", "h"))
+    failures += _check("saved plate handed to the scanner (preview of the whole window)",
+                       getattr(two.scan, "_plate", None) == want_plate,
+                       f"(scanner {getattr(two.scan, '_plate', '<missing>')}, saved {want_plate})")
     failures += _check("no amber note", not s.region_note.text(), f"({s.region_note.text()!r})")
     failures += _check("open Settings sections come back, unknown id dropped",
                        s.open_sections == want_open and two.cfg["settings_open"] == want_open,
@@ -258,7 +280,7 @@ def main() -> int:
     resaved = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
     failures += _check("quitting again keeps every setting",
                        all(resaved.get(k) == saved.get(k) for k in
-                           ("poll_ms", "tracking_range", "show_region_outline", "game_monitor", "region", "anchor",
+                           ("poll_ms", "tracking_range", "show_region_outline", "game_monitor", "region", "anchor", "plate",
                             "settings_open")))
 
     # ---- RESET SETTINGS: defaults after the restart, nothing written back --

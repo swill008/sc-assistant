@@ -347,15 +347,25 @@ The scanner needs to know where the signature number appears on your screen.
 3. Click **DRAW REGION**. The picker opens on that monitor. On the first run,
    before any box exists, `⚙` on the nav bar and DRAW REGION pulse to show
    where to start.
-4. Drag a box **tightly around the digits only** (a little padding is fine, but
-   do not include the word "SIGNATURE" or the units). Releasing the mouse
-   confirms the box. Right-click or Esc cancels.
-5. For 3 seconds the result is drawn on screen, even with SHOW BOX off:
-   `PIN FOUND — TRACKING ON` around the pin and the digits, or
-   `NO PIN FOUND — FIXED BOX` (see *tracking* below).
+4. Drag a box **around the whole signature window**: the orange pin icon, the
+   number and the small orange plate they sit on. A loose box is fine; the
+   app finds the pin and the digits inside it by itself. A tight box around
+   the digits only still works too: then the app looks for the pin just left
+   of the box, as before. Releasing the mouse confirms the box. Right-click or
+   Esc cancels.
+5. For half a second the app looks at up to five frames and uses the first
+   one where it finds the pin, so one blurred or blue-tinted frame does not
+   spoil the calibration. Then, for 3 seconds, the result is drawn on screen,
+   even with SHOW BOX off: `PIN FOUND — TRACKING ON` around the pin and the
+   digits it found (the digits box is what the scanner reads), or
+   `NO PIN FOUND — FIXED BOX` around the box you drew, which is then read as a
+   fixed box (see *tracking* below).
 6. Optional: **SHOW BOX** (in *Scanning*) draws the box on screen so you can
    see exactly where the scanner reads; **SHOW PREVIEW** shows the pixels it
-   reads. Turn SHOW BOX off again when you are done (see *Game performance*).
+   reads. When you drew the whole window and the pin was found, the preview
+   shows the whole signature window with the pin outlined in cyan and the
+   digits being read outlined in green; otherwise it shows the digits box as
+   before. Turn SHOW BOX off again when you are done (see *Game performance*).
 
 **Fine-tuning the box.** Hold Ctrl while releasing the drag and the box stays
 on screen instead of being used at once: the arrow keys move it 1 physical
@@ -364,9 +374,14 @@ Enter confirms it, and Esc or right-click cancels. A new drag starts over. On
 monitors at 200% scale or more a magnifier follows the cursor, showing the
 screen as it was when the picker opened, one physical pixel per cell.
 
-A good box is roughly 200 × 50 physical pixels at 1440p; on a 5120 × 2160
-(5K2K) screen the signature digits themselves are only about 60 × 26, so a box
-of about 80 × 40 is plenty. The label beside the box shows its size in physical
+How loose can the box be? On a 5120 × 2160 (5K2K) recording the pin and the
+digits were found on 19 of 21 frames with a loose box or a very loose one
+(taking in the orange compass ticks under the plate), and on 17 of 21 with a
+box drawn tight around the plate; the two misses in every case, today's
+digits-only box included, were heavily tinted or blurred mid-flight frames.
+Draw it on a steady view and keep the box to the plate and a margin around it
+rather than half the HUD. The signature digits themselves are only about
+60 × 26 physical pixels on a 5K2K screen. The label beside the box shows its size in physical
 pixels while you drag. The region is stored in physical pixels, so it stays
 correct if you change display scaling later.
 
@@ -394,7 +409,8 @@ proportional scaling. Check SHOW BOX or SHOW PREVIEW afterwards, and press
 **DRAW REGION** if the HUD sits somewhere else. Changing only Windows scaling needs
 nothing: the box is stored in physical pixels, which scaling does not change.
 If the monitor's height changed, the saved pin is dropped (the HUD, and the
-pin with it, is drawn at a different size) and HUD tracking turns off; it
+pin with it, is drawn at a different size), together with the saved
+whole-window `plate`, and HUD tracking turns off; it
 turns back on by itself the next time the box reads a signature (see below),
 or press **DRAW REGION**. A monitor that only moved, or a wider one at the same
 height, keeps its pin.
@@ -404,8 +420,13 @@ moves with the ship's "physics" — on a 5120×2160 screen the signature plate
 was measured moving 218 px left to 250 px right and 43 px up to 227 px down
 around the drawn box, often 100 px within a tenth of a second, so a fixed box
 caught it in 19 of 300 frames. When you press **DRAW REGION** with the scan readout
-on screen, the app also saves the plate's orange **pin icon** just left of the
-digits (`%APPDATA%\SC Assistant\anchor.png`). Each read then captures a
+on screen, the app also saves the plate's orange **pin icon** left of the
+digits (`%APPDATA%\SC Assistant\anchor.png`), cut from your own screen. In a
+whole-window box it finds the pin by matching a pin picture that ships with
+the app (scaled to your screen height), then by looking for the left-most
+pin-shaped orange mark; with a digits-only box it looks in the strip left of
+the box. The whole window you drew is saved too (`plate` in `config.json`,
+relative to the pin) for the preview. Each read then captures a
 larger area around the box, finds the pin in it (about 1.3 ms; it searches a
 quarter-size orange-only copy, then checks the best few spots at full size)
 and reads the digits at their fixed place right of the pin. On the same
@@ -414,14 +435,16 @@ is not run at all. The pin is the anchor because it looks the same in every
 ship, whatever the rest of the HUD looks like. **TRACKING** in *Scanning* sets
 how far it searches (default ±400 px across and ±300 px up and down on a
 2160-px-high screen, scaled for other heights); `OFF` reads the fixed box as
-before. If DRAW REGION finds no pin next to the box, an amber note says tracking is
-off — press DRAW REGION again with the readout showing.
+before. If DRAW REGION finds no pin in or next to the box, an amber note says
+tracking is off — press DRAW REGION again with the readout showing.
 
 A box without a saved pin (drawn with a build from before pins existed, or
 after a height change dropped it) learns the pin by itself, once, from the
 first exact signature the fixed box reads: the plate is on the box at that
 moment. The note under *Signature capture region* then reads
-`Pin learned from the scan: tracking is on.`
+`Pin learned from the scan: tracking is on.` A pin learned this way has no
+saved whole window, so **SHOW PREVIEW** shows the digits only until the next
+**DRAW REGION**.
 
 The chip in the scanner's header always shows the state: `TRACKING` (cyan)
 while the pin is found, `SEARCHING` (amber) while it is lost, and `FIXED BOX`
@@ -1084,6 +1107,12 @@ Closing HOTKEYS cancels a key change that was waiting for a key press.
   scanner*).
 - **PAUSE / RESUME** — stop OCR without closing anything.
 - **SHOW PREVIEW** — show the raw pixels being read; useful for checking the box.
+  When DRAW REGION was drawn around the whole signature window and the pin is
+  being tracked, it shows that whole window, scaled to fit, with the pin
+  outlined in cyan and the digits being read outlined in green. Without a
+  saved window (a digits-only box, no pin found, a pin learned from a scan,
+  or tracking lost) it shows
+  the digits box as before.
 - **SHOW BOX** — draw a thin outline on screen around the box being read
   (with tracking on, around the pin and the digits it has found, with a
   `TRACKING ✓` / `SEARCHING…` / `FIXED BOX` label). It sits just outside the
@@ -1417,16 +1446,19 @@ to it.
 
 | Symptom | Fix |
 | --- | --- |
-| Nothing ever reads | Re-calibrate; the box must contain only the digits. Check the preview. |
+| Nothing ever reads | Re-calibrate: press **DRAW REGION** with the scan readout on screen and draw around the whole signature window (pin, number and orange plate). Check **SHOW PREVIEW**: the green outline must sit on the number. |
+| DRAW REGION says `NO PIN FOUND — FIXED BOX` around a whole-window box | The pin was not in the box, or every frame was tinted or blurred (for example by the scan pulse). Draw again on a steady view with the pin inside the box. Until then the box you drew is read as a fixed box, which is too large to read well. |
+| Preview shows the plate but the green outline is off the number | The digits are placed from the pin's size. Press **DRAW REGION** again on a steady view; if it stays off, draw a tight box around the digits only (that still works) and report it with a screenshot. |
+| Preview shows only the digits, not the whole window | Expected when the box was drawn around the digits only, when no pin was found, or while the pin is lost (`SEARCHING`). Draw around the whole window to get the whole-window preview. |
 | Nothing reads on a 5K / high-DPI screen next to monitors with other scaling | Calibrated with a build before the mixed-scale fix: the box was stored too small. Press **DRAW REGION** again; the label shows the size in physical pixels while you drag. |
 | The game stutters while the overlay runs | Check `ocr_threads` is `1` in `config.json`, and **SHOW PREVIEW** and **SHOW BOX** are off; try fewer **READS / S**. See *Game performance*. |
 | Reads only now and then while flying | The HUD sways away from the box. If the scanner chip says `FIXED BOX`, press **DRAW REGION** with the scan readout on screen so the pin is saved (the 3-second result should say `PIN FOUND — TRACKING ON`), and check **TRACKING** is not `OFF`. A larger range follows bigger sways. |
 | Chip stays on `SEARCHING` | The pin is not in the search area: the plate is off screen, or the HUD sways further than the **TRACKING** range. Turn on **SHOW BOX** to see where it last found the plate. |
 | Amber note "Pin search failed (…)" or "Could not load the saved pin (…)" | The note names the error. Press **DRAW REGION** again with the readout showing; until then the box reads as a fixed box and learns the pin from the next exact signature. |
-| Amber note "No pin icon found left of the box" | The readout was not on screen (or the box was drawn somewhere else) when you pressed DRAW REGION. Open the scan HUD and press **DRAW REGION** again around the digits. |
+| Amber note "No pin icon found in or next to the box" | The readout was not on screen (or the box was drawn somewhere else) when you pressed DRAW REGION. Open the scan HUD and press **DRAW REGION** again around the whole signature window. |
 | Scanner stopped reading after changing resolution or monitor | Look for the amber note under *Signature capture region*: the box was moved to match. Turn on **SHOW BOX** to see where it is now; press **DRAW REGION** if the HUD is elsewhere. |
 | Not sure where the scanner is reading | Turn on **SHOW BOX**: the outline is drawn around the exact box. It is hidden from capture, so it cannot affect the reading. |
-| Reads the wrong number | Box too large or too small, or the HUD is scaled differently — re-calibrate. |
+| Reads the wrong number | With `FIXED BOX` the box is too large or too small, or the HUD is scaled differently — re-calibrate around the whole signature window. With tracking on, check **SHOW PREVIEW**: if the green outline is on the number, the misread is the reader's (for example 17,020 read as 77,020 on a tinted frame) and the next frames normally correct it. |
 | Ore finder list is empty | No internet, or scminer.rocks is down. Press `↻`; the cache is used when available. |
 | Ore finder shows `OFFLINE` | Same as above — the data on screen is the last successful sync. |
 | Combat tracker shows no events | Confirm `Game.log` is being written, or set `SC_GAME_LOG` to its path. Combat log formats are patch-dependent; update the parser patterns if a patch changes them. |
@@ -1451,7 +1483,7 @@ to it.
 | UI scale slider seems to do nothing | It needs a restart: press **RESTART** next to the slider (or quit and start again). The hint turns amber while the chosen scale is not active yet. |
 | `run.bat` says Python was not found | Install Python 3.11+ (64-bit) and tick “Add python.exe to PATH”, or run `setup.bat` once to create `C:\scov`. |
 | A black console flashes when a refinery order completes | Fixed: the speech/WAV helpers start PowerShell with `CREATE_NO_WINDOW`. If you see it, you are running an older copy. |
-| Scanner stays on `READING` and never locks | OCR returned no text: confirm the crop in **SHOW PREVIEW** contains only the digits, then re-calibrate. `run-debug.bat` prints the scan error; if it reports a missing module, reinstall the OCR deps with `pip install -r requirements.txt`. |
+| Scanner stays on `READING` and never locks | OCR returned no text: confirm in **SHOW PREVIEW** that the digits (the green outline, or the whole crop for a digits-only box) contain the number, then re-calibrate. `run-debug.bat` prints the scan error; if it reports a missing module, reinstall the OCR deps with `pip install -r requirements.txt`. |
 
 ## Development
 

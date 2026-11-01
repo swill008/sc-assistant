@@ -1,5 +1,47 @@
 # Changes
 
+## Unreleased
+
+DRAW REGION takes the whole signature window.
+
+### Whole-window DRAW REGION (plan item R)
+
+**What happened.** DRAW REGION needed a box drawn tightly around the digits
+only, about 60 × 26 physical pixels on a 5120 × 2160 screen: hard to draw, and
+the preview showed only those digits, so it was hard to see whether the box
+sat on the plate.
+
+**Change.** Draw around the whole signature window (pin, number and the
+orange plate); a loose box is fine and a digits-only box still works (1a).
+`tracking.find_anchor_in_box(image, box, screen_height)` finds the pin inside
+the drawn box in this order: the bundled reference pin
+(`app/data/pin_reference.png`), scaled by screen height / 2160, matched with
+`tracking.locate`; then the left-most pin-shaped orange mark (about 28 px high
+at 2160); then today's strip left of the box, treating it as a digits box. It
+returns the user's own pin (saved as `anchor.png` as before) and the drawn
+window relative to it. DRAW REGION grabs up to 5 frames over about 0.5 s and
+uses the first that gives a pin. With a pin, `region` is the digits box placed
+from the pin (same meaning as before, so scanning and tracking are
+unchanged) and the window is saved as `plate` (`{"dx", "dy", "w", "h"}`,
+relative to the pin) in `config.json`. Without a pin: the fixed box and
+`NO PIN FOUND — FIXED BOX` as before (3a). A height change or a missing
+pin file drops `plate` with the pin; a pin learned from a scan saves none. **SHOW PREVIEW** shows the whole window with the pin outlined in
+cyan and the digits in green while tracking (2a); without a saved window, the
+digits as before.
+
+**Analysis** (`docs/reviews/2026-11-01-plate-capture-analysis.md`; 25 frames
+of a real 5120 × 2160 recording, 21 with the plate, 4 without). Pin found:
+today's digits box 19 of 21; the bundled pin match alone 17 for every box
+size; the orange-mark test alone 17-19 by box; both together 19 with a loose
+or very loose box and 17 with a tight one. No false pin on the 4 frames
+without a plate (one has UNKNOWN marker pins and red warning text). The two
+frames missed by every method, today's included, are heavily tinted or
+blurred mid-flight frames. Where the pin was found the digits placed from it
+read the right number except where the reader itself misreads (17,020 read
+as 77,020 / 7,020 with every method). Not verified: other resolutions (no
+fixtures; the reference pin is scaled by height) and other ships' HUD
+colours.
+
 ## v1.0.2 — 2026-11-01
 
 Download progress for UPDATE, the Support group removed from Settings, and

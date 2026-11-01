@@ -37,7 +37,11 @@ on a secondary monitor, or the primary if there is only one, then:
 9. Result border (plan L): SCANNED SIGNATURE shows the read and the border
    is green on the confirmed exact read; never red with the plate gone or
    with TRACKING 0; back to None once the card is lost.
-10. First run (plan J-i): with no box the nav ⚙ and DRAW REGION ask for
+10. Whole signature window (plan R): DRAW REGION round the whole fixture
+   finds the pin, saves the digits box, pin and plate, tracks 42,000, and the
+   Settings preview gets the window with the pin and digits rects (on a
+   2160-px-high monitor; skipped elsewhere).
+11. First run (plan J-i): with no box the nav ⚙ and DRAW REGION ask for
    attention; both stop once a box exists.
 
 Exit code = number of failed checks.
@@ -712,10 +716,13 @@ def part_tracking(overlay, shown: dict, seen: dict) -> int:
     failures += _check("TRACKING 0: the moved plate is not read",
                        EXPECTED not in off and overlay._last_value != EXPECTED and len(off) > 0,
                        f"({len(off)} results, values {sorted(set(map(str, off)))})")
-    _wait(lambda: _close_to(outline_digits(), region), 3.0)
-    failures += _check("TRACKING 0: SHOW BOX outline back on the fixed box",
-                       _close_to(outline_digits(), region),
-                       f"(outline {outline_now()}, digits {outline_digits()}, want {region})")
+    # DRAW REGION with a pin saves the digits box worked out from the pin
+    # (plan R), which sits on the drawn digits.
+    fixed_box = overlay.cfg["region"]
+    _wait(lambda: _close_to(outline_digits(), fixed_box), 3.0)
+    failures += _check("TRACKING 0: SHOW BOX outline back on the fixed (saved) box, on the digits",
+                       _close_to(outline_digits(), fixed_box) and _on_digits(fixed_box, region),
+                       f"(outline {outline_now()}, digits {outline_digits()}, want {fixed_box} ~ {region})")
     failures += _check("TRACKING 0: outline.state fixed, no pin mark",
                        getattr(outline, "state", None) == "fixed" and not marks().get("pin"), describe())
     failures += _check("TRACKING 0: track_state fixed, chip FIXED BOX",
@@ -728,6 +735,74 @@ def part_tracking(overlay, shown: dict, seen: dict) -> int:
 
     overlay.settings.outline_btn.setChecked(False)
     _pump(0.3)
+    failures += part_whole_window(overlay, shown, seen)
+    return failures
+
+
+def part_whole_window(overlay, shown: dict, seen: dict) -> int:
+    """DRAW REGION round the whole signature window (plan R): the app finds
+    the pin inside it, saves the digits box, pin and plate, tracks and reads
+    the digits, and the Settings preview gets the whole window with the pin
+    and digits outlined."""
+    from app import display
+    from app.config import CONFIG_PATH, config_dir
+
+    failures = 0
+    fixture, frect, region, pin = shown["fixture"], shown["rect"], shown["region"], shown["pin"]
+    screen = display.screen_of_region(frect)
+    if screen is None or display.physical_rect(screen)["height"] != 2160:
+        print("  SKIP  whole-window DRAW REGION: the fixture is a 2160-px-high HUD; "
+              "this monitor is not 2160 px high")
+        return 0
+    print("  -- whole signature window (plan R) --")
+    outline = overlay.outline
+    previews: list = []
+    real_preview = overlay.settings.set_preview
+
+    def set_preview(crop, pin=None, digits=None, _real=real_preview):
+        previews.append((None if crop is None else crop.shape[:2], pin, digits))
+        _real(crop, pin, digits)
+    overlay.settings.set_preview = set_preview
+    overlay._on_tracking(400)
+    _move(fixture, frect)
+    (config_dir() / "anchor.png").unlink(missing_ok=True)
+    overlay._on_region_selected(dict(frect))
+    ok = _wait(lambda: outline.isVisible() and getattr(outline, "label", None) == CONFIRM_TEXT, 2.0)
+    marks = getattr(outline, "marks", None) or {}
+    failures += _check(f"whole window: DRAW REGION shows '{CONFIRM_TEXT}'", ok,
+                       f"(label {getattr(outline, 'label', None)!r}, marks {marks})")
+    failures += _check("whole window: confirmation marks the fixture's pin",
+                       _on_pin(marks.get("pin"), pin), f"(want ~{pin}, got {marks.get('pin')})")
+    failures += _check("whole window: confirmation marks the digits",
+                       _on_digits(marks.get("digits"), region), f"(want ~{region}, got {marks.get('digits')})")
+    saved = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+    plate = saved.get("plate") or {}
+    failures += _check("whole window: the saved box is the digits box",
+                       _on_digits(saved.get("region"), region) and saved.get("region") == overlay.cfg["region"],
+                       f"(saved {saved.get('region')}, want ~{region})")
+    failures += _check("whole window: pin and plate saved (plate = the drawn window)",
+                       bool(saved.get("anchor")) and (config_dir() / "anchor.png").is_file()
+                       and plate.get("w") == frect["width"] and plate.get("h") == frect["height"],
+                       f"(anchor {saved.get('anchor')}, plate {plate})")
+    overlay._last_value = None
+    ok = _wait(lambda: overlay._last_value == EXPECTED and overlay._track_info.get("state") == "locked")
+    failures += _check(f"whole window: tracking reads {EXPECTED:,}", ok,
+                       f"(last value {overlay._last_value}, state {overlay._track_info.get('state')})")
+    ok = _wait(lambda: any(p[1] is not None for p in previews), 3.0)
+    view = next((p for p in reversed(previews) if p[1] is not None), None)
+    failures += _check("whole window: Settings preview gets the window with pin and digits rects", ok,
+                       f"(previews {previews[-3:]})")
+    if view is not None:
+        shape, vpin, vdigits = view
+        want_pin = (pin["left"] - frect["left"], pin["top"] - frect["top"])
+        want_digits = (region["left"] - frect["left"], region["top"] - frect["top"])
+        failures += _check("whole window: preview is the whole window, pin and digits in place",
+                           shape == (frect["height"], frect["width"])
+                           and all(abs(a - b) <= NEAR for a, b in zip(vpin[:2], want_pin))
+                           and all(abs(a - b) <= NEAR for a, b in zip(vdigits[:2], want_digits)),
+                           f"(crop {shape}, pin {vpin} want ~{want_pin}, digits {vdigits} want ~{want_digits})")
+    _wait(lambda: not outline.isVisible(), 3.5)
+    overlay.settings.set_preview = real_preview
     return failures
 
 
@@ -801,7 +876,12 @@ def main() -> int:
     others = [s for s in QGuiApplication.screens() if s is not primary]
     # --primary tests on the main monitor (usually the game monitor), which
     # covers the middle of that screen for a few seconds.
-    screen = primary if ("--primary" in sys.argv or not others) else others[0]
+    # A 2160-px-high side monitor first: the fixture is a 2160-high HUD, so
+    # the whole-window check (reference pin scaled by height) can run there.
+    from app import display
+
+    tall = [s for s in others if display.physical_rect(s)["height"] == 2160]
+    screen = primary if ("--primary" in sys.argv or not others) else (tall or others)[0]
     print(f"Using {screen.name()} (scale {screen.devicePixelRatio():.2f}); "
           f"config in {_TMP.name}")
     print("-" * 78)

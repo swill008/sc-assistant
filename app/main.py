@@ -67,6 +67,10 @@ TOOLS = [
 TOOL_HOTKEY_BASE = 100
 # How long the DRAW REGION result stays on screen (even with SHOW BOX off).
 CONFIRM_MS = 3000
+# DRAW REGION grabs up to this many frames, this far apart (~0.5 s), and uses
+# the first that shows the pin, so one blurred or tinted frame doesn't fail it.
+DRAW_FRAMES = 5
+DRAW_FRAME_MS = 120
 # Seconds in a row the tracked plate must stay unreadable before the result
 # border turns red ("noread"); single dropped frames never do.
 NOREAD_SECONDS = 1.0
@@ -89,8 +93,13 @@ class ScanThread(QThread):
     # (meta, Anchor | error text) for request_anchor(): the saved pin is
     # decoded here so OpenCV never loads on the GUI thread at start-up.
     anchor_loaded = Signal(object, object)
+    # (plate crop, pin rect, digits rect) while locked with a saved plate:
+    # the whole signature window for the Settings preview, rects (x, y, w, h)
+    # in crop pixels. None (on change only) when there is none. Emitted
+    # before that frame's result.
+    plate_view = Signal(object)
 
-    _NO_ANCHOR = object()     # configure(): leave the anchor as it is
+    _NO_ANCHOR = object()     # configure(): leave the anchor/plate as it is
 
     def __init__(self, data: MiningData, cfg: Config, demo: bool = False,
                  anchor=None, parent=None):
@@ -109,6 +118,8 @@ class ScanThread(QThread):
         self._last_payload: tuple | None = None
         self._tracking_range = parse_tracking_range(cfg.get("tracking_range"))
         self._anchor = anchor
+        self._plate = parse_plate(cfg.get("plate"))
+        self._plate_shown = False
         self._anchor_request: tuple | None = None
         self._last_track_state: dict | None = None
         # (anchor, physical search area), or None for the fixed box. Swapped
@@ -119,8 +130,10 @@ class ScanThread(QThread):
 
     # -- setters are called from the GUI thread -------------------------
     def configure(self, region=None, interval_ms=None, tolerance=None,
-                  tracking_range=None, anchor=_NO_ANCHOR) -> None:
-        """``anchor=None`` turns tracking off; leave it out to keep it."""
+                  tracking_range=None, anchor=_NO_ANCHOR, plate=_NO_ANCHOR) -> None:
+        """``anchor=None`` turns tracking off; leave it out to keep it.
+        ``plate``: the signature window as (dx, dy, w, h) from the anchor's
+        template, None for no plate preview; leave it out to keep it."""
         if region is not None:
             self._region = region
         if interval_ms is not None:
@@ -131,8 +144,10 @@ class ScanThread(QThread):
             self._tracking_range = max(0, int(tracking_range))
         if anchor is not ScanThread._NO_ANCHOR:
             self._anchor = anchor
+        if plate is not ScanThread._NO_ANCHOR:
+            self._plate = parse_plate(plate)
         if region is not None or tracking_range is not None \
-                or anchor is not ScanThread._NO_ANCHOR:
+                or anchor is not ScanThread._NO_ANCHOR or plate is not ScanThread._NO_ANCHOR:
             self._update_track()
 
     def _update_track(self) -> None:
@@ -149,7 +164,7 @@ class ScanThread(QThread):
         height = (mon or {}).get("height") or 2160
         rx = round(self._tracking_range * height / 2160)
         area = tracking.search_area(self._region, rx, round(0.75 * rx))
-        self._track = (self._anchor, _clip(area, mon))
+        self._track = (self._anchor, _clip(area, mon), self._plate)
 
     @property
     def tracking(self) -> bool:
@@ -244,16 +259,18 @@ class ScanThread(QThread):
         if track is None:
             self._set_tracked(None)
             self._set_track_state("fixed")
+            self._set_plate_view(None)
             self._read_crop(grab(region), ocr)
             return
         from . import tracking
 
-        anchor, area = track
+        anchor, area, plate = track
         frame = grab(area)
         match = tracking.locate(frame, anchor)
         if match is None:
             # No plate on screen: nothing to read, so the OCR model is not run.
             self._set_tracked(None)
+            self._set_plate_view(None)
             self._set_track_state("searching")
             if self._last_hash != -1:
                 from .ocr import OCRResult
@@ -270,6 +287,7 @@ class ScanThread(QThread):
             # Plate at the edge of the search area: the digits are cut off.
             self._set_tracked(None)
             self._set_track_state("searching")
+            self._set_plate_view(None)
             self._read_crop(None, ocr)
             return
         digits = {"left": int(area["left"] + x0), "top": int(area["top"] + y0),
@@ -277,6 +295,8 @@ class ScanThread(QThread):
         self._set_tracked(digits)
         self._set_track_state("locked", digits,
                               pin_rect(match, anchor, area["left"], area["top"]))
+        self._set_plate_view(None if plate is None else
+                             plate_view(frame, match, anchor, plate, (x0, y0, x1 - x0, y1 - y0)))
         self._read_crop(frame[y0:y1, x0:x1], ocr)
 
     def _read_crop(self, crop, ocr) -> None:
@@ -304,6 +324,12 @@ class ScanThread(QThread):
             self._last_tracked = rect
             self.tracked.emit(rect)
 
+    def _set_plate_view(self, view) -> None:
+        # Every locked frame (the picture changes); None once per change.
+        if view is not None or self._plate_shown:
+            self._plate_shown = view is not None
+            self.plate_view.emit(view)
+
     def _set_track_state(self, state: str, digits: dict | None = None,
                          pin: dict | None = None) -> None:
         info = {"state": state, "digits": digits, "pin": pin}
@@ -322,6 +348,40 @@ def pin_rect(match, anchor, left: int, top: int) -> dict:
             "top": int(top + match.y + PIN_MARGIN),
             "width": int(tw - 2 * PIN_MARGIN),
             "height": int(th - 2 * PIN_MARGIN)}
+
+
+def plate_view(frame, match, anchor, plate, digits) -> tuple | None:
+    """(crop, pin, digits) for the Settings preview: the saved signature
+    window cut from ``frame`` at the pin ``match`` (clipped to the frame), and
+    the pin and ``digits`` ((x, y, w, h) in ``frame``) relative to that crop."""
+    from .tracking import PIN_MARGIN
+
+    pdx, pdy, pw, ph = plate
+    fh, fw = frame.shape[:2]
+    x0, y0 = max(0, match.x + pdx), max(0, match.y + pdy)
+    x1, y1 = min(fw, match.x + pdx + pw), min(fh, match.y + pdy + ph)
+    if x1 - x0 < 8 or y1 - y0 < 8:
+        return None
+    th, tw = anchor.template.shape[:2]
+    pin = (match.x + PIN_MARGIN - x0, match.y + PIN_MARGIN - y0,
+           tw - 2 * PIN_MARGIN, th - 2 * PIN_MARGIN)
+    dx, dy, dw, dh = digits
+    return frame[y0:y1, x0:x1].copy(), pin, (dx - x0, dy - y0, dw, dh)
+
+
+def parse_plate(value) -> tuple[int, int, int, int] | None:
+    """Config "plate" ({"dx", "dy", "w", "h"}) as a tuple; None when unset,
+    hand-edited or broken."""
+    if isinstance(value, dict):
+        value = tuple(value.get(k) for k in ("dx", "dy", "w", "h"))
+    if not isinstance(value, (tuple, list)) or len(value) != 4 \
+            or any(isinstance(v, bool) for v in value):
+        return None
+    try:
+        dx, dy, w, h = (int(v) for v in value)
+    except (TypeError, ValueError, OverflowError):
+        return None
+    return (dx, dy, w, h) if w >= 8 and h >= 8 else None
 
 
 def parse_tracking_range(value, default: int = 400) -> int:
@@ -347,8 +407,8 @@ def _vk(value) -> int:
 
 
 # ---------------------------------------------------------------------------
-_NO_PIN_NOTE = ("No pin icon found left of the box: tracking is off. Press "
-                "DRAW REGION with the scan readout on screen to turn it on.")
+_NO_PIN_NOTE = ("No pin icon found in or next to the box: tracking is off. "
+                "Press DRAW REGION around the whole signature window to turn it on.")
 _TRACKING_DROPPED = (" Tracking is off (the saved pin was for the old "
                      "resolution): it turns back on by itself when the box "
                      "next reads a signature; if not, press DRAW REGION to "
@@ -630,6 +690,7 @@ class OverlayApp(QObject):
         self.scan.tracked.connect(self._on_tracked)
         self.scan.track_state.connect(self._on_track_state)
         self.scan.anchor_loaded.connect(self._on_anchor_loaded)
+        self.scan.plate_view.connect(self._on_plate_view)
 
         self.hotkeys = HotkeyThread(self._hotkey_bindings())
         self.hotkeys.pressed.connect(self._on_hotkey)
@@ -1239,8 +1300,20 @@ class OverlayApp(QObject):
         self.settings.show()
         self.settings.raise_()
         self._assert_topmost()
-        if self._last_res is not None:
+        self._show_preview()
+
+    def _show_preview(self) -> None:
+        """Settings preview: the whole signature window while locked with a
+        saved plate, else the last crop read."""
+        if self._plate_view is not None:
+            self.settings.set_preview(*self._plate_view)
+        elif self._last_res is not None:
             self.settings.set_preview(self._last_res.crop)
+
+    def _on_plate_view(self, view) -> None:
+        self._plate_view = view
+        if view is not None:
+            self.settings.set_preview(*view)
 
     def _on_panel_close(self) -> None:
         self.panel.hide()
@@ -1268,8 +1341,8 @@ class OverlayApp(QObject):
 
     def _on_debug(self, enabled: bool) -> None:
         self.cfg["show_debug_preview"] = enabled
-        if enabled and self._last_res is not None:
-            self.settings.set_preview(self._last_res.crop)
+        if enabled:
+            self._show_preview()
 
     def _on_voice(self, enabled: bool) -> None:
         self.cfg["voice_enabled"] = bool(enabled)
@@ -1433,6 +1506,9 @@ class OverlayApp(QObject):
         # once per box. _anchor_failed: the saved pin could not be loaded.
         self._learn_tried = False
         self._anchor_failed = False
+        # ScanThread.plate_view: (plate crop, pin, digits) while locked, else None.
+        self._plate_view: tuple | None = None
+        self._draw_token = 0                 # the DRAW REGION frame grabs in flight
 
     def _track_marks(self) -> tuple:
         """(digits, pin, state, label) for SHOW BOX now."""
@@ -1527,6 +1603,7 @@ class OverlayApp(QObject):
             path = None
         if path is None or not path.is_file():
             self.cfg["anchor"] = None
+            self.cfg["plate"] = None        # measured from that pin
             self.cfg.save()
             self._learn_tried = False
             self.settings.set_region_note(_PIN_MISSING_NOTE)
@@ -1542,7 +1619,7 @@ class OverlayApp(QObject):
             self.settings.set_region_note(_PIN_LOAD_FAILED_NOTE.format(result))
             return
         self._anchor_failed = False
-        self.scan.configure(anchor=result)
+        self.scan.configure(anchor=result, plate=self.cfg.get("plate"))
 
     def _drop_anchor_if_rescaled(self, recorded: dict, now: dict) -> bool:
         """The box moved to another monitor rect. The pin is a picture in
@@ -1561,8 +1638,9 @@ class OverlayApp(QObject):
         """
         had = self.cfg.get("anchor") is not None
         self.cfg["anchor"] = None
+        self.cfg["plate"] = None        # re-learned at the next DRAW REGION
         self.cfg.save()
-        self.scan.configure(anchor=None)
+        self.scan.configure(anchor=None, plate=None)
         self._learn_tried = False
         self._anchor_failed = False
         return had
@@ -1607,9 +1685,12 @@ class OverlayApp(QObject):
             return False
         if anchor is None:
             self.cfg["anchor"] = None
+        # The window is only known from DRAW REGION on it, never from a
+        # digits box (a newly cut pin may also sit a pixel off the old one).
+        self.cfg["plate"] = None
         self.cfg.save()
         self._anchor_failed = False
-        self.scan.configure(anchor=anchor)
+        self.scan.configure(anchor=anchor, plate=None)
         if anchor is not None:
             self.settings.set_region_note(_PIN_LEARNED_NOTE if quiet else "")
         else:
@@ -1699,7 +1780,8 @@ class OverlayApp(QObject):
         self._selector = None
         screen = display.screen_of_region(region) or QGuiApplication.primaryScreen()
         # The old pin belongs to the old box; a new one is looked for below.
-        self.scan.configure(anchor=None)
+        self.scan.configure(anchor=None, plate=None)
+        self._draw_token += 1           # stop grabs for an earlier box
         self._learn_tried = True        # DRAW REGION looks for it right away
         self._apply_region(region, display.physical_rect(screen), screen.name())
         self.settings.set_region_note("")
@@ -1710,12 +1792,98 @@ class OverlayApp(QObject):
             # screen before grabbing the pin around the box.
             QTimer.singleShot(150, self, lambda: self._calibrate_drawn(region))
 
-    def _calibrate_drawn(self, region: dict, image=None, origin=None) -> None:
-        """DRAW REGION: look for the pin, then show the result for 3 s."""
+    def _calibrate_drawn(self, region: dict, grab=None) -> None:
+        """DRAW REGION: look for the pin inside the drawn box (the whole
+        signature window, or the digits alone) on up to DRAW_FRAMES grabs
+        DRAW_FRAME_MS apart; the first that shows it wins. Then the result
+        for 3 s. ``grab(rect)`` (tests) returns the BGR screen of a rect."""
         if self.cfg["region"] != region:
             return          # another box was drawn meanwhile
-        found = self._calibrate_anchor(region, image=image, origin=origin)
-        self._confirm_calibration(found, region, self._last_calibration_pin)
+        self._draw_token += 1
+        grabber = None
+        if grab is None:
+            from .capture import ScreenGrabber
+
+            grabber = ScreenGrabber()
+            grab = grabber.grab
+        self._draw_attempt(region, grab, grabber, DRAW_FRAMES, self._draw_token)
+
+    def _draw_attempt(self, region: dict, grab, grabber, left: int, token: int) -> None:
+        if token != self._draw_token or self.cfg["region"] != region:
+            if grabber is not None:
+                grabber.close()
+            return          # another box was drawn meanwhile
+        error = ""
+        try:
+            found = self._find_plate(region, grab)
+        except Exception as exc:
+            found, error = None, f"{type(exc).__name__}: {exc}"
+        if found is None and left > 1:
+            QTimer.singleShot(DRAW_FRAME_MS, self, lambda: self._draw_attempt(
+                region, grab, grabber, left - 1, token))
+            return
+        if grabber is not None:
+            grabber.close()
+        self._finish_draw(region, found, error)
+
+    @staticmethod
+    def _find_plate(region: dict, grab) -> tuple | None:
+        """(anchor, plate, digits, pin) from one grab around the drawn box,
+        digits and pin as physical rects; None when no pin is found."""
+        from . import tracking
+        from .tracking import PIN_MARGIN
+
+        area = _calibration_area(region)
+        image = grab(area)
+        box = (region["left"] - area["left"], region["top"] - area["top"],
+               region["width"], region["height"])
+        screen = display.screen_of_region(region)
+        height = (display.physical_rect(screen)["height"]
+                  if screen is not None else 0) or 2160
+        found = tracking.find_anchor_in_box(image, box, height)
+        if found is None:
+            return None
+        anchor, plate = found
+        # The template's top-left: the drawn box less the plate offset.
+        tx = area["left"] + box[0] - int(plate[0])
+        ty = area["top"] + box[1] - int(plate[1])
+        dx, dy, dw, dh = (int(v) for v in anchor.digits)
+        th, tw = anchor.template.shape[:2]
+        digits = {"left": tx + dx, "top": ty + dy, "width": dw, "height": dh}
+        pin = {"left": tx + PIN_MARGIN, "top": ty + PIN_MARGIN,
+               "width": int(tw - 2 * PIN_MARGIN), "height": int(th - 2 * PIN_MARGIN)}
+        if not is_region_valid(digits):
+            return None
+        return anchor, tuple(int(v) for v in plate), digits, pin
+
+    def _finish_draw(self, region: dict, found, error: str) -> None:
+        """Save what DRAW REGION found and show the 3-second result."""
+        if found is not None:
+            anchor, plate, digits, pin = found
+            try:
+                self.cfg["anchor"] = anchor.save(config_dir())
+            except OSError as exc:
+                found, error = None, f"{type(exc).__name__}: {exc}"
+        if found is None:
+            self.cfg["anchor"] = None
+            self.cfg["plate"] = None
+            self.cfg.save()
+            self._anchor_failed = False
+            self.scan.configure(anchor=None, plate=None)
+            self.settings.set_region_note(
+                _PIN_SEARCH_FAILED_NOTE.format(error) if error else _NO_PIN_NOTE)
+            self._confirm_calibration(False, region, None)
+            return
+        dx, dy, w, h = plate
+        self.cfg["plate"] = {"dx": dx, "dy": dy, "w": w, "h": h}
+        # cfg["region"] is the digits box: scanning, tracking and the
+        # rescale on a monitor change work on it as before.
+        self._apply_region(digits, self.cfg.get("region_monitor") or {},
+                           self.cfg.get("game_monitor") or "")
+        self._anchor_failed = False
+        self.scan.configure(anchor=anchor, plate=plate)
+        self.settings.set_region_note("")
+        self._confirm_calibration(True, digits, pin)
 
     def _scan_sig_reset(self) -> None:
         self.panel.reset_cache()
@@ -1724,7 +1892,8 @@ class OverlayApp(QObject):
     def _on_result(self, res, matches) -> None:
         if res is not self._last_res:
             self._last_res = res
-            self.settings.set_preview(res.crop)
+            if self._plate_view is None:    # else _on_plate_view shows the window
+                self.settings.set_preview(res.crop)
 
         if not res.ok:
             self._recent.clear()

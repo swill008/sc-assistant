@@ -8,7 +8,8 @@ note, the UNMATCHED READINGS list (count, newest rows, OPEN FOLDER, two-click
 CLEAR), the five collapsible groups (no Support group or donation text) (heading clicks, summaries, remembered and
 forced-open groups, the window fitting itself), and the layout at UI scale 1.0
 and 1.5 in every open/closed combination checked (no widgets overlap, no text
-cut off, armed texts fit).
+cut off, armed texts fit), and the scanner preview (whole signature window
+scaled to fit, pin outlined cyan, digits green; one-argument calls as before).
 """
 from __future__ import annotations
 
@@ -458,11 +459,120 @@ def check_section_layouts() -> None:
             theme.set_scale(1.0)
 
 
+FIXTURE = ROOT / "tools" / "fixtures" / "signal_42000_5k2k.png"
+PIN = (43, 39, 25, 28)          # the pin in the fixture (x, y, w, h)
+DIGITS = (76, 38, 56, 28)       # "42,000" in the fixture
+
+
+def _near(c, ref, tol: int = 40) -> bool:
+    return all(abs(a - b) <= tol for a, b in ((c.red(), ref.red()), (c.green(), ref.green()),
+                                              (c.blue(), ref.blue())))
+
+
+def _edge_hits(image, rect, color) -> float:
+    """Share of points along the rect's edges that carry ``color``."""
+    pts = []
+    x0, y0 = int(rect.x()) + 1, int(rect.y()) + 1
+    x1, y1 = int(rect.x() + rect.width()) - 2, int(rect.y() + rect.height()) - 2
+    for i in range(1, 10):
+        xs = x0 + (x1 - x0) * i // 10
+        ys = y0 + (y1 - y0) * i // 10
+        pts += [(xs, y0), (xs, y1), (x0, ys), (x1, ys)]
+    good = sum(1 for x, y in pts if any(_near(image.pixelColor(x + dx, y + dy), color)
+                                        for dx in (-1, 0, 1) for dy in (-1, 0, 1)))
+    return good / len(pts)
+
+
+def check_preview() -> None:
+    import cv2
+
+    from app.ui import theme
+    from app.ui.settings_panel import WIDTH
+
+    print("PREVIEW")
+    crop = cv2.imread(str(FIXTURE))
+    check("fixture loads", crop is not None)
+    ch, cw = crop.shape[:2]
+    for scale in (1.0, 1.5):
+        theme.set_scale(scale)
+        try:
+            panel = _panel()
+            panel.set_open_sections(["scanner"])
+            panel.set_debug(True)
+            QApplication.processEvents()
+            panel.adjustSize()
+            QApplication.processEvents()
+            box = panel.preview
+            panel.set_preview(crop, PIN, DIGITS)
+            QApplication.processEvents()
+            pix = box.pixmap()
+            ok = pix is not None and not pix.isNull()
+            check(f"UI {scale}: whole window shown", ok)
+            if not ok:
+                continue
+            fits = pix.width() <= box.width() - 10 and pix.height() <= box.height() - 10
+            check(f"UI {scale}: scaled to fit the box", fits,
+                  f"({pix.width()}x{pix.height()} in {box.width()}x{box.height()})")
+            aspect = abs(pix.width() / pix.height() - cw / ch)
+            check(f"UI {scale}: aspect kept", aspect < 0.05,
+                  f"({pix.width()}x{pix.height()} vs {cw}x{ch})")
+            check(f"UI {scale}: large enough to read (at least the crop's size)",
+                  pix.width() >= cw, f"({pix.width()} px wide)")
+            img = pix.toImage()
+            rects = panel.preview_rects
+            sx = pix.width() / cw
+            pin_r, dig_r = rects.get("pin"), rects.get("digits")
+            check(f"UI {scale}: outline rects follow the scale",
+                  pin_r is not None and dig_r is not None
+                  and abs(pin_r.x() - PIN[0] * sx) < 1 and abs(dig_r.width() - DIGITS[2] * sx) < 1,
+                  f"({pin_r}, {dig_r})")
+            if pin_r is not None and dig_r is not None:
+                cyan = _edge_hits(img, pin_r, theme.ACCENT)
+                green = _edge_hits(img, dig_r, theme.GOOD)
+                check(f"UI {scale}: cyan outline on the pin", cyan >= 0.9, f"({cyan:.0%})")
+                check(f"UI {scale}: green outline on the digits", green >= 0.9, f"({green:.0%})")
+                check(f"UI {scale}: pin not drawn green, digits not cyan",
+                      _edge_hits(img, pin_r, theme.GOOD) < 0.2
+                      and _edge_hits(img, dig_r, theme.ACCENT) < 0.2)
+            overlaps, outside = _overlaps(panel)
+            check(f"UI {scale}: Scanner open with the preview: no overlap, nothing outside",
+                  not overlaps and not outside, f"({overlaps[:3]}, {outside[:3]})")
+            check(f"UI {scale}: Settings width unchanged", panel.width() == theme.px(WIDTH),
+                  f"({panel.width()})")
+            if scale == 1.0:
+                out = os.environ.get("CA_PREVIEW_SHOT")
+                if out:
+                    panel.grab().save(out)
+                    print(f"    saved {out}")
+
+            # One-argument calls (digits crop as today): no outlines, fits.
+            digits_only = crop[DIGITS[1]:DIGITS[1] + DIGITS[3], DIGITS[0]:DIGITS[0] + DIGITS[2]].copy()
+            panel.set_preview(digits_only)
+            QApplication.processEvents()
+            pix = box.pixmap()
+            check(f"UI {scale}: one-argument call still shows the crop, no outlines",
+                  pix is not None and not pix.isNull() and panel.preview_rects == {}
+                  and pix.height() <= box.height() - 10 and pix.width() <= box.width() - 10,
+                  f"({panel.preview_rects})")
+            panel.set_preview(crop, PIN)
+            check(f"UI {scale}: pin only -> only the cyan outline",
+                  list(panel.preview_rects) == ["pin"], f"({list(panel.preview_rects)})")
+            panel.set_debug(False)
+            QApplication.processEvents()
+            before = box.pixmap().cacheKey()
+            panel.set_preview(crop, PIN, DIGITS)
+            check(f"UI {scale}: hidden preview is not redrawn", box.pixmap().cacheKey() == before)
+            panel.close()
+            panel.deleteLater()
+        finally:
+            theme.set_scale(1.0)
+
+
 def main() -> int:
     global _APP
     _APP = QApplication.instance() or QApplication(sys.argv)
     for test in (check_reset, check_unmatched, check_layout, check_sections,
-                 check_section_layouts):
+                 check_section_layouts, check_preview):
         try:
             test()
         except Exception:

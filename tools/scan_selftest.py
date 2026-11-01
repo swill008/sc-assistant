@@ -457,13 +457,13 @@ def check_calibration_anchor() -> int:
                     failures += _check("pin found: anchor saved and handed to the scanner",
                                        on and cfg["anchor"] == {"file": "anchor.png", "digits": [35, 2, 90, 28]}
                                        and (Path(tmp) / "anchor.png").is_file()
-                                       and fake.scan.calls == [{"anchor": found}] and fake.settings.note == "",
+                                       and fake.scan.calls == [{"anchor": found, "plate": None}] and fake.settings.note == "",
                                        f"(anchor {cfg['anchor']}, scan {fake.scan.calls})")
                 else:
                     failures += _check("no pin: fixed box, anchor cleared, amber note",
-                                       not on and cfg["anchor"] is None and fake.scan.calls == [{"anchor": None}]
+                                       not on and cfg["anchor"] is None and fake.scan.calls == [{"anchor": None, "plate": None}]
                                        and fake.settings.note == main_mod._NO_PIN_NOTE
-                                       and fake.settings.note.startswith("No pin icon found left of the box"),
+                                       and fake.settings.note.startswith("No pin icon found in or next to the box"),
                                        f"(anchor {cfg['anchor']}, note {fake.settings.note!r})")
         finally:
             tracking.find_anchor, main_mod.config_dir = real_find, real_dir
@@ -816,9 +816,22 @@ def check_overlay_marks() -> int:
     return failures
 
 
+def _draw(o, region: dict, grab, wait: float = 1.0) -> None:
+    """DRAW REGION's pin search on a fake screen, ``grab(rect)`` -> BGR."""
+    from app import main as main_mod
+
+    try:
+        o._calibrate_drawn(dict(region), grab=grab)
+    except TypeError:       # the old main.py (old-code proof): one grab of the area
+        area = main_mod._calibration_area(region)
+        o._calibrate_drawn(dict(region), image=grab(area), origin=(area["left"], area["top"]))
+    _pump(wait)             # up to DRAW_FRAMES grabs ~0.5 s
+
+
 def check_draw_confirmation() -> int:
     """DRAW REGION: 3-second result even with SHOW BOX off, then normal."""
     import tempfile
+    import time
 
     import numpy as np
 
@@ -828,22 +841,26 @@ def check_draw_confirmation() -> int:
     failures = 0
     _screen, _mon, region = _secondary_region()
     found = tracking.Anchor(template=np.zeros((32, 28, 3), np.uint8), digits=(35, 2, 90, 28))
-    image = np.zeros((300, 400, 3), np.uint8)
-    origin = (region["left"] - 100, region["top"] - 100)
-    real = tracking.find_anchor, tracking.locate, main_mod.config_dir
+    plate = (40, -3, region["width"], region["height"])      # a digits-only box
+
+    def grab(rect):
+        return np.zeros((int(rect["height"]), int(rect["width"]), 3), np.uint8)
+
+    real = tracking.find_anchor_in_box, main_mod.config_dir
     with tempfile.TemporaryDirectory() as tmp:
         try:
             main_mod.config_dir = lambda: Path(tmp)
-            tracking.locate = lambda img, a, min_score=0.6: tracking.Match(x=60, y=95, score=0.9)
-            for result in (found, None):
-                tracking.find_anchor = lambda img, box, r=result: r
+            for result in ((found, plate), None):
+                tracking.find_anchor_in_box = lambda img, box, h, r=result: r
                 o = _bare_overlay(_test_cfg(region=region, show_region_outline=False))
-                o._calibrate_drawn(dict(region), image=image, origin=origin)
                 m = tracking.PIN_MARGIN
+                t0 = time.monotonic()
+                _draw(o, region, grab, wait=0.8)
                 if result is not None:
-                    pin = {"left": origin[0] + 60 + m, "top": origin[1] + 95 + m,
-                           "width": 28 - 2 * m, "height": 32 - 2 * m}
-                    want = ("marks", region, pin, "locked", "PIN FOUND — TRACKING ON")
+                    tx, ty = region["left"] - plate[0], region["top"] - plate[1]
+                    pin = {"left": tx + m, "top": ty + m, "width": 28 - 2 * m, "height": 32 - 2 * m}
+                    digits = {"left": tx + 35, "top": ty + 2, "width": 90, "height": 28}
+                    want = ("marks", digits, pin, "locked", "PIN FOUND — TRACKING ON")
                     label = "pin found"
                 else:
                     want = ("marks", region, None, "searching", "NO PIN FOUND — FIXED BOX")
@@ -854,14 +871,356 @@ def check_draw_confirmation() -> int:
                 o._on_track_state({"state": "fixed", "digits": None, "pin": None})
                 failures += _check(f"DRAW REGION, {label}: a scan update does not cut it short",
                                    o.outline.visible and o.outline.calls[-1] == want)
-                _pump(2.5)
+                _pump(max(0.0, t0 + 0.8 + 2.0 - time.monotonic()))
                 still = o.outline.visible
-                _pump(0.8)
-                failures += _check(f"DRAW REGION, {label}: cleared after 3 s (SHOW BOX off -> hidden)",
+                _pump(1.6)
+                failures += _check(f"DRAW REGION, {label}: cleared ~3 s after the result (SHOW BOX off -> hidden)",
                                    still and not o.outline.visible and o.outline.calls[-1] == ("hide",),
-                                   f"(at 2.5 s visible {still}, calls {o.outline.calls[-2:]})")
+                                   f"(visible 2 s on {still}, calls {o.outline.calls[-2:]})")
         finally:
-            tracking.find_anchor, tracking.locate, main_mod.config_dir = real
+            tracking.find_anchor_in_box, main_mod.config_dir = real
+    return failures
+
+
+# ---------------------------------------------------------------------------
+# Whole-window DRAW REGION on the real 5K2K signature (plan R).
+FIXTURE = ROOT / "tools" / "fixtures" / "signal_42000_5k2k.png"
+FIXTURE_DIGITS = (76, 38, 56, 28)            # the digits inside the fixture
+NEAR = 3
+
+
+def _fixture_bgr():
+    import cv2
+
+    return cv2.imread(str(FIXTURE))
+
+
+def _fixture_pin(img) -> tuple:
+    """The fixture's orange pin (x, y, w, h), measured from its pixels
+    independently of app.tracking: the most orange part left of the digits."""
+    import numpy as np
+
+    bgr = img.astype(int)
+    orange = np.clip(bgr[:, :, 2] - bgr[:, :, 0], 0, 255)
+    dx, dy, _dw, dh = FIXTURE_DIGITS
+    y0, y1 = dy - dh // 2, dy + dh + dh // 2
+    strip = orange[y0:y1, 0:dx]
+    ys, xs = np.nonzero(strip >= 0.75 * np.percentile(strip, 99.5))
+    return int(xs.min()), int(y0 + ys.min()), int(xs.max() - xs.min() + 1), int(ys.max() - ys.min() + 1)
+
+
+def _hud_screen():
+    """A 2160-px-high monitor (the HUD scale the fixture is from), a
+    secondary one first; None when there is none."""
+    from app import display
+
+    primary = QGuiApplication.primaryScreen()
+    screens = sorted(QGuiApplication.screens(), key=lambda s: s is primary)
+    return next((s for s in screens if display.physical_rect(s)["height"] == 2160), None)
+
+
+def _fake_screen(at: dict, img, shows):
+    """grab(rect): a black screen with ``img`` at ``at`` (physical) on the
+    grabs ``shows(n)`` says (n = 0, 1, ...). Returns (grab, grab times)."""
+    import time
+
+    import numpy as np
+
+    times: list = []
+
+    def grab(rect):
+        n = len(times)
+        times.append(time.monotonic())
+        out = np.zeros((int(rect["height"]), int(rect["width"]), 3), np.uint8)
+        if shows(n):
+            # the image's part inside rect
+            x, y = at["left"] - rect["left"], at["top"] - rect["top"]
+            ih, iw = img.shape[:2]
+            oh, ow = out.shape[:2]
+            x0, y0, x1, y1 = max(0, x), max(0, y), min(ow, x + iw), min(oh, y + ih)
+            if x1 > x0 and y1 > y0:
+                out[y0:y1, x0:x1] = img[y0 - y:y1 - y, x0 - x:x1 - x]
+        return out
+    return grab, times
+
+
+def _near(a: dict, b: dict, keys=("left", "top", "width", "height")) -> bool:
+    return bool(a) and bool(b) and all(abs(a[k] - b[k]) <= NEAR for k in keys)
+
+
+def check_draw_whole_window() -> int:
+    """DRAW REGION round the whole signature window (tight, very loose, or the
+    digits alone) on the real 5K2K fixture: the digits box, pin and plate are
+    saved, the digits box reads 42,000, and the scanner gets the pin and plate."""
+    import tempfile
+
+    from app import display
+    from app import main as main_mod
+    from app import tracking
+    from app.ocr import SignatureOCR
+
+    failures = 0
+    screen = _hud_screen()
+    if screen is None:
+        print("  SKIP  whole-window DRAW REGION: no 2160-px-high monitor")
+        return 0
+    img = _fixture_bgr()
+    ih, iw = img.shape[:2]
+    mon = display.physical_rect(screen)
+    at = {"left": mon["left"] + mon["width"] // 2, "top": mon["top"] + mon["height"] // 2,
+          "width": iw, "height": ih}
+    px, py, pw, ph = _fixture_pin(img)
+    want_pin = {"left": at["left"] + px, "top": at["top"] + py, "width": pw, "height": ph}
+    dx, dy, dw, dh = FIXTURE_DIGITS
+    want_digits = {"left": at["left"] + dx, "top": at["top"] + dy, "width": dw, "height": dh}
+    loose = 60          # very loose: well past the window on every side
+    boxes = (("whole window", dict(at)),
+             ("very loose window", {"left": at["left"] - loose, "top": at["top"] - loose,
+                                    "width": iw + 2 * loose, "height": ih + 2 * loose}),
+             ("digits only (today's box)", dict(want_digits)))
+    ocr = SignatureOCR(threads=1)
+    real_dir = main_mod.config_dir
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            main_mod.config_dir = lambda: Path(tmp)
+            for label, box in boxes:
+                (Path(tmp) / "anchor.png").unlink(missing_ok=True)
+                o = _bare_overlay(_test_cfg(region=dict(box), region_monitor=mon,
+                                            game_monitor=screen.name()))
+                grab, _times = _fake_screen(at, img, lambda n: True)
+                _draw(o, box, grab)
+                last = o.outline.calls[-1] if o.outline.calls else None
+                ok = bool(last) and last[0] == "marks" and last[3:] == ("locked", "PIN FOUND — TRACKING ON")
+                failures += _check(f"{label}: PIN FOUND — TRACKING ON", ok, f"(outline {last})")
+                if not ok:
+                    continue
+                digits, pin = last[1], last[2]
+                failures += _check(f"{label}: confirmation marks the fixture's pin (within {NEAR} px)",
+                                   _near(pin, want_pin), f"(want {want_pin}, got {pin})")
+                failures += _check(f"{label}: digits box on the fixture's digits",
+                                   _near(digits, want_digits, ("left", "top", "height"))
+                                   and digits["left"] + digits["width"] >= want_digits["left"] + dw - NEAR,
+                                   f"(want ~{want_digits}, got {digits})")
+                failures += _check(f"{label}: the saved box is the digits box",
+                                   o.cfg["region"] == digits,
+                                   f"(region {o.cfg['region']})")
+                crop = grab(digits)
+                read = ocr.read(crop)
+                failures += _check(f"{label}: the digits box reads 42,000", read.value == 42000,
+                                   f"(read {read.value}, raw {read.raw!r})")
+                meta = o.cfg["anchor"]
+                failures += _check(f"{label}: pin saved (anchor + anchor.png)",
+                                   bool(meta) and (Path(tmp) / "anchor.png").is_file(), f"(anchor {meta})")
+                plate = o.cfg.get("plate")
+                m = tracking.PIN_MARGIN
+                tx, ty = pin["left"] - m, pin["top"] - m
+                want_plate = {"dx": box["left"] - tx, "dy": box["top"] - ty,
+                              "w": box["width"], "h": box["height"]}
+                failures += _check(f"{label}: plate = the drawn box from the pin template",
+                                   plate == want_plate, f"(want {want_plate}, got {plate})")
+                call = o.scan.calls[-1] if o.scan.calls else {}
+                failures += _check(f"{label}: scanner gets the pin and plate",
+                                   isinstance(call.get("anchor"), tracking.Anchor)
+                                   and call.get("plate") == tuple(want_plate.values()),
+                                   f"(configure {call})")
+                failures += _check(f"{label}: no amber note", o.settings.note == "",
+                                   f"(note {o.settings.note!r})")
+        finally:
+            main_mod.config_dir = real_dir
+    return failures
+
+
+def check_draw_frame_retry() -> int:
+    """DRAW REGION grabs up to 5 frames over ~0.5 s and keeps the first that
+    shows the pin; none -> fixed box and NO PIN FOUND — FIXED BOX."""
+    import tempfile
+
+    from app import display
+    from app import main as main_mod
+
+    failures = 0
+    screen = _hud_screen()
+    if screen is None:
+        print("  SKIP  DRAW REGION frame retry: no 2160-px-high monitor")
+        return 0
+    img = _fixture_bgr()
+    ih, iw = img.shape[:2]
+    mon = display.physical_rect(screen)
+    at = {"left": mon["left"] + mon["width"] // 2, "top": mon["top"] + mon["height"] // 2,
+          "width": iw, "height": ih}
+    real_dir = main_mod.config_dir
+    with tempfile.TemporaryDirectory() as tmp:
+        try:
+            main_mod.config_dir = lambda: Path(tmp)
+            # The plate shows from the third grab (two blurred/away frames first).
+            o = _bare_overlay(_test_cfg(region=dict(at), region_monitor=mon, game_monitor=screen.name()))
+            grab, times = _fake_screen(at, img, lambda n: n >= 2)
+            _draw(o, at, grab)
+            last = o.outline.calls[-1] if o.outline.calls else None
+            failures += _check("retry: plate on the 3rd frame -> PIN FOUND, plate saved",
+                               bool(last) and last[3:] == ("locked", "PIN FOUND — TRACKING ON")
+                               and bool(o.cfg["anchor"]) and bool(o.cfg.get("plate")),
+                               f"(outline {last}, grabs {len(times)})")
+            failures += _check("retry: stops at the first frame with the pin (3 grabs)", len(times) == 3,
+                               f"({len(times)} grabs)")
+            gaps = [round(b - a, 3) for a, b in zip(times, times[1:])]
+            failures += _check("retry: frames ~0.1 s apart", bool(gaps) and all(0.08 <= g <= 0.4 for g in gaps),
+                               f"(gaps {gaps})")
+
+            # No plate on any frame: today's fixed box and NO PIN FOUND.
+            o = _bare_overlay(_test_cfg(region=dict(at), region_monitor=mon, game_monitor=screen.name(),
+                                        plate={"dx": 1, "dy": 1, "w": 50, "h": 50}))
+            grab, times = _fake_screen(at, img, lambda n: False)
+            _draw(o, at, grab)
+            want = ("marks", at, None, "searching", "NO PIN FOUND — FIXED BOX")
+            failures += _check("no pin: NO PIN FOUND — FIXED BOX on the drawn box",
+                               o.outline.calls[-1:] == [want], f"(outline {o.outline.calls[-1:]})")
+            failures += _check("no pin: 5 frames tried over ~0.5 s",
+                               len(times) == 5 and 0.35 <= times[-1] - times[0] <= 1.0,
+                               f"({len(times)} grabs over {times[-1] - times[0] if times else 0:.2f} s)")
+            failures += _check("no pin: the drawn box is the fixed box; pin and plate cleared",
+                               o.cfg["region"] == at and o.cfg["anchor"] is None and o.cfg.get("plate") is None
+                               and o.scan.calls[-1:] in ([{"anchor": None, "plate": None}], [{"anchor": None}]),
+                               f"(region {o.cfg['region']}, scan {o.scan.calls[-1:]})")
+            failures += _check("no pin: amber note says so", o.settings.note == main_mod._NO_PIN_NOTE,
+                               f"(note {o.settings.note!r})")
+
+            # A newer box drawn while frames are still being grabbed: the old search stops.
+            o = _bare_overlay(_test_cfg(region=dict(at), region_monitor=mon, game_monitor=screen.name()))
+            grab, times = _fake_screen(at, img, lambda n: False)
+            try:
+                o._calibrate_drawn(dict(at), grab=grab)
+                o.cfg["region"] = dict(at, left=at["left"] + 5)
+                _pump(1.0)
+                failures += _check("a newer box stops the old frame grabs", len(times) == 1
+                                   and o.outline.calls == [], f"({len(times)} grabs, outline {o.outline.calls})")
+            except TypeError:
+                failures += _check("a newer box stops the old frame grabs", False, "(old main.py)")
+        finally:
+            main_mod.config_dir = real_dir
+    return failures
+
+
+def check_plate_preview() -> int:
+    """While locked with a saved plate the scanner cuts the whole window and
+    Settings gets set_preview(plate crop, pin, digits); without a plate (old
+    settings) the scan and the preview are as before."""
+    import json
+
+    import numpy as np
+
+    from app import config as app_config
+    from app import main as main_mod
+    from app import tracking
+
+    failures = 0
+    _screen, _mon, region = _secondary_region()
+    anchor = tracking.Anchor(template=np.zeros((32, 28, 3), np.uint8), digits=(35, 2, 90, 28))
+    plate = {"dx": -10, "dy": -20, "w": 200, "h": 80}
+
+    def grab(rect):
+        h, w = int(rect["height"]), int(rect["width"])
+        frame = np.zeros((h, w, 3), np.uint8)
+        frame[:, :, 0] = (np.arange(w) % 251)[None, :]
+        frame[:, :, 1] = (np.arange(h) % 241)[:, None]
+        return frame
+
+    real_locate = tracking.locate
+    hits: list = []
+    try:
+        tracking.locate = lambda image, a, min_score=0.6: hits[0] if hits else None
+        cfg = _test_cfg(region=region, plate=dict(plate))
+        thread = main_mod.ScanThread(_FakeData(), cfg, anchor=anchor)
+        if not hasattr(thread, "plate_view"):
+            return _check("ScanThread has the plate_view signal", False, "(old main.py)")
+        order: list = []
+        thread.plate_view.connect(lambda v: order.append(("view", v)))
+        thread.result.connect(lambda res, _m: order.append(("result", res)))
+        hits.append(tracking.Match(x=100, y=60, score=0.95))
+        ocr = _FakeOCR()
+        thread.scan_once(grab, ocr, region)
+        frame = grab(thread._track[1])
+        kinds = [k for k, _v in order]
+        view = order[0][1] if order and order[0][0] == "view" else None
+        failures += _check("locked with a plate: plate view emitted before the result",
+                           kinds == ["view", "result"] and view is not None, f"(emitted {kinds})")
+        if view is not None:
+            crop, pin, digits = view
+            m = tracking.PIN_MARGIN
+            failures += _check("plate view: the window cut at the pin + plate offset",
+                               np.array_equal(crop, frame[40:120, 90:290]), f"(crop {crop.shape})")
+            failures += _check("plate view: pin and digits rects relative to the crop",
+                               pin == (10 + m, 20 + m, 28 - 2 * m, 32 - 2 * m) and digits == (45, 22, 90, 28),
+                               f"(pin {pin}, digits {digits})")
+        failures += _check("locked with a plate: OCR still reads only the digits",
+                           ocr.calls == [(28, 90, 3)], f"(ocr {ocr.calls})")
+        hits.clear()
+        order.clear()
+        thread.scan_once(grab, ocr, region)
+        thread.scan_once(grab, ocr, region)
+        failures += _check("plate lost: None once, then nothing",
+                           [v for k, v in order if k == "view"] == [None], f"(emitted {order})")
+        # Clipped to the grabbed area: the plate starts left of the frame.
+        hits.append(tracking.Match(x=3, y=60, score=0.95))
+        order.clear()
+        thread.scan_once(grab, ocr, region)
+        view = next((v for k, v in order if k == "view"), None)
+        failures += _check("plate view clipped to the grabbed area",
+                           view is not None and view[0].shape[:2] == (80, 193) and view[2][0] == 38,
+                           f"(view {None if view is None else (view[0].shape, view[1], view[2])})")
+
+        # The overlay: plate view -> set_preview(crop, pin, digits); a new
+        # result meanwhile does not replace it; lost -> the digits crop again.
+        o = _bare_overlay(_test_cfg(region=region))
+        o.settings.visible = True
+        o._on_plate_view(("CROP", (1, 2, 3, 4), (5, 6, 7, 8)))
+        res, matches = _read(42000)
+        res.crop = "DIGITS"
+        o._on_result(res, matches)
+        previews = _calls(o.settings, "set_preview")
+        failures += _check("overlay: Settings preview gets the plate crop with the pin and digits rects",
+                           previews == [("CROP", (1, 2, 3, 4), (5, 6, 7, 8))], f"(set_preview {previews})")
+        o._on_plate_view(None)
+        res2, matches2 = _read(42000)
+        res2.crop = "DIGITS2"
+        o._on_result(res2, matches2)
+        previews = _calls(o.settings, "set_preview")
+        failures += _check("overlay: plate lost -> the digits crop as today",
+                           previews[-1] == ("DIGITS2",), f"(set_preview {previews})")
+        o.settings.calls.clear()
+        o._on_plate_view(("CROP", None, None))
+        o._on_debug(True)
+        failures += _check("overlay: SHOW PREVIEW on shows the plate view",
+                           _calls(o.settings, "set_preview")[-1] == ("CROP", None, None),
+                           f"(set_preview {_calls(o.settings, 'set_preview')})")
+
+        # Old settings: a config.json written before "plate" existed.
+        old = {k: v for k, v in app_config.DEFAULTS.items() if k != "plate"}
+        old["region"] = region
+        app_config.CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+        app_config.CONFIG_PATH.write_text(json.dumps(old), encoding="utf-8")
+        loaded = app_config.Config.load()
+        app_config.CONFIG_PATH.unlink()
+        failures += _check("old settings without plate load with plate None",
+                           loaded.get("plate", "missing") is None, f"(plate {loaded.get('plate', 'missing')!r})")
+        thread = main_mod.ScanThread(_FakeData(), loaded, anchor=anchor)
+        views: list = []
+        results: list = []
+        thread.plate_view.connect(views.append)
+        thread.result.connect(lambda res, _m: results.append(res))
+        hits[:] = [tracking.Match(x=100, y=60, score=0.95)]
+        ocr = _FakeOCR()
+        thread.scan_once(grab, ocr, region)
+        frame = grab(thread._track[1])
+        failures += _check("old settings: locked read OCRs the digits as before, no plate view",
+                           views == [] and ocr.calls == [(28, 90, 3)] and results and results[-1].ok
+                           and np.array_equal(results[-1].crop, frame[62:90, 135:225]),
+                           f"(views {len(views)}, ocr {ocr.calls})")
+        for bad in ("x", {"dx": 1}, {"dx": 1, "dy": 2, "w": 0, "h": 9}, [1, 2, True, 9]):
+            failures += _check(f"broken plate {bad!r}: ignored", main_mod.parse_plate(bad) is None)
+        failures += _check("plate dict parsed", main_mod.parse_plate(plate) == (-10, -20, 200, 80))
+    finally:
+        tracking.locate = real_locate
     return failures
 
 
@@ -915,7 +1274,7 @@ def check_pin_learning() -> int:
                                len(calls) == 1 and calls[0] == box, f"(calls {calls}, want {box})")
             failures += _check("pin learned: saved, handed to the scanner, noted",
                                o.cfg["anchor"] == {"file": "anchor.png", "digits": [35, 2, 90, 28]}
-                               and {"anchor": found} in o.scan.calls
+                               and {"anchor": found, "plate": None} in o.scan.calls
                                and o.settings.note == main_mod._PIN_LEARNED_NOTE,
                                f"(anchor {o.cfg['anchor']}, note {o.settings.note!r})")
             o._recent.clear()
@@ -967,6 +1326,7 @@ def check_pin_kept_on_move() -> int:
     failures = 0
     screen, now, region = _secondary_region()
     meta = {"file": "anchor.png", "digits": [35, 2, 90, 28]}
+    plate = {"dx": -12, "dy": -40, "w": 240, "h": 110}
     cases = (("monitor moved", dict(now, left=now["left"] - 700, top=now["top"] + 40), False),
              ("monitor height changed", dict(now, width=now["width"] * 2, height=now["height"] * 2), True))
     for label, recorded, drop in cases:
@@ -978,20 +1338,24 @@ def check_pin_kept_on_move() -> int:
             if drop:
                 old_region = dict(region)
             o = _bare_overlay(_test_cfg(region=old_region, region_monitor=recorded,
-                                        game_monitor=screen.name(), anchor=dict(meta)))
+                                        game_monitor=screen.name(), anchor=dict(meta),
+                                        plate=dict(plate)))
             if how == "watcher":
                 o._check_display()
             else:
                 o._on_game_monitor(screen.name())
             if drop:
-                ok = (o.cfg["anchor"] is None and {"anchor": None} in o.scan.calls
+                ok = (o.cfg["anchor"] is None and o.cfg["plate"] is None
+                      and {"anchor": None, "plate": None} in o.scan.calls
                       and "press DRAW REGION to turn it back on" in o.settings.note)
             else:
-                ok = (o.cfg["anchor"] == meta and {"anchor": None} not in o.scan.calls
+                ok = (o.cfg["anchor"] == meta and o.cfg["plate"] == plate
+                      and not any(c.get("anchor", 1) is None for c in o.scan.calls)
                       and o.cfg["region"] == display.rescale(old_region, recorded, now)
                       and "Tracking is off" not in o.settings.note)
-            failures += _check(f"{label} ({how}): pin {'dropped' if drop else 'kept'}, box follows",
-                               ok, f"(anchor {o.cfg['anchor']}, scan {o.scan.calls}, "
+            failures += _check(f"{label} ({how}): pin and plate {'dropped' if drop else 'kept'}, "
+                               "box follows",
+                               ok, f"(anchor {o.cfg['anchor']}, plate {o.cfg['plate']}, scan {o.scan.calls}, "
                                    f"note {o.settings.note!r})")
     return failures
 
@@ -1018,10 +1382,11 @@ def check_anchor_load() -> int:
     with tempfile.TemporaryDirectory() as tmp:
         try:
             main_mod.config_dir = lambda: Path(tmp)
-            o = _bare_overlay(_test_cfg(region=region, anchor=dict(meta)))
+            o = _bare_overlay(_test_cfg(region=region, anchor=dict(meta),
+                                        plate={"dx": -12, "dy": -40, "w": 240, "h": 110}))
             o._load_anchor()
-            failures += _check("anchor.png missing: stale metadata cleared, note says missing",
-                               o.cfg["anchor"] is None and o.scan.requests == []
+            failures += _check("anchor.png missing: stale metadata (pin and plate) cleared, note says missing",
+                               o.cfg["anchor"] is None and o.cfg["plate"] is None and o.scan.requests == []
                                and o.settings.note == main_mod._PIN_MISSING_NOTE,
                                f"(anchor {o.cfg['anchor']}, note {o.settings.note!r})")
             (Path(tmp) / "anchor.png").write_bytes(b"not a png")
@@ -1046,8 +1411,11 @@ def check_anchor_load() -> int:
             failures += _check("a load for an older pin is ignored", o.scan.calls == [])
             sentinel = object()
             o.cfg["anchor"] = dict(meta)
+            o.cfg["plate"] = {"dx": -12, "dy": -40, "w": 240, "h": 110}
             o._on_anchor_loaded(meta, sentinel)
-            failures += _check("loaded pin handed to the scanner", o.scan.calls == [{"anchor": sentinel}])
+            failures += _check("loaded pin handed to the scanner with the saved plate",
+                               o.scan.calls == [{"anchor": sentinel, "plate": o.cfg["plate"]}],
+                               f"(configure {o.scan.calls})")
         finally:
             main_mod.config_dir = real_dir
     return failures
@@ -1627,6 +1995,9 @@ def main() -> int:
     failures += check_track_state()
     failures += check_overlay_marks()
     failures += check_draw_confirmation()
+    failures += check_draw_whole_window()
+    failures += check_draw_frame_retry()
+    failures += check_plate_preview()
     failures += check_pin_learning()
     failures += check_pin_kept_on_move()
     failures += check_anchor_load()
