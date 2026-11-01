@@ -1,15 +1,16 @@
-"""Settings window: capture region, scanning controls and data info."""
+"""Settings window: capture region, scanning controls, hotkeys and updates."""
 from __future__ import annotations
 
 from PySide6.QtCore import QRectF, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import (QColor, QDesktopServices, QFont, QGuiApplication,
-                           QImage, QPen, QPixmap)
+                           QImage, QKeyEvent, QPen, QPixmap)
 from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QPushButton,
                                QSlider, QVBoxLayout, QWidget)
 
 from .. import updater
 from ..version import label as build_label
 from . import theme
+from .pin_button import PinButton
 
 WIDTH = 384
 
@@ -27,7 +28,11 @@ def _section(text: str) -> QLabel:
 class _UpdateWorker(QThread):
     """Check or apply on a thread: both touch the network."""
 
-    done = Signal(str, str)      # mode, version ("" when already current)
+    # mode, value, extra:
+    #   check   -> published version, release notes ("" when none)
+    #   install -> downloaded Setup.exe, the version it holds
+    #   apply   -> installed version, ""
+    done = Signal(str, str, str)
     failed = Signal(str)
 
     def __init__(self, mode: str, parent=None):
@@ -37,13 +42,14 @@ class _UpdateWorker(QThread):
     def run(self) -> None:  # noqa: D102
         try:
             if self._mode == "check":
-                _installed, published, _newer = updater.newest()
-                self.done.emit("check", published)
+                published, notes = updater.check()
+                self.done.emit("check", published, notes)
             elif updater.is_frozen():
                 # Installed EXE: fetch the release's Setup.exe; the app runs it.
-                self.done.emit("install", str(updater.download_setup()))
+                got = updater.download_setup(cancelled=self.isInterruptionRequested)
+                self.done.emit("install", str(got.path), str(got.version))
             else:
-                self.done.emit("apply", updater.apply())
+                self.done.emit("apply", updater.apply(), "")
         except Exception as exc:      # surface it, never take the app down
             self.failed.emit(str(exc))
 
@@ -89,13 +95,141 @@ def _tracking_text(value: int) -> str:
     return f"±{value} px" if value > 0 else "OFF"
 
 
+# Hotkey rows: (key in the hotkeys dict, row label). Tool rows follow, from
+# set_tools(); their keys go under "tools".
+HOTKEY_ROWS = (("toggle_nav", "SHOW BAR"), ("panic", "HIDE ALL"))
+VK_ESCAPE = 0x1B
+
+_VK_NAMES = {
+    0x08: "Backspace", 0x09: "Tab", 0x0D: "Enter", 0x13: "Pause", 0x14: "Caps Lock",
+    0x20: "Space", 0x21: "Page Up", 0x22: "Page Down", 0x23: "End", 0x24: "Home",
+    0x25: "Left", 0x26: "Up", 0x27: "Right", 0x28: "Down", 0x2C: "Print Screen",
+    0x2D: "Insert", 0x2E: "Delete", 0x6A: "Num *", 0x6B: "Num +", 0x6D: "Num -",
+    0x6E: "Num .", 0x6F: "Num /", 0x90: "Num Lock", 0x91: "Scroll Lock",
+    0xBA: ";", 0xBB: "=", 0xBC: ",", 0xBD: "-", 0xBE: ".", 0xBF: "/", 0xC0: "`",
+    0xDB: "[", 0xDC: "\\", 0xDD: "]", 0xDE: "'",
+}
+# Qt keys for when the platform gives no virtual-key code.
+def _k(key) -> int:
+    return int(getattr(key, "value", key))
+
+
+_QT_TO_VK = {_k(key): vk for key, vk in (
+    (Qt.Key.Key_Backspace, 0x08), (Qt.Key.Key_Tab, 0x09), (Qt.Key.Key_Return, 0x0D),
+    (Qt.Key.Key_Enter, 0x0D), (Qt.Key.Key_Pause, 0x13), (Qt.Key.Key_Space, 0x20),
+    (Qt.Key.Key_PageUp, 0x21), (Qt.Key.Key_PageDown, 0x22), (Qt.Key.Key_End, 0x23),
+    (Qt.Key.Key_Home, 0x24), (Qt.Key.Key_Left, 0x25), (Qt.Key.Key_Up, 0x26),
+    (Qt.Key.Key_Right, 0x27), (Qt.Key.Key_Down, 0x28), (Qt.Key.Key_Insert, 0x2D),
+    (Qt.Key.Key_Delete, 0x2E), (Qt.Key.Key_ScrollLock, 0x91),
+)}
+# Modifiers alone are not hotkeys (RegisterHotKey is called with no modifier).
+_MODIFIER_VKS = {0x10, 0x11, 0x12, 0x5B, 0x5C, 0xA0, 0xA1, 0xA2, 0xA3, 0xA4, 0xA5}
+
+
+def vk_name(vk: int) -> str:
+    """Short name of a Windows virtual-key code; "—" for none."""
+    vk = int(vk or 0)
+    if vk <= 0:
+        return "—"
+    if 0x70 <= vk <= 0x87:
+        return f"F{vk - 0x6F}"
+    if 0x30 <= vk <= 0x39 or 0x41 <= vk <= 0x5A:
+        return chr(vk)
+    if 0x60 <= vk <= 0x69:
+        return f"Num {vk - 0x60}"
+    return _VK_NAMES.get(vk, f"Key {vk:#04x}")
+
+
+def key_event_vk(event: QKeyEvent) -> int:
+    """Windows virtual-key code of a key press (0 when unknown)."""
+    vk = int(event.nativeVirtualKey() or 0)
+    if vk:
+        return vk
+    key = _k(event.key())
+    if _k(Qt.Key.Key_F1) <= key <= _k(Qt.Key.Key_F24):
+        return 0x70 + key - _k(Qt.Key.Key_F1)
+    if _k(Qt.Key.Key_0) <= key <= _k(Qt.Key.Key_9) or _k(Qt.Key.Key_A) <= key <= _k(Qt.Key.Key_Z):
+        return key
+    return _QT_TO_VK.get(key, 0)
+
+
+class _KeyButton(QPushButton):
+    """Shows a key; click, then press a key to choose it (Esc = none)."""
+
+    captured = Signal(int)       # VK code, 0 = none
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._vk = 0
+        self._capturing = False
+        self.clicked.connect(self._toggle_capture)
+        self._refresh()
+
+    @property
+    def vk(self) -> int:
+        return self._vk
+
+    @property
+    def capturing(self) -> bool:
+        return self._capturing
+
+    def set_vk(self, vk: int) -> None:
+        self._vk = max(0, int(vk or 0))
+        self._refresh()
+
+    def cancel_capture(self) -> None:
+        if self._capturing:
+            self._capturing = False
+            self.releaseKeyboard()
+            self._refresh()
+
+    def _toggle_capture(self) -> None:
+        if self._capturing:
+            self.cancel_capture()
+            return
+        self._capturing = True
+        self.setText("PRESS A KEY…")
+        # The panel never takes focus by itself (it must not steal it from
+        # the game), so take the keyboard only while a key is being chosen.
+        window = self.window()
+        if window.isVisible():
+            window.activateWindow()
+            self.grabKeyboard()
+
+    def _refresh(self) -> None:
+        self.setText(vk_name(self._vk))
+
+    def keyPressEvent(self, event):  # noqa: N802
+        if not self._capturing:
+            super().keyPressEvent(event)
+            return
+        event.accept()
+        if event.isAutoRepeat():
+            return
+        escape = _k(event.key()) == _k(Qt.Key.Key_Escape)
+        vk = 0 if escape else key_event_vk(event)
+        if vk == VK_ESCAPE:
+            vk, escape = 0, True
+        if vk in _MODIFIER_VKS:
+            return                   # wait for a real key
+        if not escape and vk == 0:
+            return                   # a key Windows cannot register
+        self.cancel_capture()
+        self.captured.emit(vk)
+
+
 def _button(text: str, checkable: bool = False) -> QPushButton:
     btn = QPushButton(text)
     btn.setCheckable(checkable)
     btn.setCursor(Qt.CursorShape.PointingHandCursor)
     btn.setFocusPolicy(Qt.FocusPolicy.NoFocus)
     btn.setFixedHeight(theme.px(28))
-    btn.setStyleSheet(theme.qss("""
+    btn.setStyleSheet(_button_qss())
+    return btn
+
+
+def _button_qss() -> str:
+    return theme.qss("""
         QPushButton {
             color: rgba(168,184,200,0.95); background: rgba(79,209,224,0.06);
             border: 1px solid rgba(79,209,224,0.18); border-radius: 7px;
@@ -111,8 +245,7 @@ def _button(text: str, checkable: bool = False) -> QPushButton:
             color: rgba(130,148,166,0.55); background: rgba(79,209,224,0.03);
             border-color: rgba(79,209,224,0.10);
         }
-    """))
-    return btn
+    """)
 
 
 class SettingsPanel(QWidget):
@@ -131,7 +264,10 @@ class SettingsPanel(QWidget):
     monitor_changed = Signal(str)     # Qt screen name of the game monitor
     reads_changed = Signal(int)       # scans per second, 1-8
     outline_toggled = Signal(bool)    # draw the capture box on screen
-    tracking_changed = Signal(int)    # HUD tracking range in px, 0 = off
+    tracking_changed = Signal(int)    # HUD tracking range in px, 0 = off;
+                                      # once per change (on slider release)
+    hotkeys_changed = Signal(dict)    # {"toggle_nav": vk, "panic": vk, "tools": {id: vk}}
+    pin_toggled = Signal(bool)        # the header pin, user clicks only
 
     def __init__(self, parent=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint
@@ -144,7 +280,15 @@ class SettingsPanel(QWidget):
 
         self._drag_from = None
         self._pending_version = ""
+        self._installing = False
         self._update_worker: _UpdateWorker | None = None
+        self._tools: list[tuple[str, str]] = []
+        self._key_buttons: dict[str, _KeyButton] = {}   # "toggle_nav", "panic", "tool:<id>"
+        self._attention = False
+        self._attention_on = False
+        self._attention_timer = QTimer(self)
+        self._attention_timer.setInterval(600)
+        self._attention_timer.timeout.connect(self._pulse_region_btn)
         self._build()
         self.adjustSize()
 
@@ -182,6 +326,9 @@ class SettingsPanel(QWidget):
             QPushButton:hover { color: #ffd9d9; }
         """))
         close.clicked.connect(self.close_requested.emit)
+        self.pin_btn = PinButton(self)
+        self.pin_btn.pin_toggled.connect(self.pin_toggled.emit)
+        head.addWidget(self.pin_btn)
         head.addWidget(close)
         root.addLayout(head)
         root.addSpacing(theme.px(4))
@@ -365,19 +512,7 @@ class SettingsPanel(QWidget):
         self.region_btn = _button("DRAW REGION")
         # Red, like QUIT on the nav bar: the one control here that changes
         # what the scanner reads (and saves the tracking pin).
-        self.region_btn.setStyleSheet(theme.qss("""
-            QPushButton {
-                color: #ffd9d9; background: rgba(232,106,106,0.22);
-                border: 1px solid rgba(232,106,106,0.70); border-radius: 7px;
-                font-size: 8px; font-weight: 600;
-                letter-spacing: 1.0px; padding: 0 10px;
-            }
-            QPushButton:hover { background: rgba(232,106,106,0.40); color: #ffffff; }
-            QPushButton:disabled {
-                color: rgba(130,148,166,0.55); background: rgba(232,106,106,0.05);
-                border-color: rgba(232,106,106,0.20);
-            }
-        """))
+        self._style_region_btn(False)
         self.region_btn.clicked.connect(self.region_requested.emit)
         region_row.addWidget(self.region_label, 1)
         region_row.addWidget(self.region_btn)
@@ -435,15 +570,21 @@ class SettingsPanel(QWidget):
         tracking_name.setFont(theme.font(8, QFont.Weight.DemiBold, spacing=0.8))
         tracking_name.setStyleSheet(theme.qss(
             "color: rgba(150,166,182,0.95); background: transparent;"))
+        # The slider counts whole steps (0..16 x 50 px), so it cannot stop
+        # between them. With tracking off, valueChanged comes once when a drag
+        # is released (sliderMoved only updates the label meanwhile), so a
+        # drag saves the setting once instead of on every pixel.
         self.tracking_slider = _slider()
-        self.tracking_slider.setRange(0, TRACKING_MAX)
-        self.tracking_slider.setSingleStep(TRACKING_STEP)
-        self.tracking_slider.setPageStep(TRACKING_STEP)
-        self.tracking_slider.setValue(400)
+        self.tracking_slider.setRange(0, TRACKING_MAX // TRACKING_STEP)
+        self.tracking_slider.setSingleStep(1)
+        self.tracking_slider.setPageStep(1)
+        self.tracking_slider.setTracking(False)
+        self.tracking_slider.setValue(400 // TRACKING_STEP)
         self.tracking_slider.setToolTip(
             "How far the scanner follows the signature when the HUD sways. "
             "OFF reads the fixed box only. Needs the pin icon left of the box "
             "when you press DRAW REGION.")
+        self.tracking_slider.sliderMoved.connect(self._on_tracking_moved)
         self.tracking_slider.valueChanged.connect(self._on_tracking)
         self.tracking_label = QLabel(_tracking_text(400))
         self.tracking_label.setFixedWidth(theme.px(48))
@@ -516,6 +657,22 @@ class SettingsPanel(QWidget):
         root.addWidget(self.preview)
         root.addSpacing(theme.px(8))
 
+        # Hotkeys -----------------------------------------------------
+        root.addWidget(_section("Hotkeys"))
+        self._hotkey_rows = QVBoxLayout()
+        self._hotkey_rows.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
+        self._hotkey_rows.setSpacing(theme.px(4))
+        root.addLayout(self._hotkey_rows)
+        for key, label in HOTKEY_ROWS:
+            self._add_hotkey_row(key, label)
+        self.hotkey_hint = QLabel(
+            "Click a key, then press the new one. Esc = no key.")
+        self.hotkey_hint.setWordWrap(True)
+        self.hotkey_hint.setFont(theme.font(7))
+        self._hotkey_hint_style(False)
+        root.addWidget(self.hotkey_hint)
+        root.addSpacing(theme.px(8))
+
         # Signature data ----------------------------------------------
         root.addWidget(_section("Signature data"))
         data_row = QHBoxLayout()
@@ -552,6 +709,17 @@ class SettingsPanel(QWidget):
         update_row.addWidget(self.update_btn)
         root.addLayout(update_row)
 
+        # "What's new in vX" from the release notes, plain text only.
+        self.whats_new_label = QLabel()
+        self.whats_new_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.whats_new_label.setWordWrap(True)
+        self.whats_new_label.setFont(theme.font(7))
+        self.whats_new_label.setStyleSheet(theme.qss(
+            "color: rgba(176,192,208,0.95); background: rgba(79,209,224,0.05);"
+            "border: 1px solid rgba(79,209,224,0.14); border-radius: 6px; padding: 6px;"))
+        self.whats_new_label.hide()
+        root.addWidget(self.whats_new_label)
+
     # ------------------------------------------------------------------
     def _on_pause(self, checked: bool) -> None:
         self.pause_btn.setText("RESUME" if checked else "PAUSE")
@@ -567,15 +735,19 @@ class SettingsPanel(QWidget):
         self.reads_label.setText(f"{value} / s")
         self.reads_changed.emit(value)
 
-    def _on_tracking(self, value: int) -> None:
-        snapped = _snap_tracking(value)
-        if snapped != value:
-            # Dragging lands between steps; the setValue re-enters with the
-            # snapped value and emits that one.
-            self.tracking_slider.setValue(snapped)
-            return
-        self.tracking_label.setText(_tracking_text(snapped))
-        self.tracking_changed.emit(snapped)
+    def _on_tracking_moved(self, steps: int) -> None:
+        """While dragging: label only (nothing is saved until release)."""
+        self.tracking_label.setText(_tracking_text(_snap_tracking(int(steps) * TRACKING_STEP)))
+
+    def _on_tracking(self, steps: int) -> None:
+        value = _snap_tracking(int(steps) * TRACKING_STEP)
+        self.tracking_label.setText(_tracking_text(value))
+        self.tracking_changed.emit(value)
+
+    @property
+    def tracking_value(self) -> int:
+        """The TRACKING range shown, in px."""
+        return _snap_tracking(self.tracking_slider.value() * TRACKING_STEP)
 
     def _on_monitor(self, index: int) -> None:
         name = self.monitor_box.itemData(index)
@@ -621,7 +793,8 @@ class SettingsPanel(QWidget):
 
     # -- update --------------------------------------------------------
     def _on_update_clicked(self) -> None:
-        if self._update_worker is not None and self._update_worker.isRunning():
+        if self._installing or (self._update_worker is not None
+                                and self._update_worker.isRunning()):
             return
         mode = "apply" if self._pending_version else "check"
         if mode == "apply" and updater.standalone():
@@ -645,36 +818,69 @@ class SettingsPanel(QWidget):
         worker.done.connect(self._on_update_done)
         worker.failed.connect(self._on_update_failed)
         worker.finished.connect(self._on_update_finished)
+        worker.finished.connect(worker.deleteLater)
         self._update_worker = worker
         worker.start()
 
-    def _on_update_done(self, mode: str, value: str) -> None:
+    def _set_whats_new(self, version: str, notes: str) -> None:
+        text = updater.whats_new(notes, version) if notes and version else ""
+        self.whats_new_label.setText(f"What's new in v{version}\n{text}" if text else "")
+        self.whats_new_label.setVisible(bool(text))
+        self.adjustSize()
+
+    def _update_tooltip(self) -> None:
+        """Say what the button does for this kind of install."""
+        version = self._pending_version
+        if not version:
+            tip = ("Check GitHub for a newer release" if updater.is_frozen()
+                   else "Compare this install with GitHub, then copy the newest files")
+        elif updater.is_frozen() and updater.standalone():
+            tip = (f"This copy was unzipped, not installed: opens the Releases page "
+                   f"to download v{version}")
+        elif updater.is_frozen():
+            tip = (f"Download the v{version} installer; Citizen Assistant closes, "
+                   "installs it and starts again")
+        else:
+            tip = f"Copy the v{version} files from GitHub over this folder and restart"
+        self.update_btn.setToolTip(tip)
+
+    def _on_update_done(self, mode: str, value: str, extra: str = "") -> None:
         if mode == "check":
             if value and updater.is_newer(value):
                 self._pending_version = value
                 self.update_hint.setText(f"v{value} available")
                 self.update_btn.setText("UPDATE")
+                self._set_whats_new(value, extra)
             else:
                 # Name both numbers: "nothing happened" usually just means the
                 # installed and published versions are the same build.
                 self.update_hint.setText(
                     f"Up to date · GitHub has v{value or '?'}")
                 self.update_btn.setText("CHECK")
+                self._set_whats_new("", "")
+            self._update_tooltip()
             return
 
         if mode == "install":
-            # value is the downloaded Setup.exe; the app hands it off and quits.
-            version = self._pending_version
-            self._pending_version = ""
+            # value is the downloaded Setup.exe, extra the version inside it
+            # (the latest release at download time, which can be newer than
+            # what CHECK saw). The app hands it off and quits; the button
+            # stays off unless the hand-off fails (install_failed).
+            version = extra or self._pending_version
+            self._pending_version = version
+            self._installing = True
+            self.update_btn.setEnabled(False)
             self.update_hint.setText(
                 f"Installing v{version} · Citizen Assistant closes and starts again by itself")
-            self.update_btn.setText("CHECK")
+            self.update_btn.setText("…")
             self.install_requested.emit(value)
             return
 
         self._pending_version = ""
+        self._set_whats_new("", "")
         self.update_hint.setText(f"Updated to v{value} · restarting…")
         self.update_btn.setText("CHECK")
+        self._update_tooltip()
         # The new files are already on disk; only a restart loads them.
         self.restart_requested.emit()
 
@@ -683,8 +889,184 @@ class SettingsPanel(QWidget):
         self.update_btn.setText("UPDATE" if self._pending_version else "CHECK")
 
     def _on_update_finished(self) -> None:
-        self.update_btn.setEnabled(True)
+        if not self._installing:
+            self.update_btn.setEnabled(True)
         self._update_worker = None
+
+    def install_failed(self, message: str) -> None:
+        """The app could not hand the installer off: offer UPDATE again."""
+        self._installing = False
+        message = str(message or "unknown error")
+        self.update_hint.setText(message if message.startswith("Update failed")
+                                 else f"Update failed: {message}")
+        self.update_btn.setText("UPDATE" if self._pending_version else "CHECK")
+        self.update_btn.setEnabled(True)
+        self._update_tooltip()
+
+    @property
+    def installing(self) -> bool:
+        return self._installing
+
+    def shutdown(self, timeout_ms: int = 5000) -> bool:
+        """Stop the update thread at quit: cancel a download, wait for it.
+
+        Returns True when no thread is left running.
+        """
+        worker = self._update_worker
+        if worker is None:
+            return True
+        try:
+            if not worker.isRunning():
+                return True
+            worker.requestInterruption()
+            for signal in (worker.done, worker.failed):
+                try:
+                    signal.disconnect()
+                except (RuntimeError, TypeError):
+                    pass
+            return bool(worker.wait(max(0, int(timeout_ms))))
+        except RuntimeError:          # already deleted
+            return True
+
+    # -- hotkeys ---------------------------------------------------------
+    def _hotkey_hint_style(self, warn: bool) -> None:
+        self.hotkey_hint.setStyleSheet(theme.qss(
+            "color: rgba(255,176,32,0.95); background: transparent;" if warn else
+            "color: rgba(130,148,166,0.9); background: transparent;"))
+
+    def _add_hotkey_row(self, key: str, label: str) -> None:
+        row = QHBoxLayout()
+        row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
+        row.setSpacing(theme.px(8))
+        name = QLabel(label)
+        name.setFont(theme.font(8, QFont.Weight.DemiBold, spacing=0.8))
+        name.setStyleSheet(theme.qss(
+            "color: rgba(150,166,182,0.95); background: transparent;"))
+        button = _KeyButton()
+        button.setCursor(Qt.CursorShape.PointingHandCursor)
+        button.setFixedHeight(theme.px(22))
+        button.setFixedWidth(theme.px(96))
+        button.setStyleSheet(_button_qss())
+        button.setToolTip(f"Key for {label}: click, then press a key (Esc = no key)")
+        button.captured.connect(lambda vk, k=key, n=label: self._on_key_captured(k, n, vk))
+        row.addWidget(name, 1)
+        row.addWidget(button)
+        self._hotkey_rows.addLayout(row)
+        self._key_buttons[key] = button
+
+    def _row_label(self, key: str) -> str:
+        if key.startswith("tool:"):
+            tool_id = key[5:]
+            return next((label for tid, label in self._tools if tid == tool_id), tool_id.upper())
+        return dict(HOTKEY_ROWS).get(key, key)
+
+    def _on_key_captured(self, key: str, label: str, vk: int) -> None:
+        for other, button in self._key_buttons.items():
+            if other != key and vk and button.vk == vk:
+                self.hotkey_hint.setText(
+                    f"{vk_name(vk)} is already {self._row_label(other)}; "
+                    "choose another key or clear that one first (Esc).")
+                self._hotkey_hint_style(True)
+                return
+        self._key_buttons[key].set_vk(vk)
+        self.hotkey_hint.setText(
+            f"{label}: {vk_name(vk)}" if vk else f"{label}: no key")
+        self._hotkey_hint_style(False)
+        self.hotkeys_changed.emit(self.hotkeys())
+
+    def hotkeys(self) -> dict:
+        """The keys shown: {"toggle_nav": vk, "panic": vk, "tools": {id: vk}}."""
+        return {
+            "toggle_nav": self._key_buttons["toggle_nav"].vk,
+            "panic": self._key_buttons["panic"].vk,
+            "tools": {tid: self._key_buttons[f"tool:{tid}"].vk for tid, _ in self._tools},
+        }
+
+    def set_tools(self, tools) -> None:
+        """Add a hotkey row per tool: main.TOOLS dicts or (id, label) pairs."""
+        for tool in tools:
+            if isinstance(tool, dict):
+                tool_id, label = str(tool.get("id", "")), str(tool.get("label", ""))
+            else:
+                tool_id, label = str(tool[0]), str(tool[1])
+            if not tool_id or f"tool:{tool_id}" in self._key_buttons:
+                continue
+            self._tools.append((tool_id, label or tool_id.upper()))
+            self._add_hotkey_row(f"tool:{tool_id}", label or tool_id.upper())
+        self.adjustSize()
+
+    def set_hotkeys(self, keys: dict) -> None:
+        """Show saved keys (same shape as hotkeys_changed); emits nothing.
+
+        Without an earlier ``set_tools`` the tool rows come from main.TOOLS
+        (imported here, not at module level: main imports this module).
+        """
+        if not self._tools:
+            try:
+                from ..main import TOOLS
+            except Exception:         # main unavailable: SHOW BAR / HIDE ALL only
+                TOOLS = []
+            self.set_tools(TOOLS)
+        keys = dict(keys or {})
+        for name in ("toggle_nav", "panic"):
+            if name in keys:
+                self._key_buttons[name].set_vk(int(keys.get(name) or 0))
+        tools = keys.get("tools") or {}
+        for tool_id, _label in self._tools:
+            self._key_buttons[f"tool:{tool_id}"].set_vk(int(tools.get(tool_id) or 0))
+
+    # -- first run: point at DRAW REGION ------------------------------------
+    def _style_region_btn(self, bright: bool) -> None:
+        border = ("2px solid rgba(255,140,140,1.0)" if bright
+                  else "1px solid rgba(232,106,106,0.70)")
+        fill = "rgba(232,106,106,0.45)" if bright else "rgba(232,106,106,0.22)"
+        self.region_btn.setStyleSheet(theme.qss(f"""
+            QPushButton {{
+                color: #ffd9d9; background: {fill};
+                border: {border}; border-radius: 7px;
+                font-size: 8px; font-weight: 600;
+                letter-spacing: 1.0px; padding: 0 10px;
+            }}
+            QPushButton:hover {{ background: rgba(232,106,106,0.40); color: #ffffff; }}
+            QPushButton:disabled {{
+                color: rgba(130,148,166,0.55); background: rgba(232,106,106,0.05);
+                border-color: rgba(232,106,106,0.20);
+            }}
+        """))
+
+    def _pulse_region_btn(self) -> None:
+        self._attention_on = not self._attention_on
+        self._style_region_btn(self._attention_on)
+
+    def set_draw_region_attention(self, on: bool) -> None:
+        """Pulse DRAW REGION (first run, no region yet) until turned off."""
+        on = bool(on)
+        if on == self._attention:
+            return
+        self._attention = on
+        if on:
+            self._attention_on = True
+            self._style_region_btn(True)
+            self.region_btn.setToolTip("Start here: draw a box around the scan signature")
+            self._attention_timer.start()
+        else:
+            self._attention_timer.stop()
+            self._attention_on = False
+            self._style_region_btn(False)
+            self.region_btn.setToolTip("")
+
+    @property
+    def draw_region_attention(self) -> bool:
+        return self._attention
+
+    # -- pin ---------------------------------------------------------------
+    def set_pinned(self, pinned: bool) -> None:
+        """Start-up state of the header pin; emits nothing."""
+        self.pin_btn.set_pinned(bool(pinned))
+
+    @property
+    def pinned(self) -> bool:
+        return self.pin_btn.isChecked()
 
     def _copy_btc(self) -> None:
         if not BTC_ADDRESS:
@@ -729,15 +1111,19 @@ class SettingsPanel(QWidget):
 
     def set_tracking(self, range_px: int) -> None:
         value = _snap_tracking(range_px)
-        if self.tracking_slider.value() != value:
+        steps = value // TRACKING_STEP
+        if self.tracking_slider.value() != steps:
             self.tracking_slider.blockSignals(True)
-            self.tracking_slider.setValue(value)
+            self.tracking_slider.setValue(steps)
             self.tracking_slider.blockSignals(False)
         self.tracking_label.setText(_tracking_text(value))
 
     def set_paused(self, paused: bool) -> None:
+        paused = bool(paused)
         if self.pause_btn.isChecked() != paused:
+            self.pause_btn.blockSignals(True)
             self.pause_btn.setChecked(paused)
+            self.pause_btn.blockSignals(False)
         self.pause_btn.setText("RESUME" if paused else "PAUSE")
 
     def set_outline(self, enabled: bool) -> None:
@@ -747,13 +1133,20 @@ class SettingsPanel(QWidget):
             self.outline_btn.blockSignals(False)
 
     def set_debug(self, enabled: bool) -> None:
+        enabled = bool(enabled)
         if self.debug_btn.isChecked() != enabled:
+            self.debug_btn.blockSignals(True)
             self.debug_btn.setChecked(enabled)
+            self.debug_btn.blockSignals(False)
         self.preview.setVisible(enabled)
+        self.adjustSize()
 
     def set_voice(self, enabled: bool) -> None:
+        enabled = bool(enabled)
         if self.voice_btn.isChecked() != enabled:
+            self.voice_btn.blockSignals(True)
             self.voice_btn.setChecked(enabled)
+            self.voice_btn.blockSignals(False)
         self.voice_btn.setText("ON" if enabled else "OFF")
         self.volume_slider.setEnabled(enabled)
 
@@ -801,7 +1194,7 @@ class SettingsPanel(QWidget):
             text or "Speak the ore name when a signature locks")
 
     def set_version(self, version: str, count: int) -> None:
-        self.version_label.setText(f"Game {version}  ·  {count} ores loaded")
+        self.version_label.setText(f"Signatures: {version}  ·  {count} ores")
 
     def set_preview(self, crop) -> None:
         if crop is None or not self.preview.isVisible():
@@ -835,6 +1228,11 @@ class SettingsPanel(QWidget):
         self.move(x, y)
 
     # ------------------------------------------------------------------
+    def hideEvent(self, event):  # noqa: N802
+        for button in self._key_buttons.values():
+            button.cancel_capture()
+        super().hideEvent(event)
+
     def mousePressEvent(self, event):  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton and event.position().y() < 40:
             self._drag_from = event.globalPosition().toPoint() - self.frameGeometry().topLeft()

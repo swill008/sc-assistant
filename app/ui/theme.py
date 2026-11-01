@@ -37,6 +37,15 @@ DIM       = QColor(88, 103, 120)
 GOOD      = QColor(94, 214, 138)
 BAD       = QColor(232, 106, 106)
 
+# HUD tracking state -> colour and words, shared by the on-screen outline
+# (region_outline.py) and the scanner panel chip (mining_panel.py).
+#   locked:    the pin was found this read; digits read beside it
+#   searching: tracking is on but no pin in the search area right now
+#   fixed:     no saved pin, or TRACKING OFF: the drawn box is read as is
+TRACK_STATES = ("locked", "searching", "fixed")
+TRACK_COLOR = {"locked": ACCENT, "searching": AMBER, "fixed": MUTED}
+TRACK_TEXT = {"locked": "TRACKING", "searching": "SEARCHING", "fixed": "FIXED BOX"}
+
 RARITY = {
     5: QColor(255, 176, 32),   # legendary
     4: QColor(199, 125, 255),  # epic

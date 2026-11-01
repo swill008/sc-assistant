@@ -59,6 +59,11 @@ TOOLS = [
     {"id": "notes", "label": "NOTES", "enabled": True,
      "hint": "A notepad that saves itself"},
 ]
+# HotkeyThread ids for "open this tool" hotkeys: TOOL_HOTKEY_BASE + index in
+# TOOLS (1 = nav bar, 2 = hide all).
+TOOL_HOTKEY_BASE = 100
+# How long the DRAW REGION result stays on screen (even with SHOW BOX off).
+CONFIRM_MS = 3000
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +75,14 @@ class ScanThread(QThread):
     # Physical rect of the digits read this frame while tracking, None when
     # the plate was not found or tracking is off. Emitted on change only.
     tracked = Signal(object)
+    # {"state": "locked"|"searching"|"fixed", "digits": rect|None,
+    #  "pin": rect|None}: physical rects, on change only. locked = the pin
+    # was found and the digits beside it read; searching = tracking is on but
+    # no plate this read; fixed = no pin or TRACKING OFF (the drawn box).
+    track_state = Signal(object)
+    # (meta, Anchor | error text) for request_anchor(): the saved pin is
+    # decoded here so OpenCV never loads on the GUI thread at start-up.
+    anchor_loaded = Signal(object, object)
 
     _NO_ANCHOR = object()     # configure(): leave the anchor as it is
 
@@ -88,8 +101,10 @@ class ScanThread(QThread):
         self._ocr_threads = int(cfg.get("ocr_threads", 1))
         self._last_hash: int | None = None
         self._last_payload: tuple | None = None
-        self._tracking_range = max(0, int(cfg.get("tracking_range", 0) or 0))
+        self._tracking_range = parse_tracking_range(cfg.get("tracking_range"))
         self._anchor = anchor
+        self._anchor_request: tuple | None = None
+        self._last_track_state: dict | None = None
         # (anchor, physical search area), or None for the fixed box. Swapped
         # as one object so the scanner thread never sees half an update.
         self._track: tuple | None = None
@@ -134,6 +149,28 @@ class ScanThread(QThread):
     def tracking(self) -> bool:
         return self._track is not None
 
+    @property
+    def has_anchor(self) -> bool:
+        return self._anchor is not None
+
+    def request_anchor(self, folder: Path, meta: dict) -> None:
+        """Decode the saved pin on the scanner thread; anchor_loaded follows."""
+        self._anchor_request = (Path(folder), dict(meta))
+
+    def _load_requested_anchor(self) -> None:
+        req, self._anchor_request = self._anchor_request, None
+        if req is None:
+            return
+        folder, meta = req
+        try:
+            from . import tracking
+
+            anchor = tracking.Anchor.load(folder, meta)
+            result = anchor if anchor is not None else                 "the saved pin image could not be read"
+        except Exception as exc:
+            result = f"{type(exc).__name__}: {exc}"
+        self.anchor_loaded.emit(meta, result)
+
     def set_enabled(self, enabled: bool) -> None:
         self._enabled = enabled
 
@@ -151,8 +188,15 @@ class ScanThread(QThread):
         try:
             while not self._stop:
                 started = time.perf_counter()
+                if self._anchor_request is not None:
+                    self._load_requested_anchor()
                 region = self._region
                 active = self.demo or (self._enabled and is_region_valid(region))
+                if not active:
+                    # Paused or no box: nothing is tracked. Forget the last
+                    # state so the next active read reports it again.
+                    self._set_tracked(None)
+                    self._last_track_state = None
                 if active:
                     try:
                         if self.demo and demo_mod is None:
@@ -187,6 +231,7 @@ class ScanThread(QThread):
         track = self._track
         if track is None:
             self._set_tracked(None)
+            self._set_track_state("fixed")
             self._read_crop(grab(region), ocr)
             return
         from . import tracking
@@ -197,6 +242,7 @@ class ScanThread(QThread):
         if match is None:
             # No plate on screen: nothing to read, so the OCR model is not run.
             self._set_tracked(None)
+            self._set_track_state("searching")
             if self._last_hash != -1:
                 from .ocr import OCRResult
 
@@ -211,10 +257,14 @@ class ScanThread(QThread):
         if x1 - x0 < 8 or y1 - y0 < 8:
             # Plate at the edge of the search area: the digits are cut off.
             self._set_tracked(None)
+            self._set_track_state("searching")
             self._read_crop(None, ocr)
             return
-        self._set_tracked({"left": int(area["left"] + x0), "top": int(area["top"] + y0),
-                           "width": int(x1 - x0), "height": int(y1 - y0)})
+        digits = {"left": int(area["left"] + x0), "top": int(area["top"] + y0),
+                  "width": int(x1 - x0), "height": int(y1 - y0)}
+        self._set_tracked(digits)
+        self._set_track_state("locked", digits,
+                              pin_rect(match, anchor, area["left"], area["top"]))
         self._read_crop(frame[y0:y1, x0:x1], ocr)
 
     def _read_crop(self, crop, ocr) -> None:
@@ -242,12 +292,64 @@ class ScanThread(QThread):
             self._last_tracked = rect
             self.tracked.emit(rect)
 
+    def _set_track_state(self, state: str, digits: dict | None = None,
+                         pin: dict | None = None) -> None:
+        info = {"state": state, "digits": digits, "pin": pin}
+        if info != self._last_track_state:
+            self._last_track_state = info
+            self.track_state.emit(info)
+
+
+def pin_rect(match, anchor, left: int, top: int) -> dict:
+    """Physical rect of the pin icon itself (the template less its margin)
+    for a match found in an image whose top-left is at (left, top)."""
+    from .tracking import PIN_MARGIN
+
+    th, tw = anchor.template.shape[:2]
+    return {"left": int(left + match.x + PIN_MARGIN),
+            "top": int(top + match.y + PIN_MARGIN),
+            "width": int(tw - 2 * PIN_MARGIN),
+            "height": int(th - 2 * PIN_MARGIN)}
+
+
+def parse_tracking_range(value, default: int = 400) -> int:
+    """TRACKING range from config: a whole number of px >= 0. A hand-edited
+    or broken value falls back to ``default`` instead of crashing."""
+    if value is None or isinstance(value, bool):
+        return default
+    try:
+        return max(0, int(round(float(value))))
+    except (TypeError, ValueError, OverflowError):
+        return default
+
+
+def _vk(value) -> int:
+    """A Windows virtual-key code from config, 0 when unset or broken."""
+    if isinstance(value, bool):
+        return 0
+    try:
+        vk = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return vk if 0 < vk < 256 else 0
+
 
 # ---------------------------------------------------------------------------
 _NO_PIN_NOTE = ("No pin icon found left of the box: tracking is off. Press "
                 "DRAW REGION with the scan readout on screen to turn it on.")
 _TRACKING_DROPPED = (" Tracking is off (the saved pin was for the old "
-                     "resolution): press DRAW REGION to turn it back on.")
+                     "resolution): it turns back on by itself when the box "
+                     "next reads a signature; if not, press DRAW REGION to "
+                     "turn it back on.")
+_PIN_SEARCH_FAILED_NOTE = ("Pin search failed ({}): tracking is off. Press DRAW "
+                           "REGION to try again.")
+_PIN_MISSING_NOTE = ("The saved pin picture (anchor.png) is missing: tracking "
+                     "is off until the box reads a signature, or press DRAW "
+                     "REGION.")
+_PIN_LOAD_FAILED_NOTE = ("Could not load the saved pin ({}): tracking is off "
+                         "until the box reads a signature, or press DRAW "
+                         "REGION.")
+_PIN_LEARNED_NOTE = "Pin learned from the scan: tracking is on."
 
 
 def _calibration_area(region: dict) -> dict:
@@ -377,6 +479,8 @@ class OverlayApp(QObject):
     inventory_event_signal = Signal(object)
     # Re-emitted from the Game.log tailer's thread so the GUI can react.
     pilot_seat = Signal(bool)
+    # MiningData.refresh_in_background finished (worker thread): changed?
+    data_refreshed = Signal(bool)
 
     def __init__(self, app: QApplication, cfg: Config, demo: bool = False,
                  capture_visible: bool = False, launch_args: list[str] | None = None):
@@ -422,15 +526,17 @@ class OverlayApp(QObject):
         self.blueprint_tracker = BlueprintTracker()
         self.blueprint_tracker.subscribe(self._on_inventory_event)
 
-        # Digits rect the scanner is tracking now (physical), for SHOW BOX.
-        self._tracked_rect: dict | None = None
-        self.scan = ScanThread(self.data, cfg, demo=demo, anchor=self._load_anchor())
+        self._init_tracking_state()
+        # No anchor yet: the saved pin is decoded on the scanner thread after
+        # the windows are up (start -> _load_anchor), never on the GUI thread.
+        self.scan = ScanThread(self.data, cfg, demo=demo)
         self.scan.result.connect(self._on_result)
         self.scan.failed.connect(self._on_scan_error)
         self.scan.tracked.connect(self._on_tracked)
+        self.scan.track_state.connect(self._on_track_state)
+        self.scan.anchor_loaded.connect(self._on_anchor_loaded)
 
-        self.hotkeys = HotkeyThread({1: int(cfg["hotkey_toggle_nav"]),
-                                     2: int(cfg["hotkey_panic"])})
+        self.hotkeys = HotkeyThread(self._hotkey_bindings())
         self.hotkeys.pressed.connect(self._on_hotkey)
 
         # Read-only Game.log tailer for pilot-seat notifications, so the
@@ -438,6 +544,7 @@ class OverlayApp(QObject):
         # game process; the monitor only reads text.
         self.game_log = GameLogMonitor(callback=self._on_game_log_event)
         self.pilot_seat.connect(self._on_pilot_seat)
+        self.data_refreshed.connect(self._on_data_refreshed)
 
         self._build_tray()
         self._wire()
@@ -490,6 +597,10 @@ class OverlayApp(QObject):
         self.settings.monitor_changed.connect(self._on_game_monitor)
         self.settings.outline_toggled.connect(self._on_outline)
         self.settings.tracking_changed.connect(self._on_tracking)
+        self.settings.hotkeys_changed.connect(self._on_hotkeys_changed)
+        for panel_id, widget in self._panels().items():
+            widget.pin_toggled.connect(
+                lambda pinned, pid=panel_id: self._on_pin(pid, pinned))
 
         # Monitors plugged in, unplugged, or changed (resolution, scaling,
         # position): re-list them and keep the box on the signature. Debounced
@@ -569,10 +680,14 @@ class OverlayApp(QObject):
 
         self.settings.set_reads(self._reads_per_second())
         self.settings.set_tracking(self._tracking_range())
+        self.settings.set_tools(TOOLS)          # one hotkey row per tool
+        self.settings.set_hotkeys(self._hotkey_config())
+        self._load_pins()
         self._check_display()
         has_region = is_region_valid(self.cfg["region"])
+        self.panel.set_track_state("fixed" if has_region else None)
         self.settings.set_region(self.cfg["region"] if has_region else None)
-        self.settings.set_version(self.data.version, len(self.data.ores))
+        self._show_data_version()
         self.settings.set_debug(bool(self.cfg["show_debug_preview"]))
         self.settings.set_outline(bool(self.cfg["show_region_outline"]))
         self._update_outline()
@@ -666,6 +781,11 @@ class OverlayApp(QObject):
             self.panel.set_scan_idle("No capture region — press DRAW REGION in Settings (⚙)")
         elif self.demo:
             self.panel.set_scan_idle("Demo mode")
+        self._update_first_run_attention()
+        # The windows are up: the scanner thread decodes the saved pin now,
+        # and the signature data is refreshed from scmdb off the GUI thread.
+        self._load_anchor()
+        QTimer.singleShot(0, self, self._refresh_data)
 
     def _apply_window_tweaks(self) -> None:
         for widget in (self.nav, self.panel, self.settings, self.orefinder,
@@ -732,25 +852,93 @@ class OverlayApp(QObject):
             self.nav.toggle()
         elif hotkey_id == 2:
             self._hide_all()
+        elif TOOL_HOTKEY_BASE <= hotkey_id < TOOL_HOTKEY_BASE + len(TOOLS):
+            # Same as the tool's nav button: toggles it.
+            self._on_tool(TOOLS[hotkey_id - TOOL_HOTKEY_BASE]["id"])
+
+    # -- hotkeys (Settings → HOTKEYS) ------------------------------------
+    def _hotkey_config(self) -> dict:
+        """Hotkeys in the shape SettingsPanel.set_hotkeys / hotkeys_changed use."""
+        tools = self.cfg.get("hotkey_tools")
+        tools = tools if isinstance(tools, dict) else {}
+        return {"toggle_nav": _vk(self.cfg.get("hotkey_toggle_nav")),
+                "panic": _vk(self.cfg.get("hotkey_panic")),
+                "tools": {str(k): _vk(v) for k, v in tools.items() if _vk(v)}}
+
+    def _hotkey_bindings(self) -> dict[int, int]:
+        """HotkeyThread ids: 1 = nav bar, 2 = hide all, 100+i = TOOLS[i]."""
+        conf = self._hotkey_config()
+        bindings = {}
+        if conf["toggle_nav"]:
+            bindings[1] = conf["toggle_nav"]
+        if conf["panic"]:
+            bindings[2] = conf["panic"]
+        for i, tool in enumerate(TOOLS):
+            vk = conf["tools"].get(tool["id"], 0)
+            if vk:
+                bindings[TOOL_HOTKEY_BASE + i] = vk
+        return bindings
+
+    def _on_hotkeys_changed(self, hotkeys: dict) -> None:
+        hotkeys = hotkeys if isinstance(hotkeys, dict) else {}
+        self.cfg["hotkey_toggle_nav"] = _vk(hotkeys.get("toggle_nav"))
+        self.cfg["hotkey_panic"] = _vk(hotkeys.get("panic"))
+        tools = hotkeys.get("tools")
+        tool_ids = {tool["id"] for tool in TOOLS}
+        self.cfg["hotkey_tools"] = {
+            str(k): _vk(v) for k, v in (tools if isinstance(tools, dict) else {}).items()
+            if str(k) in tool_ids and _vk(v)}
+        self.cfg.save()
+        self.hotkeys.set_bindings(self._hotkey_bindings())
+
+    # -- window pins -----------------------------------------------------
+    def _panels(self) -> dict:
+        """Panel id -> window, for pins ("pinned_windows")."""
+        return {"mining": self.panel, "orefinder": self.orefinder,
+                "hauling": self.hauling, "inventory": self.inventory,
+                "uex": self.uex, "notes": self.notes,
+                "combat": self.combat_panel, "settings": self.settings}
+
+    def _pinned_ids(self) -> set[str]:
+        ids = self.cfg.get("pinned_windows")
+        return {i for i in ids if isinstance(i, str)} if isinstance(ids, list) else set()
+
+    def _load_pins(self) -> None:
+        pinned = self._pinned_ids()
+        for panel_id, widget in self._panels().items():
+            widget.set_pinned(panel_id in pinned)
+
+    def _on_pin(self, panel_id: str, pinned: bool) -> None:
+        ids = self._pinned_ids()
+        if pinned:
+            ids.add(panel_id)
+        else:
+            ids.discard(panel_id)
+        order = list(self._panels())
+        self.cfg["pinned_windows"] = sorted(ids, key=lambda i: order.index(i)
+                                            if i in order else len(order))
+        self.cfg.save()
 
     def _show_bar(self) -> None:
         if not self.nav.shown:
             self.nav.slide_in()
+        self._outline_hidden = False
         self._update_outline()
 
     def _hide_all(self) -> None:
+        """F4 / the nav bar's ✕: hide everything except pinned panels."""
         if self.nav.shown:
             self.nav.slide_out()
-        self.outline.hide()
-        self.panel.hide()
-        self.settings.hide()
-        self.orefinder.hide()
-        self.hauling.hide()
-        self.inventory.hide()
-        self.uex.hide()
-        self.notes.hide()
-        self.combat_panel.hide()
-        self.nav.set_active(None)
+        for widget in self._panels().values():
+            if not widget.pinned:
+                widget.hide()
+        # A pinned scanner keeps reading, so its SHOW BOX outline stays;
+        # otherwise it stays hidden until the bar is shown again.
+        self._outline_hidden = not (self.panel.pinned and self.panel.isVisible())
+        if self._outline_hidden:
+            self._end_confirmation(redraw=False)
+            self.outline.hide()
+        self._sync_nav_active()
 
     def _on_tool(self, tool_id: str) -> None:
         if tool_id == "mining":
@@ -949,6 +1137,12 @@ class OverlayApp(QObject):
     def _on_pause(self, paused: bool) -> None:
         self._paused = paused
         self.scan.set_enabled(not paused)
+        if paused:
+            # Nothing is tracked while paused: SHOW BOX goes back to the box.
+            self._tracked_rect = None
+            self._track_info = dict(self._track_info, digits=None, pin=None)
+            self._last_locked = None
+            self._update_outline()
         self.panel.set_state("paused" if paused else "reading")
         if paused and self._last_value is not None:
             self.panel.set_scan(self._last_value, 0.0, "lost",
@@ -1076,7 +1270,7 @@ class OverlayApp(QObject):
         if display.same_rect(recorded, now):
             return
         moved = display.rescale(region, recorded, now)
-        dropped = self._drop_anchor()
+        dropped = self._drop_anchor_if_rescaled(recorded, now)
         self._apply_region(moved, now, screen.name())
         self.settings.set_region_note(
             f"Monitor changed ({recorded['width']}×{recorded['height']} → "
@@ -1092,7 +1286,7 @@ class OverlayApp(QObject):
         recorded = self.cfg.get("region_monitor")
         now = display.physical_rect(screen)
         if is_region_valid(region) and recorded and not display.same_rect(recorded, now):
-            dropped = self._drop_anchor()
+            dropped = self._drop_anchor_if_rescaled(recorded, now)
             self._apply_region(display.rescale(region, recorded, now), now, name)
             self.settings.set_region_note(
                 f"Box moved to {display.screen_label(screen)}. Check SHOW "
@@ -1108,67 +1302,165 @@ class OverlayApp(QObject):
         self.cfg.save()
         self._update_outline()
 
-    def _update_outline(self) -> None:
+    # -- SHOW BOX and the scanner chip ------------------------------------
+    def _init_tracking_state(self) -> None:
+        # Digits rect the scanner is tracking now (physical).
+        self._tracked_rect: dict | None = None
+        # Last ScanThread.track_state; state None until the first read.
+        self._track_info: dict = {"state": None, "digits": None, "pin": None}
+        # (digits, pin) of the last locked read: SEARCHING is drawn there.
+        self._last_locked: tuple | None = None
+        self._lock_value: int | None = None   # value read since the plate locked
+        self._outline_hidden = False         # F4 / ✕ hid it until the bar returns
+        self._confirming = False             # DRAW REGION result on screen
+        self._confirm_token = 0
+        self._last_calibration_pin: dict | None = None
+        # Pin learning from the fixed box (old box, or after a rescale): tried
+        # once per box. _anchor_failed: the saved pin could not be loaded.
+        self._learn_tried = False
+        self._anchor_failed = False
+
+    def _track_marks(self) -> tuple:
+        """(digits, pin, state, label) for SHOW BOX now."""
         region = self.cfg["region"]
-        if self.cfg.get("show_region_outline") and is_region_valid(region):
-            self.outline.show_region(self._tracked_rect or region)
+        state = self._track_info.get("state")
+        if state is None:
+            state = "searching" if self.scan.tracking else "fixed"
+        if state == "locked" and self._track_info.get("digits"):
+            value = self._lock_value
+            label = (f"TRACKING ✓  {value:,}" if value is not None
+                     else "TRACKING ✓")
+            return self._track_info["digits"], self._track_info.get("pin"), state, label
+        if state in ("searching", "locked"):
+            digits, pin = self._last_locked or (region, None)
+            return digits, pin, "searching", "SEARCHING…"
+        return region, None, "fixed", theme.TRACK_TEXT["fixed"]
+
+    def _update_outline(self) -> None:
+        if self._confirming:
+            return          # the DRAW REGION result owns the outline for now
+        region = self.cfg["region"]
+        if (self.cfg.get("show_region_outline") and is_region_valid(region)
+                and not self._outline_hidden):
+            self.outline.show_marks(*self._track_marks())
         else:
             self.outline.hide()
 
     def _on_tracked(self, rect) -> None:
         """The scanner found the plate somewhere else (or lost it)."""
         self._tracked_rect = rect
-        region = self.cfg["region"]
-        if not (self.cfg.get("show_region_outline") and is_region_valid(region)):
+
+    def _on_track_state(self, info) -> None:
+        """ScanThread.track_state: the chip always, SHOW BOX when it is on."""
+        self._track_info = dict(info)
+        if info.get("state") != "locked":
+            self._lock_value = None
+        if info.get("state") == "locked" and info.get("digits"):
+            self._last_locked = (info["digits"], info.get("pin"))
+        elif info.get("state") == "fixed":
+            self._last_locked = None
+        self.panel.set_track_state(info.get("state"))
+        self._update_outline()
+
+    def _confirm_calibration(self, found: bool, region: dict,
+                             pin: dict | None) -> None:
+        """DRAW REGION result for CONFIRM_MS, whether SHOW BOX is on or not."""
+        self._confirming = True
+        self._confirm_token += 1
+        token = self._confirm_token
+        if found:
+            self.outline.show_marks(region, pin, "locked", "PIN FOUND — TRACKING ON")
+        else:
+            self.outline.show_marks(region, None, "searching", "NO PIN FOUND — FIXED BOX")
+        QTimer.singleShot(CONFIRM_MS, self,
+                          lambda: self._end_confirmation(token=token))
+
+    def _end_confirmation(self, token: int | None = None, redraw: bool = True) -> None:
+        if token is not None and token != self._confirm_token:
+            return          # a newer confirmation is showing
+        if not self._confirming:
             return
-        want = rect or region
-        if self.outline.isVisible() and self.outline.region == want:
-            return
-        self.outline.show_region(want)
+        self._confirming = False
+        if redraw:
+            self._update_outline()
 
     # -- HUD tracking ---------------------------------------------------
     def _tracking_range(self) -> int:
-        try:
-            return max(0, int(self.cfg.get("tracking_range", 400)))
-        except (TypeError, ValueError):
-            return 400
+        return parse_tracking_range(self.cfg.get("tracking_range"))
 
     def _on_tracking(self, range_px: int) -> None:
-        self.cfg["tracking_range"] = max(0, int(range_px))
+        self.cfg["tracking_range"] = parse_tracking_range(range_px)
         self.cfg.save()
         self.scan.configure(tracking_range=self.cfg["tracking_range"])
 
-    def _load_anchor(self):
-        """The pin icon saved at the last DRAW REGION, or None (fixed box)."""
+    def _load_anchor(self) -> None:
+        """Hand the pin saved at the last DRAW REGION to the scanner.
+
+        The picture is decoded on the scanner thread (OpenCV is not imported
+        on the GUI thread at start-up); _on_anchor_loaded takes the result.
+        A missing anchor.png clears the stale metadata.
+        """
         meta = self.cfg.get("anchor")
         if not meta or self.demo:
-            return None
+            return
         try:
-            from . import tracking
+            path = config_dir() / str(meta["file"])
+        except (KeyError, TypeError):
+            path = None
+        if path is None or not path.is_file():
+            self.cfg["anchor"] = None
+            self.cfg.save()
+            self._learn_tried = False
+            self.settings.set_region_note(_PIN_MISSING_NOTE)
+            return
+        self.scan.request_anchor(config_dir(), meta)
 
-            return tracking.Anchor.load(config_dir(), meta)
-        except Exception:
-            return None
+    def _on_anchor_loaded(self, meta, result) -> None:
+        if self.cfg.get("anchor") != meta:
+            return          # a new box or pin since the request: stale
+        if isinstance(result, str):
+            self._anchor_failed = True
+            self._learn_tried = False
+            self.settings.set_region_note(_PIN_LOAD_FAILED_NOTE.format(result))
+            return
+        self._anchor_failed = False
+        self.scan.configure(anchor=result)
+
+    def _drop_anchor_if_rescaled(self, recorded: dict, now: dict) -> bool:
+        """The box moved to another monitor rect. The pin is a picture in
+        physical pixels and the HUD scales with the monitor height, so only a
+        height change makes it useless; a moved monitor (or a wider one at
+        the same height) keeps it. Returns whether the pin was dropped."""
+        if int(recorded.get("height", 0)) == int(now.get("height", 0)):
+            return False
+        return self._drop_anchor()
 
     def _drop_anchor(self) -> bool:
         """Turn tracking off: the saved pin is for another resolution.
 
-        Returns whether there was an anchor to drop.
+        Returns whether there was an anchor to drop. The pin is learned again
+        from the next confident signature the fixed box reads.
         """
         had = self.cfg.get("anchor") is not None
         self.cfg["anchor"] = None
         self.cfg.save()
         self.scan.configure(anchor=None)
+        self._learn_tried = False
+        self._anchor_failed = False
         return had
 
-    def _calibrate_anchor(self, region: dict, image=None, origin=None) -> bool:
-        """Find the plate's pin icon left of a freshly drawn box.
+    def _calibrate_anchor(self, region: dict, image=None, origin=None,
+                          quiet: bool = False) -> bool:
+        """Find the plate's pin icon left of the box.
 
         ``image``/``origin`` (the physical top-left of ``image``) are for
         tests; normally the screen around the box is grabbed. Returns whether
-        tracking is on.
+        tracking is on. ``quiet`` (pin learned while reading): a miss changes
+        nothing; a find is saved and noted.
         """
         anchor = None
+        error = ""
+        self._last_calibration_pin = None
         try:
             from . import tracking
 
@@ -1187,14 +1479,40 @@ class OverlayApp(QObject):
             anchor = tracking.find_anchor(image, box)
             if anchor is not None:
                 self.cfg["anchor"] = anchor.save(config_dir())
-        except Exception:
+                match = tracking.locate(image, anchor)
+                if match is not None:
+                    self._last_calibration_pin = pin_rect(match, anchor, *origin)
+        except Exception as exc:
             anchor = None
+            error = f"{type(exc).__name__}: {exc}"
+        if quiet and anchor is None:
+            return False
         if anchor is None:
             self.cfg["anchor"] = None
         self.cfg.save()
+        self._anchor_failed = False
         self.scan.configure(anchor=anchor)
-        self.settings.set_region_note("" if anchor is not None else _NO_PIN_NOTE)
+        if anchor is not None:
+            self.settings.set_region_note(_PIN_LEARNED_NOTE if quiet else "")
+        else:
+            self.settings.set_region_note(
+                _PIN_SEARCH_FAILED_NOTE.format(error) if error else _NO_PIN_NOTE)
         return anchor is not None
+
+    def _maybe_learn_pin(self, top) -> None:
+        """B / g: a box with no pin (drawn before pins existed, or rescaled
+        to a new height) learns it from the first exact signature the fixed
+        box shows (the panel's own rule: a fast single read or identical
+        reads): the plate is on the box at that moment. Once per box."""
+        if self._learn_tried or self.demo or self._paused:
+            return
+        if self.scan.has_anchor or (self.cfg.get("anchor") and not self._anchor_failed):
+            return
+        region = self.cfg["region"]
+        if not is_region_valid(region) or top is None or not top.exact:
+            return
+        self._learn_tried = True
+        self._calibrate_anchor(region, quiet=True)
 
     def _apply_region(self, region: dict, monitor: dict, monitor_name: str) -> None:
         """Store a new box (and its monitor) and point the scanner at it."""
@@ -1205,6 +1523,7 @@ class OverlayApp(QObject):
 
         self.scan.configure(region=region)
         self._tracked_rect = None
+        self._last_locked = None
         self._recent.clear()
         self._last_value = None
         self._last_matches = []
@@ -1215,6 +1534,13 @@ class OverlayApp(QObject):
         self.settings.set_region(region)
         self._refresh_monitor_list(monitor_name)
         self._update_outline()
+        self._update_first_run_attention()
+
+    def _update_first_run_attention(self) -> None:
+        """No box yet (first run): point at ⚙ and DRAW REGION until there is."""
+        need = not self.demo and not is_region_valid(self.cfg["region"])
+        self.nav.set_settings_attention(need)
+        self.settings.set_draw_region_attention(need)
 
     # ------------------------------------------------------------------
     def select_region(self) -> None:
@@ -1242,6 +1568,7 @@ class OverlayApp(QObject):
         screen = display.screen_of_region(region) or QGuiApplication.primaryScreen()
         # The old pin belongs to the old box; a new one is looked for below.
         self.scan.configure(anchor=None)
+        self._learn_tried = True        # DRAW REGION looks for it right away
         self._apply_region(region, display.physical_rect(screen), screen.name())
         self.settings.set_region_note("")
         self.panel.set_scan_idle(f"Scanning {region['width']} × {region['height']} px")
@@ -1249,8 +1576,14 @@ class OverlayApp(QObject):
         if not self.demo:
             # Give Windows a moment to take the picker's dimming off the
             # screen before grabbing the pin around the box.
-            QTimer.singleShot(150, lambda: self._calibrate_anchor(region)
-                              if self.cfg["region"] == region else None)
+            QTimer.singleShot(150, self, lambda: self._calibrate_drawn(region))
+
+    def _calibrate_drawn(self, region: dict, image=None, origin=None) -> None:
+        """DRAW REGION: look for the pin, then show the result for 3 s."""
+        if self.cfg["region"] != region:
+            return          # another box was drawn meanwhile
+        found = self._calibrate_anchor(region, image=image, origin=origin)
+        self._confirm_calibration(found, region, self._last_calibration_pin)
 
     def _scan_sig_reset(self) -> None:
         self.panel.reset_cache()
@@ -1306,10 +1639,16 @@ class OverlayApp(QObject):
                 note = f"closest {near[0].name} ×{near[0].count} ({near[0].target:,})"
         self.panel.set_scan(value, res.confidence, "stable", matches, note)
 
+        if self._track_info.get("state") == "locked" and self._lock_value != value:
+            self._lock_value = value
+            self._update_outline()          # the label shows the value
+
         # Announce only exact signatures: a fuzzy match is usually an OCR
         # misread, and saying the wrong ore is worse than saying nothing.
         if top is not None and top.exact:
             self._announce_signature(value, top)
+        # Here the value is shown (fast single read or identical reads).
+        self._maybe_learn_pin(top)
 
     def _announce_signature(self, value: int, top) -> None:
         """Speak a locked rock once, not on every read while flying at it.
@@ -1358,10 +1697,31 @@ class OverlayApp(QObject):
             self._spoken_value = None
 
     # ------------------------------------------------------------------
+    def _refresh_data(self) -> None:
+        """Refresh the scmdb signature cache in the background (once a day);
+        on_done runs on the worker thread, so it only emits a signal."""
+        try:
+            self.data.refresh_in_background(self.data_refreshed.emit)
+        except Exception:
+            pass        # the bundled / cached data keeps working
+
+    def _on_data_refreshed(self, changed: bool) -> None:
+        if changed:
+            self._reload_data()
+
+    def _show_data_version(self) -> None:
+        """Settings: where the signatures come from ("scmdb 4.10.2 live" /
+        "bundled 4.10.2"), and why the bundled file is used when it fell back."""
+        text = getattr(self.data, "source_text", "") or str(self.data.version)
+        reason = getattr(self.data, "fallback_reason", "")
+        if reason:
+            text += f" (scmdb unavailable: {reason[:60]})"
+        self.settings.set_version(text, len(self.data.ores))
+
     def _reload_data(self) -> None:
         try:
             self.data.reload()
-            self.settings.set_version(self.data.version, len(self.data.ores))
+            self._show_data_version()
             self.panel.reset_cache()
             self.panel.set_scan_idle(f"Signature data reloaded · {self.data.version}")
         except Exception as exc:
@@ -1455,7 +1815,7 @@ class OverlayApp(QObject):
         try:
             updater.run_installer(Path(setup_path))
         except Exception as exc:          # never quit without a hand-off
-            self.settings.update_hint.setText(f"Update failed: {exc}")
+            self.settings.install_failed(f"Update failed: {exc}")
             return
         self.quit()
 
@@ -1468,6 +1828,8 @@ class OverlayApp(QObject):
         self.hotkeys.stop()
         self.hotkeys.wait(800)
         self.hauling.shutdown()
+        # Cancel an UPDATE download in progress and wait for its thread.
+        self.settings.shutdown()
         self.voice.stop()
         self.settings.hide()
         self.tray.hide()

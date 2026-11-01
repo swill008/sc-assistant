@@ -12,9 +12,10 @@ name: Release Windows EXE
 #
 # The job refuses to publish when the tag does not match VERSION in
 # app/version.py, so a release can never advertise the wrong build number.
-# The release text is that version's section of CHANGES.md, followed by
-# GitHub's generated notes. Two downloads are published: the standalone zip
-# (unzip and run) and CitizenAssistant-<version>-Setup.exe (installer).
+# The release text is release-notes/<version>.md plus "How to install"
+# (tools/release_body.py), followed by GitHub's generated notes. Two
+# downloads are published: the standalone zip (unzip and run) and
+# CitizenAssistant-<version>-Setup.exe (installer).
 
 on:
   push:
@@ -53,7 +54,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements-lock.txt pyinstaller
+          python -m pip install -r requirements-lock.txt pyinstaller pyyaml
 
       - name: Check the tag matches the build
         shell: pwsh
@@ -79,21 +80,17 @@ jobs:
           python -m tools.combat_selftest
           python -m tools.blueprint_selftest
 
-      - name: Release notes from CHANGES.md
-        shell: pwsh
-        run: |
-          $ver = "${{ env.TAG }}"
-          $lines = Get-Content CHANGES.md -Encoding utf8
-          $start = [array]::FindIndex($lines, [Predicate[string]]{ param($l) $l -match "^## $([regex]::Escape($ver))\b" })
-          if ($start -lt 0) {
-            Set-Content release_notes.md "" -Encoding utf8
-            Write-Host "No CHANGES.md section for $ver"
-          } else {
-            $end = [array]::FindIndex($lines, $start + 1, [Predicate[string]]{ param($l) $l -match '^## ' })
-            if ($end -lt 0) { $end = $lines.Count }
-            $lines[($start + 1)..($end - 1)] | Set-Content release_notes.md -Encoding utf8
-            Write-Host "Release notes: CHANGES.md lines $($start + 2)-$end"
-          }
+      # RELEASE_CHECK=1 also fails when app/version.py's VERSION has no
+      # release-notes/<version>.md.
+      - name: Release notes check
+        run: python tools/release_notes_selftest.py
+        env:
+          RELEASE_CHECK: "1"
+
+      # Stops the release before the build when release-notes/<version>.md is
+      # missing or its first line isn't "## What's new in <version>".
+      - name: Release notes
+        run: python tools/release_body.py "${{ env.TAG }}" --out release_notes.md
 
       - name: Build
         run: pyinstaller --noconfirm --clean citizen-assistant.spec

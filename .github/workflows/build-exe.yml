@@ -28,7 +28,7 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          python -m pip install -r requirements-lock.txt pyinstaller
+          python -m pip install -r requirements-lock.txt pyinstaller pyyaml
 
       - name: Import check
         run: python -c "import app.main; print('import ok')"
@@ -42,6 +42,11 @@ jobs:
           python -m tools.refinery_selftest
           python -m tools.combat_selftest
           python -m tools.blueprint_selftest
+
+      # Release notes tooling and the release workflow's notes step. The check
+      # that app/version.py has a notes file runs only in the release workflow.
+      - name: Release notes check
+        run: python tools/release_notes_selftest.py
 
       - name: Build
         run: pyinstaller --noconfirm --clean citizen-assistant.spec

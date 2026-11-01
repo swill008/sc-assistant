@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QLineEdit, QPushButton,
 
 from . import theme
 from ..marketplace import search_url
+from .pin_button import PinButton
 
 WIDTH = 400
 HEIGHT = 150
@@ -27,6 +28,7 @@ AMBER = QColor(255, 176, 32)
 
 class UexPanel(QWidget):
     close_requested = Signal()
+    pin_toggled = Signal(bool)
 
     def __init__(self, parent=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint
@@ -38,6 +40,14 @@ class UexPanel(QWidget):
 
         self._drag_from = None
         self._build()
+
+    # -- window pin ----------------------------------------------------
+    def set_pinned(self, pinned: bool) -> None:
+        self.pin_btn.set_pinned(pinned)
+
+    @property
+    def pinned(self) -> bool:
+        return self.pin_btn.isChecked()
 
     # ------------------------------------------------------------------
     def _build(self) -> None:
@@ -71,7 +81,11 @@ class UexPanel(QWidget):
 
         head.addWidget(title)
         head.addStretch(1)
+        self.pin_btn = PinButton(self)
+        self.pin_btn.pin_toggled.connect(self.pin_toggled.emit)
+
         head.addWidget(self.status)
+        head.addWidget(self.pin_btn)
         head.addWidget(close)
         root.addLayout(head)
 

@@ -5,14 +5,13 @@ where the player left loot or supplies so those stashes can be found again.
 """
 from __future__ import annotations
 
-import json
-import os
 import time
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
 
 from .config import config_dir
+from .safe_store import LOAD_FAILED, load_json, write_json
 
 
 @dataclass
@@ -30,24 +29,27 @@ class InventoryStore:
         self.path = Path(path) if path is not None else config_dir() / "inventory.json"
         self.notes: list[InventoryNote] = []
         self.error = ""
+        # True when inventory.json exists but could not be read: the store
+        # then refuses to save, so the real notes are never replaced.
+        self.load_failed = False
         self.load()
 
     # ------------------------------------------------------------------
     def load(self) -> None:
         self.notes = []
         self.error = ""
-        try:
-            with open(self.path, "r", encoding="utf-8") as fh:
-                raw = json.load(fh)
-        except FileNotFoundError:
+        self.load_failed = False
+        loaded = load_json(self.path, default={"notes": []})
+        if loaded.value is LOAD_FAILED:
+            self.load_failed = True
+            self.error = f"NOT LOADED: {loaded.error}"
             return
-        except (OSError, json.JSONDecodeError) as exc:
-            self.error = f"Could not read inventory notes: {exc}"
-            return
+        raw = loaded.value
 
         rows = raw.get("notes") if isinstance(raw, dict) else raw
         if not isinstance(rows, list):
-            self.error = "Inventory notes file has an unexpected format"
+            self.load_failed = True
+            self.error = "NOT LOADED: inventory.json has an unexpected format"
             return
 
         seen: set[str] = set()
@@ -77,6 +79,9 @@ class InventoryStore:
         self.notes.sort(key=lambda note: -note.updated)
 
     def save(self) -> bool:
+        if self.load_failed:
+            # Keep the load error visible; never write over an unread file.
+            return False
         payload = {
             "version": 1,
             "notes": [
@@ -91,12 +96,8 @@ class InventoryStore:
                 for note in self.notes
             ],
         }
-        tmp = self.path.with_suffix(".tmp")
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            with open(tmp, "w", encoding="utf-8") as fh:
-                json.dump(payload, fh, indent=2)
-            os.replace(tmp, self.path)
+            write_json(self.path, payload)
         except OSError as exc:
             self.error = f"Could not save inventory notes: {exc}"
             return False
@@ -111,7 +112,9 @@ class InventoryStore:
         return next((note for note in self.notes if note.id == note_id), None)
 
     def add(self, location: str, item: str, quantity: str = "",
-            note: str = "") -> InventoryNote:
+            note: str = "") -> InventoryNote | None:
+        if self.load_failed:
+            return None
         entry = InventoryNote(
             id=uuid.uuid4().hex,
             location=location.strip(),
@@ -126,6 +129,8 @@ class InventoryStore:
 
     def update(self, note_id: str, location: str, item: str,
                quantity: str = "", note: str = "") -> InventoryNote | None:
+        if self.load_failed:
+            return None
         entry = self.get(note_id)
         if entry is None:
             return None
@@ -138,6 +143,8 @@ class InventoryStore:
         return entry
 
     def delete(self, note_id: str) -> bool:
+        if self.load_failed:
+            return False
         before = len(self.notes)
         self.notes = [note for note in self.notes if note.id != note_id]
         if len(self.notes) == before:

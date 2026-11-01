@@ -1,14 +1,21 @@
 """Ore finder: where to mine a given ore, live from scminer.rocks."""
 from __future__ import annotations
 
-from PySide6.QtCore import QRectF, Qt, QThread, Signal
+import time
+
+from PySide6.QtCore import QRectF, Qt, QThread, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QGuiApplication, QPainter, QPen
 from PySide6.QtWidgets import (QButtonGroup, QFrame, QHBoxLayout, QLabel,
                                QPushButton, QScrollArea, QStackedWidget,
                                QVBoxLayout, QWidget)
 
+from .. import orefinder
 from ..orefinder import Hotspot, Ore, LiveData
 from . import theme
+from .data_age import age_text, is_stale
+from .pin_button import PinButton
+
+AGE_REFRESH_MS = 30 * 1000   # re-word "synced N min ago" while visible
 
 WIDTH = 430
 HEIGHT = 560
@@ -164,6 +171,7 @@ class _SpotRow(QWidget):
 
 class OreFinderPanel(QWidget):
     close_requested = Signal()
+    pin_toggled = Signal(bool)
 
     def __init__(self, data: LiveData, parent=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint
@@ -181,6 +189,10 @@ class OreFinderPanel(QWidget):
         self._rows: list[_OreRow] = []
         self._workers: dict[str, _Fetch] = {}
         self._drag_from = None
+        self._clock = time.time
+        self._age_timer = QTimer(self)
+        self._age_timer.setInterval(AGE_REFRESH_MS)
+        self._age_timer.timeout.connect(self._update_footer)
 
         self._build()
         self._rebuild_list()
@@ -231,7 +243,11 @@ class OreFinderPanel(QWidget):
         """))
         close.clicked.connect(self.close_requested.emit)
 
+        self.pin_btn = PinButton(self)
+        self.pin_btn.pin_toggled.connect(self.pin_toggled.emit)
+
         head.addWidget(self.refresh_btn)
+        head.addWidget(self.pin_btn)
         head.addWidget(close)
         root.addLayout(head)
 
@@ -560,18 +576,45 @@ class OreFinderPanel(QWidget):
         parts = ["SCMINER.ROCKS"]
         if data.patch:
             parts.append(f"PATCH {data.patch}")
+        synced_at = float(getattr(data, "index_at", 0.0) or 0.0)
+        now = self._clock()
         if data.loaded:
-            parts.append(data.synced_text())
+            age = age_text(synced_at, now)
+            parts.append(("SYNCED " + age).upper() if age else "NOT SYNCED")
         self.footer.setText("  ·  ".join(parts))
 
         if data.error:
             self._set_status("OFFLINE", theme.AMBER.name())
         elif self._workers:
             self._set_status("SYNCING", theme.AMBER.name())
+        elif data.loaded and is_stale(synced_at, self._index_ttl(), now):
+            self._set_status("STALE", theme.AMBER.name())
         elif data.loaded:
             self._set_status("LIVE", theme.GOOD.name())
         else:
             self._set_status("IDLE")
+
+    @staticmethod
+    def _index_ttl() -> float:
+        """The ore list's cache lifetime, as orefinder.needs_index uses it."""
+        return float(getattr(orefinder, "INDEX_MAX_AGE", 15 * 60))
+
+    # -- window pin ----------------------------------------------------
+    def set_pinned(self, pinned: bool) -> None:
+        self.pin_btn.set_pinned(pinned)
+
+    @property
+    def pinned(self) -> bool:
+        return self.pin_btn.isChecked()
+
+    def showEvent(self, event):  # noqa: N802
+        super().showEvent(event)
+        self._age_timer.start()
+        self._update_footer()
+
+    def hideEvent(self, event):  # noqa: N802
+        self._age_timer.stop()
+        super().hideEvent(event)
 
     # ------------------------------------------------------------------
     def refresh(self) -> None:

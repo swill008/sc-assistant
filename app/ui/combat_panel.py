@@ -1,6 +1,7 @@
 """Live combat feed rendered from the headless Game.log tracker."""
 from __future__ import annotations
 
+import os
 import time
 from collections import deque
 
@@ -12,6 +13,8 @@ from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QPushButton,
 
 from ..combat import CombatEvent, CombatTracker
 from . import theme
+from .data_age import age_text
+from .pin_button import PinButton
 
 WIDTH = 500
 HEIGHT = 600
@@ -23,6 +26,10 @@ GREEN = QColor(94, 214, 138)
 AMBER = QColor(255, 176, 32)
 RED = QColor(232, 106, 106)
 BLUE = QColor(79, 209, 224)
+
+# The feed is "LIVE" only while Game.log is actually being written.
+LIVE_WINDOW = 120.0          # seconds since the last Game.log line / event
+LOG_STAT_INTERVAL = 5.0      # seconds between Game.log mtime checks
 
 
 def _clock(timestamp: float) -> str:
@@ -198,6 +205,7 @@ class _CombatRow(QWidget):
 
 class CombatPanel(QWidget):
     close_requested = Signal()
+    pin_toggled = Signal(bool)
 
     def __init__(self, tracker: CombatTracker | None = None, parent=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint
@@ -214,6 +222,8 @@ class CombatPanel(QWidget):
         self._drag_from = None
         self._status_key: tuple[str, str, str] | None = None
         self._footer_text = ""
+        self._log_mtime: tuple[str, float, float] = ("", 0.0, 0.0)  # path, mtime, checked
+        self._clock = time.time
 
         self._build()
         self._rebuild_feed()
@@ -257,6 +267,9 @@ class CombatPanel(QWidget):
             QPushButton:hover { color: #ffd9d9; }
         """))
         close.clicked.connect(self.close_requested.emit)
+        self.pin_btn = PinButton(self)
+        self.pin_btn.pin_toggled.connect(self.pin_toggled.emit)
+        head.addWidget(self.pin_btn)
         head.addWidget(close)
         root.addLayout(head)
 
@@ -408,10 +421,44 @@ class CombatPanel(QWidget):
         if self._tracker.error:
             self._update_status("ERROR", RED, self._tracker.error)
         elif path:
-            self._update_status("LIVE", GREEN, str(path))
+            last = self._last_activity(stats, path)
+            now = self._clock()
+            if last and now - last <= LIVE_WINDOW:
+                self._update_status("LIVE", GREEN, str(path))
+            elif last:
+                self._update_status(
+                    f"IDLE · last event {age_text(last, now)}", AMBER,
+                    f"No new Game.log lines for a while.\n{path}")
+            else:
+                self._update_status("IDLE", AMBER,
+                                    f"No Game.log lines yet.\n{path}")
         else:
             self._update_status("WAITING", AMBER, "Looking for Game.log…")
         self._update_footer()
+
+    def _last_activity(self, stats, path) -> float:
+        """Newest of: the last tracked event and Game.log's write time (the
+        game writes the log continuously while running). The file is
+        stat'ed at most every LOG_STAT_INTERVAL seconds."""
+        event_at = float(getattr(stats, "last_event_at", 0.0) or 0.0)
+        key = str(path)
+        cached_path, mtime, checked = self._log_mtime
+        now = self._clock()
+        if key != cached_path or now - checked >= LOG_STAT_INTERVAL:
+            try:
+                mtime = os.stat(key).st_mtime
+            except OSError:
+                mtime = 0.0
+            self._log_mtime = (key, mtime, now)
+        return max(event_at, mtime)
+
+    # -- window pin ----------------------------------------------------
+    def set_pinned(self, pinned: bool) -> None:
+        self.pin_btn.set_pinned(pinned)
+
+    @property
+    def pinned(self) -> bool:
+        return self.pin_btn.isChecked()
 
     def _update_status(self, text: str, color: QColor, tooltip: str) -> None:
         key = (text, color.name(), tooltip)

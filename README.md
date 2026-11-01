@@ -113,9 +113,12 @@ running, it puts the old version back and says so, so the version that worked
 still starts. (`installer/citizen_assistant.iss`, same design as the
 Gremlin-Platforms installer.)
 
+An installed copy can also update itself from `⚙` → **UPDATE**, which
+downloads the new Setup and runs it (see *Settings window*).
+
 **Updating the standalone.** Unzip the new release to a new folder (or over the
 old one after quitting it). A running `.exe` cannot replace its own files, so
-the in-app **UPDATE** only works for the `install.bat` route.
+in a standalone copy **UPDATE** only opens the Releases page.
 
 Both are unsigned, so SmartScreen warns on first run — choose **More info →
 Run anyway**.
@@ -126,8 +129,10 @@ workflow*, or `gh workflow run release.yml -f tag=v1.2.17`); a fork does not
 run push-triggered workflows until Actions has been enabled for it once, and a
 manual run works regardless. The job fails if the tag does not match `VERSION`
 in `app/version.py`, runs the headless self-tests before building, and uses
-that version's section of `CHANGES.md` as the release text (followed by
-GitHub's generated notes). It publishes the standalone zip and the installer.
+`release-notes/<version>.md` plus a "How to install" section as the release
+text (`tools/release_body.py`, followed by GitHub's generated notes); it stops
+before building when that file is missing or does not start with
+`## What's new in <version>`. It publishes the standalone zip and the installer.
 `tools.scan_selftest` and `tools.scan_e2e_selftest` need real monitors, so run
 them locally before tagging.
 Pushes to `main` also build both under **Actions** as a test artifact, but those
@@ -275,14 +280,10 @@ load on the scanner thread.
 | Key / control | Action |
 | --- | --- |
 | **F3** | Show / hide the nav bar |
-| **F4** | Hide everything (panic key) |
+| **F4** | Hide everything except pinned panels (panic key) |
 | **QUIT** on the nav bar | Quit the overlay: click once to arm (it turns red and reads `QUIT?`), again within 2.5 s to quit. `✕` only hides it. |
-
-F3 and F4 are delivered two ways: `RegisterHotKey` for the normal case, and a
-25 ms `GetAsyncKeyState` poll for games that stop delivering hotkeys while
-exclusive fullscreen owns the display. If they still do nothing in a particular
-game, run it borderless / windowed fullscreen rather than exclusive.
 | drag a panel header | Move that window |
+| push-pin next to a panel's `✕` | Pin the panel: it stays on screen when F4 or the nav bar's `✕` hides everything else |
 | `⚙` on the nav bar | Open settings |
 | `MINING` on the nav bar | Show / hide the scanner |
 | `ORE FINDER` on the nav bar | Show / hide ore locations |
@@ -295,8 +296,17 @@ game, run it borderless / windowed fullscreen rather than exclusive.
 > On macOS, F3/F4 are application shortcuts — they work while one of the
 > overlay windows has focus. The tray menu always works.
 
+F3 and F4 are the defaults. `⚙` → *Hotkeys* changes them and can give each tool
+its own key, which toggles it like its nav-bar button (see *Settings window*).
+The keys are delivered two ways: `RegisterHotKey` for the normal case, and a
+25 ms `GetAsyncKeyState` poll for games that stop delivering hotkeys while
+exclusive fullscreen owns the display. If they still do nothing in a particular
+game, run it borderless / windowed fullscreen rather than exclusive.
+
 The nav bar remembers whether it was open and the scanner remembers where you
-dragged it.
+dragged it. Pinned panels are remembered too (`pinned_windows` in
+`config.json`). A pinned scanner keeps reading while everything else is
+hidden, and keeps its SHOW BOX outline.
 
 The **combat tracker** runs automatically in the background and feeds the
 `COMBAT` tab. The tracker itself stays headless; the panel renders events from
@@ -311,12 +321,25 @@ The scanner needs to know where the signature number appears on your screen.
 2. In `⚙` → *Signature capture region*, check **MONITOR** shows the monitor the
    game is on (it lists every monitor with its real resolution and Windows
    scaling, read from Windows — nothing to type in).
-3. Click **DRAW REGION**. The picker opens on that monitor.
+3. Click **DRAW REGION**. The picker opens on that monitor. On the first run,
+   before any box exists, `⚙` on the nav bar and DRAW REGION pulse to show
+   where to start.
 4. Drag a box **tightly around the digits only** (a little padding is fine, but
-   do not include the word "SIGNATURE" or the units).
-5. Optional: **SHOW BOX** (in *Scanning*) draws the box on screen so you can
+   do not include the word "SIGNATURE" or the units). Releasing the mouse
+   confirms the box. Right-click or Esc cancels.
+5. For 3 seconds the result is drawn on screen, even with SHOW BOX off:
+   `PIN FOUND — TRACKING ON` around the pin and the digits, or
+   `NO PIN FOUND — FIXED BOX` (see *tracking* below).
+6. Optional: **SHOW BOX** (in *Scanning*) draws the box on screen so you can
    see exactly where the scanner reads; **SHOW PREVIEW** shows the pixels it
    reads. Turn SHOW BOX off again when you are done (see *Game performance*).
+
+**Fine-tuning the box.** Hold Ctrl while releasing the drag and the box stays
+on screen instead of being used at once: the arrow keys move it 1 physical
+pixel (Shift: 10), Ctrl+arrows resize it from the right and bottom edges,
+Enter confirms it, and Esc or right-click cancels. A new drag starts over. On
+monitors at 200% scale or more a magnifier follows the cursor, showing the
+screen as it was when the picker opened, one physical pixel per cell.
 
 A good box is roughly 200 × 50 physical pixels at 1440p; on a 5120 × 2160
 (5K2K) screen the signature digits themselves are only about 60 × 26, so a box
@@ -347,8 +370,11 @@ from the screen centre and both are scaled by the height ratio
 proportional scaling. Check SHOW BOX or SHOW PREVIEW afterwards, and press
 **DRAW REGION** if the HUD sits somewhere else. Changing only Windows scaling needs
 nothing: the box is stored in physical pixels, which scaling does not change.
-A box moved this way turns HUD tracking off (the saved pin is for the old
-resolution); press **DRAW REGION** again to turn it back on.
+If the monitor's height changed, the saved pin is dropped (the HUD, and the
+pin with it, is drawn at a different size) and HUD tracking turns off; it
+turns back on by itself the next time the box reads a signature (see below),
+or press **DRAW REGION**. A monitor that only moved, or a wider one at the same
+height, keeps its pin.
 
 **Following the HUD as it sways (tracking).** In flight Star Citizen's HUD
 moves with the ship's "physics" — on a 5120×2160 screen the signature plate
@@ -366,8 +392,19 @@ ship, whatever the rest of the HUD looks like. **TRACKING** in *Scanning* sets
 how far it searches (default ±400 px across and ±300 px up and down on a
 2160-px-high screen, scaled for other heights); `OFF` reads the fixed box as
 before. If DRAW REGION finds no pin next to the box, an amber note says tracking is
-off — press DRAW REGION again with the readout showing. With **SHOW BOX** on, the
-outline follows the digits being read.
+off — press DRAW REGION again with the readout showing.
+
+A box without a saved pin (drawn with a build from before pins existed, or
+after a height change dropped it) learns the pin by itself, once, from the
+first exact signature the fixed box reads: the plate is on the box at that
+moment. The note under *Signature capture region* then reads
+`Pin learned from the scan: tracking is on.`
+
+The chip in the scanner's header always shows the state: `TRACKING` (cyan)
+while the pin is found, `SEARCHING` (amber) while it is lost, and `FIXED BOX`
+(grey) when tracking is off. With **SHOW BOX** on, the outline goes around the
+pin and the digits being read, with a label above them: `TRACKING ✓  42,000`,
+`SEARCHING…` (drawn where the plate was last seen), or `FIXED BOX`.
 
 The scanner reads that box **4 times a second** by default (`⚙` → *Scanning* →
 **READS / S**, 1–8) and ignores frames that have not changed. A
@@ -377,14 +414,21 @@ reads still require two identical results before they are shown.
 ## Reading the scanner
 
 ```
-● MINING SCANNER              LOCKED
+● MINING SCANNER     TRACKING  LOCKED
 SIGNATURE  10,710             73% MATCH
 BORASE                            ×3
 EPIC · Gold / Bexalite 5-10%
 ```
 
+- **TRACKING** — the HUD-tracking chip (`TRACKING`, `SEARCHING` or
+  `FIXED BOX`; see *Calibrating the scanner*).
 - **BORASE ×3** — the mineral and how many deposits are in the rock
   (10,710 = 3 × 3,570).
+- Ground deposits only tell you their size, so the detail line lists the
+  minerals that can give that reading: `HAND MINING · Aphorite / Carinite / …`
+  for 3,000-type readings and `ROC · Agricium / Aluminum / …` for 4,000-type
+  readings. The line is cut to the panel width; the tooltip lists them all.
+  Which one it is depends on where you are.
 - **DEBRIS ×2** — salvage: exterior hull panels and scrap metal from wrecks
   read as clean multiples of 2,000 (2,000, 4,000, 6,000, 8,000 …). A large
   wreck goes well past a 10-rock cluster, so `22,000` is `DEBRIS ×11` rather
@@ -506,7 +550,9 @@ repository yet; that is deliberately left to the host UI.
 The list is one request, and each ore page is fetched the first time you open
 it (about 0.5 s). The `↻` button re-syncs. If the site cannot be reached the
 panel keeps working from the last snapshot and shows `OFFLINE` plus the cache
-time, so it never goes blank mid-flight.
+time, so it never goes blank mid-flight. The footer says how old the list is
+(`SYNCED 5 MIN AGO`, or `NOT SYNCED`), and the header turns to an amber `STALE`
+once the list is older than its 15-minute lifetime.
 
 Data belongs to [SCMINER](https://scminer.rocks) and is fetched on demand for
 personal use; the footer shows the patch number the data came from.
@@ -520,7 +566,9 @@ without resetting the session stats. The feed keeps the newest events first and
 does not write anything to disk. It shows the victim/attacker pair exactly as
 logged; it does not yet know which character name is yours, so it does not label
 one side as “you”. `DOWNED` means a ship at `Soft-Dead`; FPS knockdown is not a
-separate state in the current parser.
+separate state in the current parser. The header says `LIVE` only while
+`Game.log` has been written in the last 2 minutes; otherwise it says
+`IDLE · last event 5 min ago` (or `IDLE` before the first line).
 
 Under the hood, `app/combat.py` and `app/combat_log.py` stay Qt-free. The
 tracker reads `Game.log` asynchronously, updates one target state per ship or
@@ -659,7 +707,12 @@ routes, buyers, spawn rules, prices — without leaving the game.
 - The status chip reads `SAVED`, `SAVING…`, or `NOT SAVED` with the reason.
 - Stored as plain UTF-8 at `%APPDATA%\Citizen Assistant\notes.txt`, so it can be
   opened, edited or backed up with any text editor. Writes go through a
-  temporary file and a rename, so a crash cannot leave a half-written note.
+  temporary file and a rename, so a crash cannot leave a half-written note,
+  and the previous version is kept as `notes.txt.bak`.
+- If `notes.txt` cannot be read (another program has it locked, for example),
+  the chip reads `NOT LOADED`, the footer gives the reason and the editor is
+  read-only, so nothing is ever saved over the real notes. Close the other
+  program, then reopen NOTES.
 - The footer shows the character count and the file name.
 
 ## HAULING
@@ -837,6 +890,9 @@ snapshot is generated from
 from GitHub when available. Routes — including the combined top-routes cache —
 cache for 15 minutes, commodities for 12 hours, terminals for 7 days and
 contracts for 24 hours; the last good data is kept when a source is unreachable.
+The panel says how old the data on screen is (`UPDATED 5 MIN AGO`) and shows
+`LIVE` while it is within its cache lifetime; past it (for example while UEX
+cannot be reached) the status turns to an amber `STALE`.
 
 HAULING only makes read-only HTTP requests and reads local JSON. The workflow,
 combat and blueprint/inventory trackers additionally tail Star Citizen's own
@@ -886,7 +942,9 @@ first; **LOCATION** groups notes by where they are stored.
 
 Everything is stored locally in `%APPDATA%\Citizen Assistant\inventory.json` (or
 `~/Library/Application Support/Citizen Assistant/inventory.json` on macOS). Nothing is
-sent anywhere. The panel can take keyboard focus, so F3/F4 still work as
+sent anywhere. If the file cannot be read, the panel shows `NOT LOADED` with
+the reason and does not allow adding, editing or deleting notes until it can,
+so the file on disk is never replaced. The panel can take keyboard focus, so F3/F4 still work as
 application shortcuts while you type.
 
 ## Settings window
@@ -912,36 +970,62 @@ application shortcuts while you type.
   (each entry shows the monitor's real resolution and Windows scaling, e.g.
   `LG ULTRAGEAR+ · 5120×2160 · 150%`); **DRAW REGION** re-calibrates on
   that monitor. An amber note appears when the box was moved because the
-  monitor changed (see *Calibrating the scanner*).
+  monitor changed, and it says what happened to tracking (see *Calibrating
+  the scanner*).
 - **READS / S** — how many times a second the box is read, 1–8 (default 4).
   Applies immediately and is saved as `poll_ms`. Fewer reads use less CPU; more
   reads lock onto a new rock sooner.
 - **TRACKING** — how far the scanner looks for the plate's pin around the box
   as the HUD sways, `OFF` or ±50 to ±800 px (default ±400 across, ±300 up and
-  down, for a 2160-px-high screen; scaled for others). Applies immediately and
-  is saved as `tracking_range`. Needs a pin saved by **DRAW REGION** (see
-  *Calibrating the scanner*).
+  down, for a 2160-px-high screen; scaled for others). The slider moves in
+  50 px steps; the label follows a drag, and the new range is applied and
+  saved as `tracking_range` once, when the slider is released. Needs a pin
+  saved by **DRAW REGION** or learned from a scan (see *Calibrating the
+  scanner*).
 - **PAUSE / RESUME** — stop OCR without closing anything.
 - **SHOW PREVIEW** — show the raw pixels being read; useful for checking the box.
 - **SHOW BOX** — draw a thin outline on screen around the box being read
-  (with tracking on, around the digits it has found). It sits just outside the
+  (with tracking on, around the pin and the digits it has found, with a
+  `TRACKING ✓` / `SEARCHING…` / `FIXED BOX` label). It sits just outside the
   box, lets clicks through, and is always hidden from
   screen capture, so neither the scanner nor screenshots ever see it. F4 hides
   it with everything else. Off by default (`show_region_outline`): like any
   window over the game it can cost frames, so use it to check the box, then
   turn it off.
 - **VOICE** — enable/disable spoken announcements and set their volume (see *Voice* above).
-- **RELOAD** — re-read `app/data/signatures.json` without restarting.
+- **HOTKEYS** — one row per key: **SHOW BAR** (default F3), **HIDE ALL**
+  (default F4), then one per tool (MINING, ORE FINDER, HAULING, UEX,
+  INVENTORY, COMBAT, NOTES; none by default). Click a key button, then press
+  the new key; Esc sets no key. A key already used by another row is refused
+  with a note. The keys apply at once, without a restart, and are saved as
+  `hotkey_toggle_nav`, `hotkey_panic` and `hotkey_tools`.
+- **SIGNATURE DATA** — where the signature table came from, for example
+  `Signatures: scmdb 4.10.2 live · 26 ores`, or `bundled 4.10.2` with the
+  reason scmdb was not used; **RELOAD** re-reads it without restarting (see
+  *Signature data*).
 - **UPDATE** — last section in the window: the installed build and a **CHECK**
-  button. Checking reads `app/version.py` from this fork,
-  `swill008/citizen-assistant`, and compares it with this copy; when something
-  newer exists the button becomes **UPDATE**, which
-  downloads the `main` branch archive and copies `app/`, `tools/`, the launchers
-  and the requirements over this folder, then restarts the overlay. Settings,
-  notes and logs live in `%APPDATA%\Citizen Assistant` and are never touched, and
-  `opencode.jsonc` is deliberately left alone. It does not work for the prebuilt
-  EXE — a running `.exe` cannot replace itself, so that build is updated by
-  downloading a new copy.
+  button. When something newer exists the button becomes **UPDATE**, and
+  "What's new in vX" from that release's notes is shown under it (plain text
+  only). What UPDATE does depends on the install:
+  - **Installed EXE** (from the Setup): CHECK reads the latest GitHub release
+    of this fork, `swill008/citizen-assistant`. UPDATE downloads that
+    release's Setup, checks its size and its SHA-256 digest against GitHub's,
+    and names the version it actually downloaded (it can be newer than the one
+    CHECK saw). Citizen Assistant then closes, Setup installs silently and
+    starts the new version. The hand-off waits for the old copy to exit with
+    no time limit; if Setup stops without installing (exit code 1 or 2), the
+    old version is started again.
+  - **Standalone EXE** (unzipped): UPDATE opens the Releases page; download
+    the new zip.
+  - **Source install** (`install.bat`): CHECK reads `app/version.py` from this
+    fork; UPDATE downloads the `main` branch archive and copies `app/`,
+    `tools/`, the launchers and the requirements over this folder, then
+    restarts the overlay. `opencode.jsonc` is deliberately left alone.
+
+  Settings, notes and logs live in `%APPDATA%\Citizen Assistant` and are never
+  touched. Quitting during a download cancels it.
+
+The settings window has a push-pin too, like every panel.
 
 Advanced scan tuning lives in `config.json`: `poll_ms` controls the capture
 cadence (default `250`, i.e. 4 reads a second; **READS / S** sets it, and
@@ -955,9 +1039,30 @@ single-read lock, and `fast_confidence` sets its confidence threshold (default
 Settings are saved to `%APPDATA%\Citizen Assistant\config.json`, next to the ore-location
 cache (`where_to_mine.json`), inventory notes (`inventory.json`), the planner
 route cache (`routes_cache.json`) and the workflow caches (`active_run.json`,
-`workflow_wallet.json`). Panel positions (mining, ore finder, HAULING, UEX,
-INVENTORY, COMBAT, NOTES) and the nav bar's visibility are also stored in
-`config.json` when the app quits normally, so they reopen where you left them.
+`workflow_wallet.json`), the scmdb signature cache (`signatures_scmdb.json`)
+and the saved pin picture (`anchor.png`). Panel positions (mining, ore finder,
+HAULING, UEX, INVENTORY, COMBAT, NOTES), pinned panels (`pinned_windows`) and
+the nav bar's visibility are also stored in `config.json` when the app quits
+normally, so they reopen where you left them.
+
+**Your own files are never replaced by a failed read.** `notes.txt`,
+`inventory.json`, the blueprint registry (`unlocked_blueprints.json`) and the
+ore-finder cache all go through one shared store (`app/safe_store.py`):
+
+- A file that exists but cannot be read (locked by an editor, a backup tool or
+  a virus scanner, no permission, or broken JSON) is reported as not loaded,
+  never treated as empty. NOTES and INVENTORY show `NOT LOADED` and do not
+  save; the blueprint registry is not saved for that session.
+- Broken JSON is copied once to `<name>.bad-<date-time>` so it can be
+  recovered by hand; the original stays where it is.
+- Every save writes a temporary file and renames it over the old one, and the
+  previous file is kept as `<name>.bak`.
+- A Windows file lock is retried 5 times, 0.1 s apart, before a read or save
+  gives up.
+- Files are read as UTF-8 (with or without a BOM), and a file saved in
+  Windows-1252 by another editor still opens.
+- The ore-finder cache is only a copy of the website, so a bad file or a bad
+  entry is skipped and the next sync rewrites it.
 
 > If the venv was built from the Microsoft Store build of Python, Windows
 > redirects those writes into the app package container, so the files live under
@@ -1016,8 +1121,28 @@ something is.
 
 ## Signature data
 
-`app/data/signatures.json` holds the mineral table (game 4.10.2, source:
-<https://scminer.rocks/data/signature-scanner>). Each entry is a base signature:
+The signature table comes from [scmdb.net](https://scmdb.net)'s game data by
+default, with the bundled file as the fallback (`app/sigsource.py`,
+`app/mining.py`):
+
+- In a background thread, at most once a day, the app reads
+  `https://scmdb.net/data/versions.json`, picks the newest build for the chosen
+  channel and downloads its `mining_data-<version>.json`. The converted table
+  is cached as `signatures_scmdb.json` in `%APPDATA%\Citizen Assistant` and
+  used from then on; a failed download keeps the cache.
+- Until a cache exists, or when it cannot be used, the bundled
+  `app/data/signatures.json` is used, and Settings → *Signature data* says why
+  (`bundled 4.10.2 (scmdb unavailable: …)`).
+- `signature_channel` in `config.json` is `live` (default) or `ptu` for the
+  test server. `signature_source: "bundled"` never downloads and always uses
+  the bundled file.
+- scmdb gives the ores, their base signatures and the ground lists; the short
+  names, values, rarity, secondary ores and salvage still come from the
+  bundled file, matched by name. On 2026-11-01
+  the bundled ship bases and both ground lists were equal to scmdb's
+  `4.10.2-live.12913470` (and `4.10.3-ptu.13055118`).
+
+Each ship-ore entry is a base signature:
 
 ```json
 { "name": "Borase", "rarity": 4, "base": 3570,
@@ -1026,8 +1151,10 @@ something is.
 
 The loader expands each base into `base × count` for the 1-10 rock cluster
 sizes shown by the SCMINER scanner. `max_cluster` in the JSON controls that
-range, so adding an ore is a one-line edit. ROC and FPS deposits use their own
-base values and a separate 1-8 range (`ground.max_cluster`).
+range, so adding an ore is a one-line edit. ROC (4,000) and hand-mining (FPS,
+3,000) deposits use their own base values and a separate 1-8 range
+(`ground.max_cluster`), and each has its own mineral list:
+`ground.fps_minerals` (8) and `ground.roc_minerals` (22).
 
 ## Anti-cheat
 
@@ -1042,7 +1169,8 @@ Star Citizen runs Easy Anti-Cheat. This overlay only:
   blueprint/inventory events,
 - reads and writes its own local refinery timer registry,
 - reads and writes its own local `unlocked_blueprints.json` unlock registry,
-- makes read-only UEX HTTP requests for hauling, planner and station data.
+- makes read-only UEX HTTP requests for hauling, planner and station data,
+- downloads signature data from scmdb.net (read-only, at most once a day).
 
 It never opens a handle to the game, reads its memory, injects a DLL, or
 synthesizes input into the game. That keeps it on the safe side of EAC, but any
@@ -1060,9 +1188,12 @@ Outbound traffic is GET requests only:
 | Destination | Why |
 | --- | --- |
 | `api.uexcorp.uk` | trade routes and the UEX marketplace tab |
-| `scminer.rocks` | ore locations and signature data |
-| `raw.githubusercontent.com` | hauling mission snapshot, update check (`swill008/citizen-assistant`) |
-| `codeload.github.com` | the update archive from `swill008/citizen-assistant`, only when you press UPDATE |
+| `scminer.rocks` | ore locations for ORE FINDER |
+| `scmdb.net` | signature data (`versions.json` and `mining_data-<version>.json`), at most once a day; never with `signature_source: "bundled"` |
+| `raw.githubusercontent.com` | hauling mission snapshot, update check for a source install (`swill008/citizen-assistant`) |
+| `api.github.com` | latest release of `swill008/citizen-assistant` and its release notes, only when you press CHECK |
+| `github.com` | the release's Setup download, only when you press UPDATE in the installed EXE |
+| `codeload.github.com` | the update archive from `swill008/citizen-assistant`, only when you press UPDATE in a source install |
 
 There is no telemetry, no analytics and no account. Screenshots, notes and
 inventory data are never uploaded; everything the app stores lives in
@@ -1070,10 +1201,18 @@ inventory data are never uploaded; everything the app stores lives in
 
 ### Updates are manual
 
-Nothing installs itself in the background. `⚙` → **CHECK** only asks GitHub for
-`app/version.py` and compares versions. Pressing **UPDATE** is what downloads
-the `main` archive, copies it over this folder and restarts the overlay. If you
-never press it, the build stays exactly as installed.
+Nothing installs itself in the background. `⚙` → **CHECK** only asks GitHub
+for the newest version (the latest release for the installed EXE,
+`app/version.py` on `main` for a source install), compares it with this copy
+and, when the newer version has a release, shows its "What's new" text. Pressing **UPDATE** is what
+downloads anything: the release's Setup for the installed EXE, checked against
+GitHub's SHA-256 digest before it is run, or the `main` archive for a source
+install, copied over this folder before the overlay restarts. If you never
+press it, the build stays exactly as installed.
+
+The "What's new" text comes from `release-notes/<version>.md`, which every
+release must have (see `release-notes/README.md`); `tools/release_body.py`
+turns it into the GitHub release text.
 
 Updates come from **this fork, `swill008/citizen-assistant`** (`REPO` in
 `app/updater.py`). Until v1.2.16 they came from the original
@@ -1089,7 +1228,9 @@ to it.
 | Nothing ever reads | Re-calibrate; the box must contain only the digits. Check the preview. |
 | Nothing reads on a 5K / high-DPI screen next to monitors with other scaling | Calibrated with a build before the mixed-scale fix: the box was stored too small. Press **DRAW REGION** again; the label shows the size in physical pixels while you drag. |
 | The game stutters while the overlay runs | Check `ocr_threads` is `1` in `config.json`, and **SHOW PREVIEW** and **SHOW BOX** are off; try fewer **READS / S**. See *Game performance*. |
-| Reads only now and then while flying | The HUD sways away from the box. Press **DRAW REGION** with the scan readout on screen so the pin is saved, and check **TRACKING** is not `OFF`. A larger range follows bigger sways. |
+| Reads only now and then while flying | The HUD sways away from the box. If the scanner chip says `FIXED BOX`, press **DRAW REGION** with the scan readout on screen so the pin is saved (the 3-second result should say `PIN FOUND — TRACKING ON`), and check **TRACKING** is not `OFF`. A larger range follows bigger sways. |
+| Chip stays on `SEARCHING` | The pin is not in the search area: the plate is off screen, or the HUD sways further than the **TRACKING** range. Turn on **SHOW BOX** to see where it last found the plate. |
+| Amber note "Pin search failed (…)" or "Could not load the saved pin (…)" | The note names the error. Press **DRAW REGION** again with the readout showing; until then the box reads as a fixed box and learns the pin from the next exact signature. |
 | Amber note "No pin icon found left of the box" | The readout was not on screen (or the box was drawn somewhere else) when you pressed DRAW REGION. Open the scan HUD and press **DRAW REGION** again around the digits. |
 | Scanner stopped reading after changing resolution or monitor | Look for the amber note under *Signature capture region*: the box was moved to match. Turn on **SHOW BOX** to see where it is now; press **DRAW REGION** if the HUD is elsewhere. |
 | Not sure where the scanner is reading | Turn on **SHOW BOX**: the outline is drawn around the exact box. It is hidden from capture, so it cannot affect the reading. |
@@ -1097,6 +1238,9 @@ to it.
 | Ore finder list is empty | No internet, or scminer.rocks is down. Press `↻`; the cache is used when available. |
 | Ore finder shows `OFFLINE` | Same as above — the data on screen is the last successful sync. |
 | Combat tracker shows no events | Confirm `Game.log` is being written, or set `SC_GAME_LOG` to its path. Combat log formats are patch-dependent; update the parser patterns if a patch changes them. |
+| NOTES or INVENTORY says `NOT LOADED` | The file exists but could not be read; the reason is shown. Nothing is saved over it. Close the program that has it open (an editor, a sync or backup tool), then reopen the panel. A broken JSON file is kept as `<name>.bad-<date-time>`, and the last good save as `<name>.bak`, both in `%APPDATA%\Citizen Assistant`. |
+| A hotkey does nothing | Check `⚙` → *Hotkeys*: the row may have no key (`—`). Click it and press the key you want. |
+| Settings shows `bundled` signatures with "scmdb unavailable" | scmdb.net could not be reached or its data could not be read; the bundled table is used and the next try is at the next start. |
 | NOTES says `NOT SAVED` | The footer shows the reason (normally a permissions problem on `%APPDATA%`). The text is still in the editor — copy it out before closing. A hard crash can lose the last 700 ms of typing, which is the autosave delay. |
 | Blueprint tracker misses an unlock | Confirm the log contains `<SHUDEvent_OnNotification> Added notification "Received Blueprint: ...`; set `SC_GAME_LOG` to the right `Game.log`. If a patch changes the wording, pass custom `BlueprintLogParser` patterns. Delete `unlocked_blueprints.json` only if you want to reset new-vs-duplicate detection. |
 | Bar/scanner hidden behind a browser | It re-asserts topmost every 2 s; if it still loses, run the game borderless, not exclusive fullscreen. |
@@ -1123,6 +1267,13 @@ C:\scov\Scripts\python.exe -m tools.scan_e2e_selftest REM real screen: 5K2K sign
 C:\scov\Scripts\python.exe -m tools.scan_e2e_selftest --primary REM the same on the main/game monitor (close the game first: a real plate on screen fails the "plate gone" step)
 C:\scov\Scripts\python.exe -m tools.tracking_selftest REM pin tracking on 25 hand-labelled frames of a real flight (tools\fixtures\hud_track), speed limit
 C:\scov\Scripts\python.exe -m tools.settings_persist_selftest REM READS / S, TRACKING, SHOW BOX, MONITOR and the pin survive QUIT and a restart
+C:\scov\Scripts\python.exe -m tools.overlay_selftest REM SHOW BOX marks, scanner chip and pin, DRAW REGION conveniences, the ⚙ pulse (needs a desktop; invisible, secondary monitor)
+C:\scov\Scripts\python.exe -m tools.datasafety_selftest REM locked / Windows-1252 / broken files never overwritten, .bak, lock retry (--old: same checks on HEAD)
+C:\scov\Scripts\python.exe -m tools.signature_selftest REM scmdb conversion, ground lists, cache and fallback (--live: also a real read-only fetch)
+C:\scov\Scripts\python.exe -m tools.hotkeys_selftest REM rebinding hotkeys while running, Settings -> HOTKEYS (fake user32, no real hotkey)
+C:\scov\Scripts\python.exe -m tools.dataage_selftest REM data age and window pins on HAULING, ORE FINDER, COMBAT, UEX (offline)
+C:\scov\Scripts\python.exe -m tools.update_selftest REM UPDATE: release lookup, sha256 check, What's new, installer hand-off, TRACKING slider (one live read-only request)
+C:\scov\Scripts\python.exe tools\release_notes_selftest.py REM release_body.py and the workflows (set RELEASE_CHECK=1 to also require release-notes\<version>.md)
 C:\scov\Scripts\python.exe -m tools.workflow_selftest REM workflow + Game.log checks
 C:\scov\Scripts\python.exe -m tools.refinery_selftest REM refinery parser + timers
 C:\scov\Scripts\python.exe -m tools.combat_selftest REM combat parser + tracker + queue
@@ -1135,6 +1286,14 @@ C:\scov\Scripts\python.exe -m app --demo --open inventory   REM stash notes pane
 C:\scov\Scripts\python.exe -m app --demo --open orefinder  REM (mining / orefinder / hauling / inventory / settings)
 C:\scov\Scripts\python.exe -m tools.signage 10710 REM draw a signature on screen for live tests
 ```
+
+The self-tests print non-ASCII text (`✓`, `·`, `→`, `—`). When their output is
+redirected to a file or a pipe, Windows uses the console code page and Python
+can stop with a `UnicodeEncodeError`, so set `PYTHONIOENCODING=utf-8` first
+(`set PYTHONIOENCODING=utf-8` in `cmd`, `$env:PYTHONIOENCODING = "utf-8"` in
+PowerShell). The overlay, data-safety, signature, hotkeys, data-age and
+release-notes tests print PASS/FAIL lines, and their exit code is the number
+of failures.
 
 `--capture-visible` disables capture exclusion so the overlay shows up in
 screenshots and screen shares. If your venv is `.venv` instead of `C:\scov`,
@@ -1155,8 +1314,9 @@ MIT — see [`LICENSE`](LICENSE). Use it, fork it, ship it; there is no warranty
 The overlay itself is original work. Data and assets keep their own terms: the
 bundled hauling mission snapshot comes from
 [SCHaulingPlanner](https://github.com/FSCSOFT-Official/SCHaulingPlanner) (MIT),
-and market, ore and station data belong to
-[UEX Corp](https://uexcorp.space) and [SCMiner](https://scminer.rocks).
+market, ore and station data belong to
+[UEX Corp](https://uexcorp.space) and [SCMiner](https://scminer.rocks),
+and mining signature data comes from [scmdb.net](https://scmdb.net).
 Star Citizen is a trademark of Cloud Imperium Games; this project is
 unaffiliated with CIG.
 

@@ -54,6 +54,7 @@ def main() -> int:
     from app import display
     from app.config import CONFIG_PATH, Config, config_dir
     from app.main import OverlayApp
+    from app.ui.settings_panel import TRACKING_STEP
 
     failures = 0
     screens = QGuiApplication.screens()
@@ -88,7 +89,7 @@ def main() -> int:
         s.monitor_box.setCurrentIndex(s.monitor_box.findData(other.name()))
         s.monitor_box.activated.emit(s.monitor_box.currentIndex())
     s.reads_slider.setValue(6)
-    s.tracking_slider.setValue(250)
+    s.tracking_slider.setValue(250 // TRACKING_STEP)  # the slider counts 50 px steps
     s.outline_btn.setChecked(True)
     # Save a pin the way DRAW REGION does, from the 5K2K image, on the new box.
     box = one.cfg["region"]
@@ -127,8 +128,8 @@ def main() -> int:
                        f"(slider {s.reads_slider.value()}, label {s.reads_label.text()!r})")
     failures += _check("scanner reads 6 times a second", two.scan._interval == round(1000 / 6),
                        f"(interval {two.scan._interval} ms)")
-    failures += _check("TRACKING shows ±250 px", s.tracking_slider.value() == 250 and s.tracking_label.text() == "±250 px",
-                       f"(slider {s.tracking_slider.value()}, label {s.tracking_label.text()!r})")
+    failures += _check("TRACKING shows ±250 px", s.tracking_value == 250 and s.tracking_label.text() == "±250 px",
+                       f"(value {s.tracking_value}, label {s.tracking_label.text()!r})")
     failures += _check("SHOW BOX shows on", s.outline_btn.isChecked())
     failures += _check("outline is shown", two.outline.isVisible())
     failures += _check("MONITOR shows the saved monitor", s.monitor_box.currentData() == want_monitor,

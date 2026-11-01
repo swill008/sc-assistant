@@ -1,7 +1,9 @@
 {
   "version": "4.10.2",
+  "data_version": "4.10.2-live.12913470",
   "source": "https://scminer.rocks/data/signature-scanner",
   "source_updated": "2026-10-09T16:20:51.859Z",
+  "checked": "2026-11-01: ship bases and both ground lists equal scmdb.net mining_data-4.10.2-live.12913470 (and 4.10.3-ptu.13055118). This file is the fallback when the scmdb cache is missing or signature_source is bundled.",
   "max_cluster": 10,
   "note": "Ship mining: scan signature = base * number of rocks in the cluster (1-10). Lower base = rarer ore. Base signatures verified against SCMINER patch 4.10.2.",
   "ship_ores": [
@@ -33,11 +35,12 @@
     { "name": "Ice",         "short": "ICE",  "base": 4300, "value": null,   "rarity": 1, "secondary": null }
   ],
   "ground": {
-    "note": "Ground deposits: signature only tells you the size. The mineral depends on the location.",
+    "note": "Ground deposits: signature only tells you the size. Hand mining (FPS, 3,000) and ROC (4,000) each have their own minerals; which one depends on the location.",
     "max_cluster": 8,
     "roc_base": 4000,
     "fps_base": 3000,
-    "minerals": ["Aphorite", "Beradom", "Carinite", "Dolivine", "Feynmaline", "Glacosite", "Hadanite", "Jaclium", "Janalite", "Sadaryx", "Saldynium"]
+    "fps_minerals": ["Aphorite", "Carinite", "Dolivine", "Hadanite", "Jaclium", "Janalite", "Sadaryx", "Saldynium"],
+    "roc_minerals": ["Agricium", "Aluminum", "Beradom", "Beryl", "Bexalite", "Borase", "Carinite", "Copper", "Corundum", "Feynmaline", "Glacosite", "Gold", "Ice", "Iron", "Laranite", "Quantanium", "Quartz", "Silicon", "Taranite", "Tin", "Titanium", "Tungsten"]
   },
   "debris": {
     "note": "Salvage: exterior hull panels and scrap metal from wrecks read as clean multiples of 2,000. In space this is usually debris rather than a ground deposit. max_cluster covers large wrecks: 11 panels = 22,000.",

@@ -10,8 +10,14 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QCompleter, QFrame,
                                QHBoxLayout, QLabel, QLineEdit, QPushButton,
                                QScrollArea, QStackedWidget, QVBoxLayout, QWidget)
 
-from ..hauling import Hauling, HaulingMission, MissionBoard, Route
+from ..hauling import (COMMODITIES_TTL, MISSIONS_TTL, ROUTES_TTL,
+                       TOP_ROUTES_TTL, Hauling, HaulingMission, MissionBoard,
+                       Route)
 from . import theme
+from .data_age import age_text, is_stale
+from .pin_button import PinButton
+
+AGE_REFRESH_MS = 30 * 1000   # re-word "updated N min ago" while visible
 from .hauling_planner import PlannerPage
 
 WIDTH = 476
@@ -433,6 +439,7 @@ class _ContractRow(QWidget):
 # ---------------------------------------------------------------------------
 class HaulingPanel(QWidget):
     close_requested = Signal()
+    pin_toggled = Signal(bool)
 
     def __init__(self, data: Hauling | None = None, parent=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint
@@ -466,6 +473,10 @@ class HaulingPanel(QWidget):
         self._auto_timer = QTimer(self)
         self._auto_timer.setInterval(5 * 60 * 1000)
         self._auto_timer.timeout.connect(self._auto_refresh)
+        self._age_timer = QTimer(self)
+        self._age_timer.setInterval(AGE_REFRESH_MS)
+        self._age_timer.timeout.connect(self._update_footer)
+        self._clock = time.time
 
         board = self.data.missions(refresh=False)
         self._missions: list[HaulingMission] = list(board.missions)
@@ -520,7 +531,11 @@ class HaulingPanel(QWidget):
         """))
         close.clicked.connect(self.close_requested.emit)
 
+        self.pin_btn = PinButton(self)
+        self.pin_btn.pin_toggled.connect(self.pin_toggled.emit)
+
         head.addWidget(self.refresh_btn)
+        head.addWidget(self.pin_btn)
         head.addWidget(close)
         root.addLayout(head)
 
@@ -1367,6 +1382,9 @@ class HaulingPanel(QWidget):
         if self._tab == "contracts":
             captured = _date_text(self._board.captured) if self._board.captured else "CACHED"
             parts = ["COMMUNITY SNAPSHOT", captured, "NOT LIVE"]
+            synced = self._age(self._board.fetched_at)
+            if synced:
+                parts.append("SYNCED " + synced)
             if self._mission_error:
                 parts.append("OFFLINE")
             self.footer.setText("  ·  ".join(parts))
@@ -1376,10 +1394,9 @@ class HaulingPanel(QWidget):
             filtered = (self._auto_load or self._major_only or self._stock_only)
             if cid is not None:
                 if cid == TOP_COMMODITY:
-                    updated = self.data.top_routes_updated()
+                    updated = self._age(self.data.top_routes_updated())
                     if updated:
-                        parts.append("UPDATED " + time.strftime(
-                            "%H:%M", time.localtime(updated)))
+                        parts.append("UPDATED " + updated)
                     if "top" in self._workers and not self._routes:
                         done, total = self._top_progress
                         parts.append(f"SCAN {done}/{total}" if total else "SCANNING")
@@ -1391,10 +1408,9 @@ class HaulingPanel(QWidget):
                             f"TOP {self._displayed_routes:,}/{len(self._routes):,}")
                     parts.append("AUTO 5M")
                 else:
-                    updated = self.data.routes_updated(cid)
+                    updated = self._age(self.data.routes_updated(cid))
                     if updated:
-                        parts.append("UPDATED " + time.strftime(
-                            "%H:%M", time.localtime(updated)))
+                        parts.append("UPDATED " + updated)
                     if filtered:
                         parts.append(f"{self._shown_routes}/{len(self._routes)} ROUTES")
                     else:
@@ -1402,6 +1418,9 @@ class HaulingPanel(QWidget):
                     parts.append("AUTO 5M")
             else:
                 parts.append("SELECT A COMMODITY")
+                listed = self._age(self._commodities_at())
+                if listed:
+                    parts.append("LIST " + listed)
             if ((self._commodity_id == TOP_COMMODITY and self._top_error)
                     or self._route_error):
                 parts.append("OFFLINE")
@@ -1420,6 +1439,8 @@ class HaulingPanel(QWidget):
                 self._set_status("NO DATA", theme.BAD.name())
             elif self._mission_error:
                 self._set_status("CACHED", theme.AMBER.name())
+            elif is_stale(self._board.fetched_at, MISSIONS_TTL, self._clock()):
+                self._set_status("STALE", theme.AMBER.name())
             else:
                 self._set_status("SNAPSHOT", theme.AMBER.name())
             return
@@ -1434,15 +1455,41 @@ class HaulingPanel(QWidget):
             if self._top_error and not self._routes:
                 self._set_status("OFFLINE", theme.BAD.name())
             elif self._routes:
-                self._set_status("LIVE", theme.GOOD.name())
+                self._set_live(self.data.top_routes_updated(), TOP_ROUTES_TTL)
             else:
                 self._set_status("IDLE")
         elif self._route_error or self._commodity_error:
             self._set_status("OFFLINE", theme.BAD.name())
         elif self._routes:
-            self._set_status("LIVE", theme.GOOD.name())
+            self._set_live(self.data.routes_updated(self._commodity_id),
+                           ROUTES_TTL)
+        elif is_stale(self._commodities_at(), COMMODITIES_TTL, self._clock()):
+            self._set_status("STALE", theme.AMBER.name())
         else:
             self._set_status("IDLE")
+
+    # -- data age --------------------------------------------------------
+    def _age(self, stamp: float) -> str:
+        return age_text(stamp, self._clock()).upper()
+
+    def _commodities_at(self) -> float:
+        return float(getattr(self.data, "commodities_at", 0.0) or 0.0)
+
+    def _set_live(self, updated: float, ttl: float) -> None:
+        """LIVE while the routes are within their cache lifetime, else an
+        amber STALE (e.g. UEX has been unreachable since)."""
+        if is_stale(updated, ttl, self._clock()):
+            self._set_status("STALE", theme.AMBER.name())
+        else:
+            self._set_status("LIVE", theme.GOOD.name())
+
+    # -- window pin ------------------------------------------------------
+    def set_pinned(self, pinned: bool) -> None:
+        self.pin_btn.set_pinned(pinned)
+
+    @property
+    def pinned(self) -> bool:
+        return self.pin_btn.isChecked()
 
     def _on_planner_state(self) -> None:
         self._update_footer()
@@ -1590,14 +1637,18 @@ class HaulingPanel(QWidget):
     def showEvent(self, event):  # noqa: N802
         super().showEvent(event)
         self._auto_timer.start()
+        self._age_timer.start()
+        self._update_footer()
 
     def hideEvent(self, event):  # noqa: N802
         self._auto_timer.stop()
+        self._age_timer.stop()
         super().hideEvent(event)
 
     def shutdown(self, timeout_ms: int = 30000) -> None:
         """Stop background workers before the application exits."""
         self._auto_timer.stop()
+        self._age_timer.stop()
         self.planner.shutdown(timeout_ms)
         for worker in list(self._workers.values()):
             try:

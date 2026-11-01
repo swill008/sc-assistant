@@ -8,6 +8,7 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QTextEdit,
 
 from . import theme
 from ..notes import NotesStore
+from .pin_button import PinButton
 
 WIDTH = 420
 HEIGHT = 480
@@ -20,6 +21,7 @@ RED = QColor(232, 106, 106)
 
 class NotesPanel(QWidget):
     close_requested = Signal()
+    pin_toggled = Signal(bool)        # forwarded from the PinButton
 
     def __init__(self, store: NotesStore | None = None, parent=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint
@@ -31,6 +33,9 @@ class NotesPanel(QWidget):
 
         self._store = store or NotesStore()
         self._drag_from = None
+        # Text as last read from / written to disk; flush() writes only when
+        # the editor differs, so hiding or quitting never rewrites the file.
+        self._saved_text = ""
 
         self._save_timer = QTimer(self)
         self._save_timer.setSingleShot(True)
@@ -70,9 +75,13 @@ class NotesPanel(QWidget):
         """))
         close.clicked.connect(self._on_close)
 
+        self.pin_button = PinButton()
+        self.pin_button.pin_toggled.connect(self.pin_toggled.emit)
+
         head.addWidget(title)
         head.addStretch(1)
         head.addWidget(self.status)
+        head.addWidget(self.pin_button)
         head.addWidget(close)
         root.addLayout(head)
 
@@ -113,31 +122,73 @@ class NotesPanel(QWidget):
         root.addWidget(self.footer)
 
     # ------------------------------------------------------------------
+    @property
+    def load_failed(self) -> bool:
+        return self._store.load_failed
+
     def _load(self) -> None:
         text = self._store.load()
         self.editor.blockSignals(True)
         self.editor.setPlainText(text)
         self.editor.blockSignals(False)
+        # Compare against the editor's own copy (CRLF read back as LF), so
+        # a file saved by Notepad is not rewritten just for being opened.
+        self._saved_text = self.editor.toPlainText()
+        if self._store.load_failed:
+            # Never offer an empty editor that would later be saved over the
+            # real notes: show why and stay read-only until a read works.
+            self.editor.setReadOnly(True)
+            self.editor.setPlaceholderText(
+                "Your notes could not be read, so nothing here will be saved.\n"
+                "Close the program that has notes.txt open, then reopen NOTES.")
+            self._set_status("NOT LOADED", RED)
+            self.footer.setText(f"NOT LOADED · {self._store.error}")
+            self.footer.setToolTip(f"{self._store.error}\n{self._store.path}")
+            return
+        self.editor.setReadOnly(False)
+        self.editor.setPlaceholderText(
+            "Anything worth remembering — routes, buyers, spawn rules, prices…")
+        self.footer.setToolTip(f"Saved to {self._store.path}")
         self._set_status("SAVED", theme.MUTED)
         self._update_footer()
 
     def _on_changed(self) -> None:
+        if self._store.load_failed:
+            return
         self._set_status("SAVING…", AMBER)
         self._update_footer()
         self._save_timer.start()
 
     def flush(self) -> None:
-        """Write the current text now (timer, close, hide or quit)."""
+        """Write the current text now (timer, close, hide or quit).
+
+        Does nothing when the text is unchanged or the file was never read.
+        """
         if self._save_timer.isActive():
             self._save_timer.stop()
+        if self._store.load_failed:
+            return
+        text = self.editor.toPlainText()
+        if text == self._saved_text:
+            return
         try:
-            self._store.save(self.editor.toPlainText())
+            self._store.save(text)
         except OSError as exc:
             self._set_status("NOT SAVED", RED)
             self.footer.setText(f"Could not save: {exc}")
             return
+        self._saved_text = text
         self._set_status("SAVED", GREEN)
         self._update_footer()
+
+    # -- pin ------------------------------------------------------------
+    def set_pinned(self, pinned: bool) -> None:
+        """Start-up state; does not emit pin_toggled."""
+        self.pin_button.set_pinned(pinned)
+
+    @property
+    def pinned(self) -> bool:
+        return self.pin_button.isChecked()
 
     def _on_close(self) -> None:
         self.flush()
@@ -152,8 +203,10 @@ class NotesPanel(QWidget):
 
     def _update_footer(self) -> None:
         chars = len(self.editor.toPlainText())
-        self.footer.setText(
-            f"{chars} CHARACTERS · AUTOSAVES · {self._store.path.name}")
+        parts = [f"{chars} CHARACTERS", "AUTOSAVES", self._store.path.name]
+        if self._store.encoding == "cp1252":
+            parts.append("READ AS WINDOWS-1252, SAVES AS UTF-8")
+        self.footer.setText(" · ".join(parts))
 
     # ------------------------------------------------------------------
     def place_default(self, anchor: QWidget | None = None) -> None:
@@ -178,6 +231,12 @@ class NotesPanel(QWidget):
         self.move(x, y)
 
     # ------------------------------------------------------------------
+    def showEvent(self, event):  # noqa: N802
+        # A file that was locked at start-up may be readable now.
+        if self._store.load_failed:
+            self._load()
+        super().showEvent(event)
+
     def hideEvent(self, event):  # noqa: N802
         # Hiding is the last moment the text is certainly still in memory.
         self.flush()

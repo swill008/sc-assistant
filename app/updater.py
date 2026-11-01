@@ -19,11 +19,14 @@ CHECK reads the latest GitHub *release* (not ``main``, which can be ahead of
 what is released), UPDATE downloads that release's Setup.exe, and
 ``run_installer`` starts it silently once this process has exited — Setup
 refuses while Citizen Assistant runs (AppMutex) — with ``/LAUNCH=1`` so the
-new version starts by itself. A standalone (zip) EXE is not registered as
+new version starts by itself (and the old one again if Setup stops without
+installing). The download is checked against GitHub's sha256 digest, and
+``whats_new`` turns the release notes into plain text for Settings. A standalone (zip) EXE is not registered as
 installed, so it is not updated in place: ``standalone()`` reports that case.
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import os
@@ -36,6 +39,7 @@ import time
 import urllib.request
 import zipfile
 from pathlib import Path
+from typing import Callable, NamedTuple
 
 from .version import VERSION
 
@@ -131,34 +135,109 @@ def newest(timeout: float = 15.0) -> tuple[str, str, bool]:
     the source install with ``main``'s app/version.py.
     """
     if is_frozen():
-        published = latest_release(timeout)[0]
+        published = latest_release(timeout).version
     else:
         published = published_version(timeout)
     return VERSION, published, _newer(published, VERSION)
 
 
 # -- installed EXE: update through the release's Setup.exe ------------------
-def setup_asset(release: dict) -> tuple[str, str, int] | None:
-    """(version, download URL, size) of a release's Setup.exe, or None."""
+class Release(NamedTuple):
+    """A release's Setup.exe and its notes."""
+
+    version: str
+    url: str
+    size: int
+    digest: str      # GitHub's "sha256:<hex>", "" when the API gives none
+    body: str        # release text (markdown), "" when empty
+
+
+def setup_asset(release: dict) -> Release | None:
+    """The Setup.exe of a GitHub release (API JSON), or None."""
     for asset in release.get("assets") or []:
         match = SETUP_ASSET.match(str(asset.get("name", "")))
         if match:
-            return (match.group(1), str(asset.get("browser_download_url", "")),
-                    int(asset.get("size") or 0))
+            return Release(match.group(1), str(asset.get("browser_download_url", "")),
+                           int(asset.get("size") or 0), str(asset.get("digest") or ""),
+                           str(release.get("body") or ""))
     return None
 
 
-def latest_release(timeout: float = 15.0) -> tuple[str, str, int]:
-    """(version, Setup.exe URL, size) of the fork's latest GitHub release."""
+def latest_release(timeout: float = 15.0) -> Release:
+    """The fork's latest GitHub release (its Setup.exe and notes)."""
     body = _text_at(LATEST_RELEASE, timeout)
     try:
         release = json.loads(body)
     except ValueError as exc:
         raise RuntimeError("GitHub returned an unexpected release list") from exc
     found = setup_asset(release)
-    if found is None or not found[1]:
+    if found is None or not found.url:
         raise RuntimeError(f"release {release.get('tag_name', '?')} has no installer")
     return found
+
+
+def check(timeout: float = 15.0) -> tuple[str, str]:
+    """(published version, release notes) for CHECK.
+
+    Same source as ``newest``; the notes come from the latest release, and a
+    source install only gets them when that release is the version on main.
+    """
+    if is_frozen():
+        release = latest_release(timeout)
+        return release.version, release.body
+    published = published_version(timeout)
+    try:
+        release = latest_release(timeout)
+    except Exception:            # notes are a nicety; the version is what counts
+        return published, ""
+    return published, (release.body if release.version == published else "")
+
+
+WHATS_NEW_LIMIT = 700
+_HEADING = re.compile(r"^##\s+what['\u2019]s\s+new\s+in\s+v?(\S+)\s*$", re.IGNORECASE)
+
+
+def whats_new(body: str, version: str, limit: int = WHATS_NEW_LIMIT) -> str:
+    """Plain text of the "## What's new in <version>" section of release notes.
+
+    Stops at the next "## " heading. Markup is removed (HTML tags, links,
+    emphasis) so the text can only ever be shown as text; longer than
+    ``limit`` characters it is cut at a line and ends with "…".
+    """
+    want = str(version or "").strip().lstrip("vV")
+    lines = str(body or "").replace("\r\n", "\n").replace("\r", "\n").split("\n")
+    taken: list[str] = []
+    inside = False
+    for line in lines:
+        if line.startswith("## "):
+            if inside:
+                break
+            match = _HEADING.match(line.strip())
+            inside = bool(match and want and match.group(1).lstrip("vV") == want)
+            continue
+        if inside:
+            taken.append(line)
+    out: list[str] = []
+    for line in taken:
+        text = re.sub(r"<[^>]*>", "", line)                       # HTML tags
+        text = re.sub(r"!?\[([^\]]*)\]\([^)]*\)", r"\1", text)    # [text](url)
+        text = re.sub(r"(\*\*|__|`)", "", text)
+        text = text.replace("&lt;", "<").replace("&gt;", ">").replace("&amp;", "&")
+        text = text.rstrip()
+        heading = re.match(r"^#{3,6}\s+(.*)$", text)
+        if heading:
+            text = heading.group(1).strip() + ":"
+        bullet = re.match(r"^(\s*)[-*+]\s+(.*)$", text)
+        if bullet:
+            text = f"{bullet.group(1)}\u2022 {bullet.group(2)}"
+        if text or (out and out[-1]):
+            out.append(text)
+    plain = "\n".join(out).strip()
+    if len(plain) > limit:
+        cut = plain[:limit]
+        cut = cut[:cut.rfind("\n")] if "\n" in cut else cut
+        plain = cut.rstrip() + "\n\u2026"
+    return plain
 
 
 def _install_location() -> Path | None:
@@ -190,39 +269,95 @@ def standalone() -> bool:
         return True
 
 
-def download_setup(timeout: float = 300.0) -> Path:
-    """Download the latest release's Setup.exe to a temporary folder."""
-    version, url, size = latest_release(min(timeout, 30.0))
-    target = Path(tempfile.gettempdir()) / "CitizenAssistant-update" / f"CitizenAssistant-{version}-Setup.exe"
+class Downloaded(NamedTuple):
+    path: Path
+    version: str     # the version actually downloaded (the release at the time)
+
+
+def download_setup(timeout: float = 300.0,
+                   cancelled: Callable[[], bool] | None = None) -> Downloaded:
+    """Download the latest release's Setup.exe to a temporary folder.
+
+    The file is checked against the release's size, the EXE header and, when
+    GitHub gives one, its sha256 digest; anything wrong (or ``cancelled()``
+    turning true) removes the partial file and raises.
+    """
+    release = latest_release(min(timeout, 30.0))
+    target = (Path(tempfile.gettempdir()) / "CitizenAssistant-update"
+              / f"CitizenAssistant-{release.version}-Setup.exe")
     target.parent.mkdir(parents=True, exist_ok=True)
     partial = target.with_suffix(".part")
-    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-    with urllib.request.urlopen(request, timeout=timeout) as response, open(partial, "wb") as out:
-        shutil.copyfileobj(response, out, 1 << 20)
-    got = partial.stat().st_size
-    with open(partial, "rb") as fh:
-        is_exe = fh.read(2) == b"MZ"
-    if (size and got != size) or not is_exe:
+    algo, _, want = release.digest.partition(":")
+    hasher = hashlib.sha256() if algo.strip().lower() == "sha256" and want else None
+    try:
+        request = urllib.request.Request(release.url, headers={"User-Agent": USER_AGENT})
+        with urllib.request.urlopen(request, timeout=timeout) as response, \
+                open(partial, "wb") as out:
+            while True:
+                if cancelled is not None and cancelled():
+                    raise RuntimeError("the download was cancelled")
+                chunk = response.read(1 << 20)
+                if not chunk:
+                    break
+                out.write(chunk)
+                if hasher is not None:
+                    hasher.update(chunk)
+        got = partial.stat().st_size
+        with open(partial, "rb") as fh:
+            is_exe = fh.read(2) == b"MZ"
+        if (release.size and got != release.size) or not is_exe:
+            raise RuntimeError(
+                f"the installer download is incomplete ({got} of {release.size} bytes)")
+        if hasher is not None and hasher.hexdigest().lower() != want.strip().lower():
+            raise RuntimeError("the installer download is damaged (sha256 does not match)")
+        partial.replace(target)
+    except BaseException:
         partial.unlink(missing_ok=True)
-        raise RuntimeError(f"the installer download is incomplete ({got} of {size} bytes)")
-    partial.replace(target)
-    return target
+        raise
+    return Downloaded(target, release.version)
 
 
-def run_installer(setup: Path, wait_for_pid: int | None = None) -> None:
+def _ps_quote(text) -> str:
+    """A PowerShell single-quoted string literal."""
+    return "'" + str(text).replace("'", "''") + "'"
+
+
+def installer_command(setup: Path, pid: int, relaunch: str | None) -> str:
+    """The PowerShell the hand-off runs (separate so tests can read it).
+
+    Waits for ``pid`` with no time limit (a slow exit would otherwise start
+    Setup while the app still holds its AppMutex), runs Setup and waits for
+    Setup itself: ``$p.WaitForExit()``, not ``Start-Process -Wait``, which
+    also waits for every child process, i.e. for the new version Setup starts
+    (/LAUNCH=1). Exit 1 (Setup could not start) or 2 (it stopped before
+    installing) starts ``relaunch``, the old version, again.
+    """
+    command = (
+        f"Wait-Process -Id {int(pid)} -ErrorAction SilentlyContinue; "
+        "$code = 1; "
+        f"try {{ $p = Start-Process -FilePath {_ps_quote(setup)} -ArgumentList "
+        "'/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LAUNCH=1' -PassThru; "
+        "$null = $p.Handle; $p.WaitForExit(); $code = $p.ExitCode } catch { $code = 1 }"
+    )
+    if relaunch:
+        command += (f"; if ($code -eq 1 -or $code -eq 2) "
+                    f"{{ Start-Process -FilePath {_ps_quote(relaunch)} }}")
+    return command
+
+
+def run_installer(setup: Path, wait_for_pid: int | None = None,
+                  relaunch: str | None = None) -> None:
     """Run ``setup`` silently once process ``wait_for_pid`` (default: this one)
     has exited, then let it start the new version (``/LAUNCH=1``).
 
     Setup refuses to run while Citizen Assistant is open, so a hidden
     PowerShell waits for the exit first; the caller quits right after this.
+    If Setup stops without installing (exit 1 or 2), ``relaunch`` (default:
+    this EXE, ``sys.executable``) is started again.
     """
     pid = os.getpid() if wait_for_pid is None else int(wait_for_pid)
-    quoted = str(setup).replace("'", "''")
-    command = (
-        f"Wait-Process -Id {pid} -Timeout 60 -ErrorAction SilentlyContinue; "
-        f"Start-Process -FilePath '{quoted}' -ArgumentList "
-        "'/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/LAUNCH=1'"
-    )
+    command = installer_command(setup, pid,
+                                sys.executable if relaunch is None else relaunch)
     args = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
             "-WindowStyle", "Hidden", "-Command", command]
     # CREATE_NO_WINDOW, not DETACHED_PROCESS: PowerShell started with no

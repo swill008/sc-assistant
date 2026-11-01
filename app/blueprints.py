@@ -30,9 +30,7 @@ immutable snapshots.
 """
 from __future__ import annotations
 
-import json
 import logging
-import os
 import queue
 import threading
 import time
@@ -50,8 +48,11 @@ from .blueprint_log import (
     BlueprintLogWatcher,
 )
 from .config import config_dir
+from .safe_store import LOAD_FAILED, load_json, write_json
 
 logger = logging.getLogger(__name__)
+
+_MISSING = object()
 
 SCHEMA_VERSION = 1
 REGISTRY_NAME = "unlocked_blueprints.json"
@@ -297,6 +298,9 @@ class BlueprintStore:
         self._items: dict[str, UnlockRecord] = {}
         self.loaded = False
         self.error = ""
+        # True when the registry exists but could not be read; save() then
+        # refuses, so the file on disk keeps every earlier unlock.
+        self.load_failed = False
         if autoload:
             self.load()
 
@@ -306,15 +310,20 @@ class BlueprintStore:
             self._blueprints = {}
             self._items = {}
             self.error = ""
-            try:
-                with open(self.path, "r", encoding="utf-8") as fh:
-                    raw = json.load(fh)
-            except FileNotFoundError:
+            self.load_failed = False
+            loaded = load_json(self.path, default=_MISSING)
+            if loaded.value is _MISSING:
                 self.loaded = True
                 return True
-            except (OSError, json.JSONDecodeError) as exc:
-                self.error = f"Could not read blueprint registry: {exc}"
+            raw = loaded.value
+            if raw is LOAD_FAILED:
+                # Keep the registry unsaved: writing now would replace every
+                # earlier unlock with only the next one.
+                self.error = f"Could not read blueprint registry: {loaded.error}"
+                self.load_failed = True
                 self.loaded = True
+                logger.warning("%s; registry will not be saved this session",
+                               self.error)
                 return False
 
             if isinstance(raw, list):
@@ -325,7 +334,10 @@ class BlueprintStore:
                 item_rows = raw.get("items", [])
             else:
                 self.error = "Blueprint registry has an unexpected format"
+                self.load_failed = True
                 self.loaded = True
+                logger.warning("%s; registry will not be saved this session",
+                               self.error)
                 return False
 
             self._blueprints = self._load_rows(blueprint_rows, KIND_BLUEPRINT)
@@ -359,6 +371,10 @@ class BlueprintStore:
 
     def save(self) -> bool:
         with self._lock:
+            if self.load_failed:
+                logger.warning("blueprint registry not saved: it could not "
+                               "be read at start-up (%s)", self.path)
+                return False
             payload = {
                 "version": SCHEMA_VERSION,
                 "updated_at": _iso(time.time()),
@@ -371,12 +387,8 @@ class BlueprintStore:
                     for key, record in sorted(self._items.items())
                 },
             }
-            tmp = self.path.with_name(self.path.name + ".tmp")
             try:
-                self.path.parent.mkdir(parents=True, exist_ok=True)
-                with open(tmp, "w", encoding="utf-8") as fh:
-                    json.dump(payload, fh, indent=2, ensure_ascii=False)
-                os.replace(tmp, self.path)
+                write_json(self.path, payload)
             except OSError as exc:
                 self.error = f"Could not save blueprint registry: {exc}"
                 return False

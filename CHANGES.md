@@ -1,5 +1,159 @@
 # Changes
 
+## Unreleased — wave 1 (SC Assistant 1.0)
+
+Data safety for the user's own files, visible HUD-tracking feedback, signature
+data from scmdb.net, release notes, update and scanner fixes, rebindable
+hotkeys, window pins and first-run guidance. No version number yet: wave 2
+sets 1.0.0.
+
+### Data safety
+
+**What happened.** The code review of 2026-11-01
+(`docs/reviews/2026-11-01-code-review.md`) found that a file which could not be
+read (locked by another program, saved in another encoding, broken JSON) was
+treated as empty, and the next save then replaced it.
+
+**Change.** One shared store, `app/safe_store.py`, now reads and writes
+`notes.txt`, `inventory.json`, the blueprint registry and the ore-finder cache:
+
+- A file that cannot be read gives "not loaded", never an empty value. NOTES,
+  INVENTORY and the blueprint registry then refuse to save over it for that
+  session.
+- NOTES shows `NOT LOADED` with the reason in the footer and the editor turns
+  read-only. INVENTORY shows `NOT LOADED` and `FILE NOT LOADED` and does not
+  allow adding, editing or deleting notes.
+- Broken JSON is copied once to `<name>.bad-<time>` so it can be recovered by
+  hand.
+- Every save writes a temporary file and renames it over the old one; the
+  previous file is kept as `<name>.bak`.
+- Windows file locks are retried (5 tries, 0.1 s apart) before giving up.
+- Text is read as UTF-8 (with or without a BOM) and falls back to
+  Windows-1252, so a file saved by another editor still opens.
+- The ore-finder cache is only a copy of the website, so a bad file or a bad
+  entry is skipped and the next sync rewrites it.
+
+### HUD tracking feedback
+
+- The scanner header has a chip: `TRACKING` (cyan) when the pin is found,
+  `SEARCHING` (amber) while it is lost, `FIXED BOX` (grey) when tracking is off.
+- SHOW BOX outlines both the pin and the digits, with a label above them:
+  `TRACKING ✓  42,000`, `SEARCHING…` (where the plate was last seen) or
+  `FIXED BOX`.
+- After DRAW REGION the result is shown on screen for 3 seconds, even with
+  SHOW BOX off: `PIN FOUND — TRACKING ON` or `NO PIN FOUND — FIXED BOX`.
+- The mining panel is 372 px wide instead of 330, to fit the chip and the pin.
+
+### Tracking after an upgrade or a resolution change
+
+- A box with no saved pin (drawn before pins existed, or after the pin was
+  dropped) learns it once, from the first exact signature the fixed box reads;
+  the region note then says `Pin learned from the scan: tracking is on.`
+- A box moved to a monitor with a different height drops the pin, and the pin
+  is learned again the same way. A monitor that only moved (or is wider at the
+  same height) keeps it.
+- Calibration errors other than "no pin" are now named in the note, and a
+  missing `anchor.png` clears the saved pin details.
+
+### Signature data from scmdb.net
+
+- The ship ores and the ground mineral lists now come from
+  [scmdb.net](https://scmdb.net) game data (`versions.json`, then
+  `mining_data-<version>.json`), in a background thread at most once a day,
+  cached as `signatures_scmdb.json`. The bundled `app/data/signatures.json` is
+  the fallback. `signature_channel` picks `live` (default) or `ptu`;
+  `signature_source: "bundled"` never downloads (`app/sigsource.py`).
+- Ground readings name their minerals: 3,000-type readings show
+  `HAND MINING · …` (8 minerals), 4,000-type readings `ROC · …` (22); the
+  tooltip lists them all. The bundled file has both lists.
+- Settings → *Signature data* says where the table came from, for example
+  `scmdb 4.10.2 live` or `bundled 4.10.2 (scmdb unavailable: …)`.
+- Checked 2026-11-01: the bundled ship bases and both ground lists equal scmdb
+  `4.10.2-live.12913470` (and `4.10.3-ptu.13055118`).
+
+### Release notes
+
+- Each version gets `release-notes/<version>.md`, starting
+  `## What's new in <version>` (see `release-notes/README.md`).
+  `tools/release_body.py` turns it into the GitHub release text with a
+  "How to install" section; the release workflow stops when the file is
+  missing or its heading is wrong. The release text no longer comes from this
+  file.
+- Settings → *Update* shows "What's new in vX" under CHECK when a newer
+  version exists, as plain text only.
+
+### Update fixes
+
+- The downloaded Setup is checked against GitHub's SHA-256 digest (and its
+  size and EXE header); a mismatch deletes it.
+- Settings names the version actually downloaded, which can be newer than the
+  one CHECK saw.
+- The hand-off waits for the old app to exit with no time limit (it was 60 s),
+  and the button stays off while it runs.
+- If Setup exits with code 1 (could not start) or 2 (stopped before
+  installing), the old version is started again.
+- Quitting during a download cancels it and waits for the update thread.
+
+### Scanner fixes
+
+- The TRACKING slider moves in whole 50 px steps and saves once, when it is
+  released, instead of on every pixel of a drag.
+- The saved pin picture is decoded on the scanner thread after the windows
+  appear, not on the GUI thread at start-up.
+- SHOW BOX moves with one placement on the same monitor, and its correction
+  loop is bounded.
+
+### Quality of life
+
+- **Hotkeys.** Settings → *Hotkeys* rebinds SHOW BAR (F3) and HIDE ALL (F4) and
+  can give each tool (MINING, ORE FINDER, HAULING, UEX, INVENTORY, COMBAT,
+  NOTES) a key that toggles it. Click a key, then press the new one; Esc means
+  no key; a key already in use is refused. Saved as `hotkey_toggle_nav`,
+  `hotkey_panic` and `hotkey_tools`; applied without a restart.
+- **Window pins.** Every panel, and the settings window, has a push-pin next to
+  its `✕`. A pinned panel stays on screen when everything is hidden (F4 or the
+  nav bar's `✕`); a pinned scanner keeps its SHOW BOX outline. Saved as
+  `pinned_windows`.
+- **Data age.** COMBAT shows `LIVE` while `Game.log` was written in the last
+  2 minutes, otherwise `IDLE · last event 5 min ago`. HAULING shows
+  `UPDATED 5 MIN AGO` and turns to an amber `STALE` once the data is older than
+  its cache lifetime. ORE FINDER shows `SYNCED 5 MIN AGO` (or `NOT SYNCED`) and
+  `STALE` after 15 minutes.
+- **DRAW REGION.** Right-click cancels, like Esc. Releasing the drag with Ctrl
+  held keeps the box for fine-tuning: arrow keys move it 1 physical pixel
+  (Shift: 10), Ctrl+arrows resize it, Enter confirms, Esc or right-click
+  cancels. On monitors at 200% scale or more a magnifier follows the cursor.
+  Mouse moves repaint only what changed.
+- **First run.** With no box yet, `⚙` on the nav bar and DRAW REGION in
+  Settings pulse until one is drawn.
+
+### Tests
+
+New, each printing PASS/FAIL lines with the number of failures as exit code:
+
+- `tools/datasafety_selftest.py`: locked, Windows-1252 and broken files, and
+  cache entries with unknown fields, for all four stores; the file must not be
+  overwritten (bytes compared), a save keeps a `.bak`, a short lock is
+  retried. `--old` runs the same checks on HEAD's files.
+- `tools/overlay_selftest.py`: SHOW BOX marks, the scanner chip and pin, the
+  picker conveniences and the `⚙` pulse (needs a desktop; windows invisible,
+  on a secondary monitor).
+- `tools/signature_selftest.py`: scmdb conversion, ground lists, cache and
+  fallback; `--live` adds a real read-only fetch.
+- `tools/hotkeys_selftest.py`: rebinding while the hotkey thread runs and the
+  Settings rows, with a fake `user32` (no real hotkey is registered).
+- `tools/dataage_selftest.py`: data age and window pins on HAULING, ORE FINDER,
+  COMBAT and UEX, offline.
+- `tools/release_notes_selftest.py`: `tools/release_body.py` and both
+  workflows; with `RELEASE_CHECK=1` (the release workflow sets it) it fails
+  when `app/version.py` names a version without a notes file. The build
+  workflow runs it on every push.
+
+Extended: `tools/update_selftest.py` (digest check, "What's new", the
+hand-off command run against a fake Setup, the TRACKING slider),
+`tools/scan_selftest.py`, `tools/scan_e2e_selftest.py` and
+`tools/settings_persist_selftest.py`.
+
 ## v1.2.19 — 2026-11-01
 
 The scanner follows the signature plate as the HUD sways in flight.

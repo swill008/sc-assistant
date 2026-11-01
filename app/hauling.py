@@ -462,6 +462,11 @@ class Hauling:
     def cached_commodities(self) -> list[Commodity]:
         return list(self._commodities)
 
+    @property
+    def commodities_at(self) -> float:
+        """Unix time the commodity catalog was fetched, 0 if never."""
+        return self._commodities_at
+
     def _load_commodity_cache(self) -> None:
         cached = _read_json(_cache_path("hauling_commodities.json"))
         rows = cached.get("rows") or []

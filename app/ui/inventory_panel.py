@@ -13,6 +13,7 @@ from PySide6.QtWidgets import (QButtonGroup, QComboBox, QCompleter, QFrame,
 from ..inventory import InventoryNote, InventoryStore
 from ..stations import clean_terminal_name, station_names
 from . import theme
+from .pin_button import PinButton
 
 WIDTH = 476
 HEIGHT = 630
@@ -290,6 +291,7 @@ class _NoteRow(QWidget):
 # ---------------------------------------------------------------------------
 class InventoryPanel(QWidget):
     close_requested = Signal()
+    pin_toggled = Signal(bool)        # forwarded from the PinButton
 
     def __init__(self, store: InventoryStore | None = None, parent=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint
@@ -310,6 +312,33 @@ class InventoryPanel(QWidget):
 
         self._build()
         self._rebuild_list()
+
+    # ------------------------------------------------------------------
+    @property
+    def load_failed(self) -> bool:
+        return self.store.load_failed
+
+    def set_pinned(self, pinned: bool) -> None:
+        """Start-up state; does not emit pin_toggled."""
+        self.pin_button.set_pinned(pinned)
+
+    @property
+    def pinned(self) -> bool:
+        return self.pin_button.isChecked()
+
+    def _apply_load_state(self) -> None:
+        failed = self.store.load_failed
+        if failed:
+            self.load_banner.setText(
+                f"{self.store.error}\nYour notes are untouched. Close the "
+                "program that has the file open (or fix it), then reopen "
+                "INVENTORY.")
+            self.load_banner.setToolTip(str(self.store.path))
+        self.load_banner.setVisible(failed)
+        self.submit_btn.setEnabled(not failed)
+        for edit in (self.location, self.quantity, self.item_edit,
+                     self.note_edit):
+            edit.setEnabled(not failed)
 
     # ------------------------------------------------------------------
     def _build(self) -> None:
@@ -341,8 +370,23 @@ class InventoryPanel(QWidget):
             QPushButton:hover { color: #ffd9d9; }
         """))
         close.clicked.connect(self.close_requested.emit)
+        self.pin_button = PinButton()
+        self.pin_button.pin_toggled.connect(self.pin_toggled.emit)
+        head.addWidget(self.pin_button)
         head.addWidget(close)
         root.addLayout(head)
+
+        # Shown only when inventory.json could not be read: the list is then
+        # empty on screen but the file is untouched, and editing is off.
+        self.load_banner = QLabel("")
+        self.load_banner.setWordWrap(True)
+        self.load_banner.setFont(theme.font(8, QFont.Weight.Bold))
+        self.load_banner.setStyleSheet(theme.qss(
+            "color: #e86a6a; background: rgba(232,106,106,0.10);"
+            "border: 1px solid rgba(232,106,106,0.45); border-radius: 6px;"
+            "padding: 5px 8px;"))
+        self.load_banner.hide()
+        root.addWidget(self.load_banner)
 
         intro = QLabel(
             "Remember loot and supplies left at other stations. Pick a station "
@@ -512,6 +556,9 @@ class InventoryPanel(QWidget):
         self._msg_timer.start(3800)
 
     def _submit(self) -> None:
+        if self.store.load_failed:
+            self._say(self.store.error, True)
+            return
         raw_location = self.location.currentText().strip()
         item = self.item_edit.text().strip()
         if not raw_location:
@@ -537,7 +584,7 @@ class InventoryPanel(QWidget):
                 self._say(f"Updated {updated.item} at {updated.location}.")
         else:
             added = self.store.add(location, item, quantity, note)
-            if self.store.error:
+            if added is None or self.store.error:
                 self._say(self.store.error, True)
             else:
                 self._say(f"Saved {added.item} at {added.location}.")
@@ -545,6 +592,8 @@ class InventoryPanel(QWidget):
         self._rebuild_list()
 
     def _begin_edit(self, note_id: str) -> None:
+        if self.store.load_failed:
+            return
         note = self.store.get(note_id)
         if note is None:
             return
@@ -581,6 +630,9 @@ class InventoryPanel(QWidget):
         self.note_edit.clear()
 
     def _delete_note(self, note_id: str) -> None:
+        if self.store.load_failed:
+            self._say(self.store.error, True)
+            return
         if self.store.delete(note_id):
             if self._editing_id == note_id:
                 self._clear_form()
@@ -624,7 +676,9 @@ class InventoryPanel(QWidget):
 
         self._shown = len(notes)
         if not notes:
-            if not self.store.notes:
+            if self.store.load_failed:
+                text = "Stash notes NOT LOADED (see the message above)."
+            elif not self.store.notes:
                 text = ("No stash notes yet.\n\n"
                         "Add loot or supplies you left somewhere and it will "
                         "stay here between sessions.")
@@ -636,6 +690,7 @@ class InventoryPanel(QWidget):
         else:
             for note in notes:
                 row = _NoteRow(note)
+                row.delete_btn.setEnabled(not self.store.load_failed)
                 row.edit_requested.connect(self._begin_edit)
                 row.delete_requested.connect(self._delete_note)
                 self.list_layout.insertWidget(
@@ -650,7 +705,13 @@ class InventoryPanel(QWidget):
         count = (f"{shown}/{total} {noun}" if self.search.text().strip()
                  else f"{total} {noun}")
         parts = ["MANUAL STASH LOG", count]
-        if self.store.error:
+        self._apply_load_state()
+        if self.store.load_failed:
+            parts.append("FILE NOT LOADED")
+            self.status.setText("NOT LOADED")
+            self.status.setStyleSheet(theme.qss(
+                "color: rgba(232,106,106,0.95); background: transparent;"))
+        elif self.store.error:
             parts.append("FILE ERROR")
             self.status.setText("ERROR")
             self.status.setStyleSheet(theme.qss(
@@ -684,6 +745,13 @@ class InventoryPanel(QWidget):
         self.move(x, y)
 
     # ------------------------------------------------------------------
+    def showEvent(self, event):  # noqa: N802
+        # A file that was locked at start-up may be readable now.
+        if self.store.load_failed:
+            self.store.load()
+            self._rebuild_list()
+        super().showEvent(event)
+
     def keyPressEvent(self, event):  # noqa: N802
         if event.key() == Qt.Key.Key_Escape:
             if self._editing_id:

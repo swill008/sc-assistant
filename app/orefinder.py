@@ -13,7 +13,7 @@ network or the site is unavailable.
 from __future__ import annotations
 
 import html as H
-import json
+import logging
 import re
 import urllib.error
 import urllib.request
@@ -22,6 +22,9 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import config_dir
+from .safe_store import LOAD_FAILED, load_json, write_json
+
+logger = logging.getLogger(__name__)
 
 BASE_URL = "https://scminer.rocks/data/where-to-mine"
 USER_AGENT = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -312,6 +315,31 @@ def _parse_refineries(lines: list[str], index: int) -> list[Refinery]:
 
 
 # ---------------------------------------------------------------------------
+def _known(cls, value: object) -> dict:
+    """Fields of *value* that dataclass *cls* knows; unknown keys dropped."""
+    if not isinstance(value, dict):
+        raise TypeError(f"{cls.__name__} entry is not an object")
+    return {k: v for k, v in value.items() if k in cls.__dataclass_fields__}
+
+
+def _ore_from_cache(item: object) -> Ore:
+    """Rebuild one cached ore; raises TypeError/ValueError on a bad entry."""
+    fields = _known(Ore, item)
+    assert isinstance(item, dict)
+    top = item.get("top")
+    best = item.get("best_refinery")
+    fields["top"] = Hotspot(**_known(Hotspot, top)) if top else None
+    fields["best_refinery"] = Refinery(**_known(Refinery, best)) if best else None
+    fields["hotspots"] = [Hotspot(**_known(Hotspot, s))
+                          for s in item.get("hotspots") or []]
+    fields["refineries"] = [Refinery(**_known(Refinery, r))
+                            for r in item.get("refineries") or []]
+    ore = Ore(**fields)
+    if not isinstance(ore.slug, str) or not ore.slug:
+        raise ValueError("ore entry without a slug")
+    return ore
+
+
 class LiveData:
     """Ore locations, refreshed from scminer.rocks and cached to disk."""
 
@@ -326,24 +354,33 @@ class LiveData:
 
     # -- cache ---------------------------------------------------------
     def _load_cache(self) -> None:
-        try:
-            with open(self.path, "r", encoding="utf-8") as handle:
-                raw = json.load(handle)
-        except (OSError, json.JSONDecodeError):
+        # The cache is only a mirror of the website, so a bad file or a bad
+        # entry is skipped rather than stopping start-up; a fresh sync
+        # rewrites it (the old file is kept as .bak, a broken one as .bad-*).
+        loaded = load_json(self.path, default=None)
+        raw = loaded.value
+        if raw is LOAD_FAILED:
+            logger.warning("ore cache not loaded: %s", loaded.error)
             return
-        self.patch = raw.get("patch", "")
-        self.index_at = float(raw.get("index_at", 0.0))
-        for item in raw.get("ores", []):
-            known = {k: v for k, v in item.items()
-                     if k in Ore.__dataclass_fields__}
-            ore = Ore(**{**known,
-                         "top": Hotspot(**item["top"]) if item.get("top") else None,
-                         "best_refinery": Refinery(**item["best_refinery"])
-                         if item.get("best_refinery") else None,
-                         "hotspots": [Hotspot(**s) for s in item.get("hotspots", [])],
-                         "refineries": [Refinery(**r) for r in item.get("refineries", [])]})
+        if not isinstance(raw, dict):
+            return
+        self.patch = str(raw.get("patch") or "")
+        try:
+            self.index_at = float(raw.get("index_at") or 0.0)
+        except (TypeError, ValueError):
+            self.index_at = 0.0
+        ores = raw.get("ores")
+        skipped = 0
+        for item in ores if isinstance(ores, list) else []:
+            try:
+                ore = _ore_from_cache(item)
+            except (TypeError, ValueError, AttributeError, KeyError):
+                skipped += 1
+                continue
             self.ores.append(ore)
             self._by_slug[ore.slug] = ore
+        if skipped:
+            logger.warning("ore cache: skipped %d unreadable entries", skipped)
         self._sort()
 
     def save_cache(self) -> None:
@@ -354,13 +391,10 @@ class LiveData:
             "saved": datetime.now().isoformat(timespec="seconds"),
             "ores": [asdict(ore) for ore in self.ores],
         }
-        tmp = self.path.with_suffix(".tmp")
         try:
-            with open(tmp, "w", encoding="utf-8") as handle:
-                json.dump(payload, handle, indent=1, ensure_ascii=False)
-            tmp.replace(self.path)
-        except OSError:
-            pass
+            write_json(self.path, payload, indent=1)
+        except OSError as exc:
+            logger.warning("ore cache not saved: %s", exc)
 
     # -- freshness -----------------------------------------------------
     def __len__(self) -> int:

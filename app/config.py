@@ -56,6 +56,9 @@ CONFIG_PATH = config_dir() / "config.json"
 DEFAULTS: dict = {
     "hotkey_toggle_nav": 0x72,          # VK_F3
     "hotkey_panic": 0x73,               # VK_F4 - hide everything
+    # Optional hotkeys that open a tool directly (Settings → HOTKEYS):
+    # {tool id: Windows virtual-key code}; 0 or missing = no hotkey.
+    "hotkey_tools": {},
     "poll_ms": 250,                     # 4 reads a second; Settings → READS / S
     "stability_reads": 2,               # fallback reads before the value is shown
     "fast_single_read": True,           # high-confidence exact reads lock immediately
@@ -84,6 +87,11 @@ DEFAULTS: dict = {
     # Pin icon found left of the box at DRAW REGION (tracking.Anchor.save meta);
     # the picture is anchor.png in the config folder. None = fixed box only.
     "anchor": None,
+    # Signature data: "scmdb" refreshes from scmdb.net game data (cached, the
+    # bundled app/data/signatures.json is the fallback); "bundled" never
+    # downloads. Channel picks the live servers or the test server (PTU).
+    "signature_source": "scmdb",
+    "signature_channel": "live",
     "show_debug_preview": False,
     # Draw an outline around the capture box on screen (Settings → SHOW BOX).
     # Off by default: any window over the game makes Windows composite it.
@@ -104,6 +112,11 @@ DEFAULTS: dict = {
     "notes_pos": None,
     "combat_pos": None,
     "open_tools": [],
+    # Panels pinned with their header pin (ui/pin_button.py): they stay on
+    # screen when the overlay is hidden (F4 / the nav bar's ✕). Panel ids:
+    # "mining", "orefinder", "hauling", "inventory", "uex", "notes",
+    # "combat", "settings".
+    "pinned_windows": [],
     "hauling_cargo": 32,              # SCU used for trip-profit maths
     "hauling_commodity": 0,           # 0 = all commodities / top routes
     "hauling_selection_version": 2,   # migration marker for the new default

@@ -50,6 +50,7 @@ class NavBar(QWidget):
     quit_requested = Signal()
 
     QUIT_ARM_MS = 2500
+    PULSE_MS = 650
 
     def __init__(self, tools: list[dict], parent=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint
@@ -65,6 +66,15 @@ class NavBar(QWidget):
         self._anim = QPropertyAnimation(self, b"pos", self)
         self._anim.setDuration(190)
         self._anim.setEasingCurve(QEasingCurve.Type.OutCubic)
+        # Connected once: the slot hides the bar only after a slide-out.
+        self._anim.finished.connect(self._after_hide)
+
+        # ⚙ attention pulse (first run: no capture region yet).
+        self._attention = False
+        self._pulse_on = False
+        self._pulse = QTimer(self)
+        self._pulse.setInterval(self.PULSE_MS)
+        self._pulse.timeout.connect(self._on_pulse)
 
         self._build()
 
@@ -112,13 +122,23 @@ class NavBar(QWidget):
         gear.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         gear.setFixedSize(theme.px(26), theme.px(26))
         gear.setToolTip("Settings")
+        gear.setProperty("attention", "off")
         gear.setStyleSheet(theme.qss("""
             QPushButton#gear {
                 color: rgba(168,184,200,0.85); background: transparent;
-                border: none; border-radius: 13px; font-size: 13px;
+                border: 1px solid transparent; border-radius: 13px; font-size: 13px;
             }
             QPushButton#gear:hover { background: rgba(79,209,224,0.14); color: #e6f7fa; }
+            QPushButton#gear[attention="dim"] {
+                color: #ffb020; border-color: rgba(255,176,32,0.45);
+                background: rgba(255,176,32,0.08);
+            }
+            QPushButton#gear[attention="bright"] {
+                color: #ffffff; border-color: rgba(255,176,32,0.95);
+                background: rgba(255,176,32,0.38);
+            }
         """))
+        self._gear = gear
         gear.clicked.connect(self.settings_requested.emit)
         row.addWidget(gear)
         row.addSpacing(theme.px(10))
@@ -227,6 +247,37 @@ class NavBar(QWidget):
         self.quit_btn.style().unpolish(self.quit_btn)
         self.quit_btn.style().polish(self.quit_btn)
 
+    # ------------------------------------------------------------------
+    def set_settings_attention(self, on: bool) -> None:
+        """Pulse the ⚙ (amber) until turned off, e.g. first run with no
+        capture region."""
+        on = bool(on)
+        if on == self._attention:
+            return
+        self._attention = on
+        self._pulse_on = False
+        if on:
+            self._gear.setToolTip("Settings: draw the capture region to start scanning")
+            self._pulse.start()
+            self._set_gear_look("bright")
+        else:
+            self._gear.setToolTip("Settings")
+            self._pulse.stop()
+            self._set_gear_look("off")
+
+    @property
+    def settings_attention(self) -> bool:
+        return self._attention
+
+    def _on_pulse(self) -> None:
+        self._pulse_on = not self._pulse_on
+        self._set_gear_look("dim" if self._pulse_on else "bright")
+
+    def _set_gear_look(self, look: str) -> None:
+        self._gear.setProperty("attention", look)
+        self._gear.style().unpolish(self._gear)
+        self._gear.style().polish(self._gear)
+
     def set_active(self, tool_id: str | None) -> None:
         for tid, btn in self._buttons.items():
             btn.setChecked(tid == tool_id)
@@ -283,15 +334,10 @@ class NavBar(QWidget):
         self._anim.stop()
         self._anim.setStartValue(start)
         self._anim.setEndValue(end)
-        self._anim.finished.connect(self._after_hide)
         self._anim.start()
         self._shown = False
 
     def _after_hide(self) -> None:
-        try:
-            self._anim.finished.disconnect(self._after_hide)
-        except RuntimeError:
-            pass
         if not self._shown:
             self.hide()
 

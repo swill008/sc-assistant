@@ -9,9 +9,15 @@ from PySide6.QtWidgets import (QHBoxLayout, QLabel, QPushButton, QVBoxLayout,
 
 from ..mining import Match
 from . import theme
+from .pin_button import PinButton
 
-PANEL_WIDTH = 330
+PANEL_WIDTH = 372      # fits the header with the tracking chip and pin (was 330)
 PANEL_HEIGHT = 158
+
+
+def ground_kind(match: Match) -> str:
+    """HAND MINING (3,000-type readings) or ROC (4,000-type)."""
+    return "HAND MINING" if match.kind == "fps" else "ROC"
 
 
 class _Verdict(QWidget):
@@ -33,6 +39,12 @@ class _Verdict(QWidget):
         self._state = state
         self._match = match
         self._note = note
+        # Ground readings: the full candidate list, as the detail line is
+        # elided to the panel width.
+        if match is not None and match.is_ground and match.minerals:
+            self.setToolTip(f"{ground_kind(match)}: could be\n" + "\n".join(match.minerals))
+        else:
+            self.setToolTip("")
         self.update()
 
     # ------------------------------------------------------------------
@@ -121,7 +133,10 @@ class _Verdict(QWidget):
             if self._match.kind == "debris":
                 return self._match.secondary or "HULL PANELS / SCRAP METAL"
             if self._match.is_ground:
-                return "SIZE ONLY · MINERAL DEPENDS ON LOCATION"
+                minerals = self._match.minerals
+                if not minerals:
+                    return "SIZE ONLY · MINERAL DEPENDS ON LOCATION"
+                return f"{ground_kind(self._match)} · {' / '.join(minerals)}"
             bits = [theme.RARITY_NAME.get(self._match.rarity, "")]
             if self._match.secondary:
                 bits.append(self._match.secondary)
@@ -137,6 +152,7 @@ class _Verdict(QWidget):
 
 class MiningPanel(QWidget):
     close_requested = Signal()
+    pin_toggled = Signal(bool)      # forwarded from the header's PinButton
 
     def __init__(self, parent=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint
@@ -150,6 +166,7 @@ class MiningPanel(QWidget):
         self._drag_from = None
         self._scan_sig: tuple | None = None
         self._state = ""
+        self._track_state: str | None = None
         self._build()
 
     # ------------------------------------------------------------------
@@ -160,7 +177,7 @@ class MiningPanel(QWidget):
 
         head = QHBoxLayout()
         head.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
-        head.setSpacing(theme.px(7))
+        head.setSpacing(theme.px(5))
 
         self._dot = QWidget()
         self._dot.setFixedSize(theme.px(7), theme.px(7))
@@ -175,11 +192,22 @@ class MiningPanel(QWidget):
             "color: rgba(130,148,166,0.9); background: rgba(255,255,255,0.04);"
             "border-radius: 5px; padding: 2px 5px;"))
 
+        # HUD tracking chip: TRACKING / SEARCHING / FIXED BOX (hidden when
+        # the scanner has not reported a tracking state).
+        self._track_chip = QLabel("")
+        self._track_chip.setFont(theme.font(7, QFont.Weight.Bold, spacing=0.8))
+        self._track_chip.hide()
+
         head.addWidget(self._dot)
         head.addWidget(title)
         head.addStretch(1)
+        head.addWidget(self._track_chip)
         head.addWidget(self._state_label)
         head.addSpacing(theme.px(2))
+
+        self.pin_button = PinButton()
+        self.pin_button.pin_toggled.connect(self.pin_toggled.emit)
+        head.addWidget(self.pin_button)
 
         close = QPushButton("✕")
         close.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -192,6 +220,7 @@ class MiningPanel(QWidget):
         """))
         close.clicked.connect(self.close_requested.emit)
         head.addWidget(close)
+        self._close = close
         root.addLayout(head)
         root.addSpacing(theme.px(6))
 
@@ -220,11 +249,42 @@ class MiningPanel(QWidget):
         self._dot.setStyleSheet(theme.qss(
             f"background: {colors.get(state, '#8294a6')}; border-radius: 3px;"))
 
+    def set_track_state(self, state: str | None) -> None:
+        """Show the HUD tracking chip for ``state`` (theme.TRACK_STATES);
+        None hides it."""
+        if state is not None and state not in theme.TRACK_COLOR:
+            raise ValueError(f"unknown tracking state {state!r}")
+        if state == self._track_state:
+            return
+        self._track_state = state
+        if state is None:
+            self._track_chip.hide()
+            return
+        self._track_chip.setText(theme.TRACK_TEXT[state])
+        colour = theme.TRACK_COLOR[state]
+        self._track_chip.setStyleSheet(theme.qss(
+            f"color: {colour.name()}; background: rgba(255,255,255,0.04);"
+            f"border: 1px solid rgba({colour.red()},{colour.green()},{colour.blue()},0.45);"
+            "border-radius: 5px; padding: 1px 5px;"))
+        self._track_chip.show()
+
+    @property
+    def track_state(self) -> str | None:
+        return self._track_state
+
+    def set_pinned(self, pinned: bool) -> None:
+        """Start-up state of the pin (no pin_toggled)."""
+        self.pin_button.set_pinned(pinned)
+
+    @property
+    def pinned(self) -> bool:
+        return self.pin_button.isChecked()
+
     def set_scan(self, value: int | None, confidence: float, state: str,
                  matches: list[Match], note: str = "") -> None:
         top = matches[0] if matches else None
         key = (value, round(float(confidence), 2), state,
-               (top.kind, top.name, top.count, top.delta) if top else None, note)
+               (top.kind, top.name, top.count, top.delta, top.minerals) if top else None, note)
         if key == self._scan_sig:
             return
         self._scan_sig = key
@@ -253,7 +313,7 @@ class MiningPanel(QWidget):
 
     # ------------------------------------------------------------------
     def mousePressEvent(self, event):  # noqa: N802
-        if event.button() == Qt.MouseButton.LeftButton and event.position().y() < 40:
+        if event.button() == Qt.MouseButton.LeftButton and event.position().y() < theme.px(40):
             self._drag_from = event.globalPosition().toPoint() - self.frameGeometry().topLeft()
             event.accept()
 
