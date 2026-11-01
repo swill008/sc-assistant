@@ -105,7 +105,14 @@ running `.exe` replace its own files, so a new release means downloading it
 again. The `install.bat` route updates in place from `⚙` → **UPDATE**.
 
 Releases are produced by `.github/workflows/release.yml` when a `v*` tag is
-pushed; the job fails if the tag does not match `VERSION` in `app/version.py`.
+pushed, or by hand for an existing tag (Actions → *Release Windows EXE* → *Run
+workflow*, or `gh workflow run release.yml -f tag=v1.2.17`); a fork does not
+run push-triggered workflows until Actions has been enabled for it once, and a
+manual run works regardless. The job fails if the tag does not match `VERSION`
+in `app/version.py`, runs the headless self-tests before building, and uses
+that version's section of `CHANGES.md` as the release text (followed by
+GitHub's generated notes). `tools.scan_selftest` and `tools.scan_e2e_selftest`
+need real monitors, so run them locally before tagging.
 Pushes to `main` also build an artifact under **Actions** for testing, but those
 expire after 30 days and need a GitHub login.
 

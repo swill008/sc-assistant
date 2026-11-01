@@ -2,19 +2,34 @@ name: Release Windows EXE
 
 # Tag a commit to publish a download:
 #
-#   git tag v1.2.14
-#   git push origin v1.2.14
+#   git tag v1.2.17
+#   git push origin v1.2.17
+#
+# or run it by hand for a tag that already exists (Actions → Release Windows
+# EXE → Run workflow, or `gh workflow run release.yml -f tag=v1.2.17`). A
+# fork does not run push-triggered workflows until Actions is enabled for it
+# once, and a manual run does not need that.
 #
 # The job refuses to publish when the tag does not match VERSION in
 # app/version.py, so a release can never advertise the wrong build number.
+# The release text is that version's section of CHANGES.md, followed by
+# GitHub's generated notes.
 
 on:
   push:
     tags:
       - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release, e.g. v1.2.17"
+        required: true
 
 permissions:
   contents: write
+
+env:
+  TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
   release:
@@ -24,6 +39,8 @@ jobs:
     steps:
       - name: Check out
         uses: actions/checkout@v4
+        with:
+          ref: refs/tags/${{ env.TAG }}
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -40,7 +57,7 @@ jobs:
       - name: Check the tag matches the build
         shell: pwsh
         run: |
-          $tag = "${{ github.ref_name }}".TrimStart('v')
+          $tag = "${{ env.TAG }}".TrimStart('v')
           $line = Select-String -Path app/version.py -Pattern '^VERSION\s*=\s*"([^"]+)"'
           $ver = $line.Matches[0].Groups[1].Value
           if ($tag -ne $ver) {
@@ -51,6 +68,32 @@ jobs:
       - name: Import check
         run: python -c "import app.main; print('import ok')"
 
+      # The headless self-tests. tools.scan_selftest and
+      # tools.scan_e2e_selftest need real monitors, so they run locally.
+      - name: Self-tests
+        run: |
+          python -m tools.selftest
+          python -m tools.workflow_selftest
+          python -m tools.refinery_selftest
+          python -m tools.combat_selftest
+          python -m tools.blueprint_selftest
+
+      - name: Release notes from CHANGES.md
+        shell: pwsh
+        run: |
+          $ver = "${{ env.TAG }}"
+          $lines = Get-Content CHANGES.md -Encoding utf8
+          $start = [array]::FindIndex($lines, [Predicate[string]]{ param($l) $l -match "^## $([regex]::Escape($ver))\b" })
+          if ($start -lt 0) {
+            Set-Content release_notes.md "" -Encoding utf8
+            Write-Host "No CHANGES.md section for $ver"
+          } else {
+            $end = [array]::FindIndex($lines, $start + 1, [Predicate[string]]{ param($l) $l -match '^## ' })
+            if ($end -lt 0) { $end = $lines.Count }
+            $lines[($start + 1)..($end - 1)] | Set-Content release_notes.md -Encoding utf8
+            Write-Host "Release notes: CHANGES.md lines $($start + 2)-$end"
+          }
+
       - name: Build
         run: pyinstaller --noconfirm --clean citizen-assistant.spec
 
@@ -60,6 +103,9 @@ jobs:
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ env.TAG }}
+          name: ${{ env.TAG }}
+          body_path: release_notes.md
           files: CitizenAssistant-windows-x64.zip
           fail_on_unmatched_files: true
           generate_release_notes: true
