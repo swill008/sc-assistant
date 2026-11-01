@@ -1,19 +1,27 @@
-# Installs, upgrades and uninstalls a built Setup.exe into a throwaway folder
-# and checks each step. Silent; nothing is launched.
-#   installer\test_installer.ps1 -Setup dist\CitizenAssistant-1.2.17-Setup.exe
+# Installs, upgrades and uninstalls the TEST edition of the installer in a
+# throwaway folder and checks each step. Silent.
+#   installer\build_installer.ps1 -Test
+#   installer\test_installer.ps1 -Setup dist\CitizenAssistant-X.Y.Z-TEST-Setup.exe
 #
-# It uses the real AppId, so it removes itself at the end; run it when no
-# real installed copy is wanted in the test folder's place. Settings in
+# The test edition ("Citizen Assistant Test") has its own AppId, Start menu
+# folder and uninstall entry, so a real install is never touched. It runs the
+# installed program for real, which needs no Citizen Assistant running (they
+# share the single-instance mutex): quit it first. Settings in
 # %APPDATA%\Citizen Assistant must come through unchanged, and are checked.
 param([Parameter(Mandatory)][string]$Setup, [string]$Dir = "$env:TEMP\ca-install-test")
 
 $ErrorActionPreference = "Stop"
 $Setup = (Resolve-Path $Setup).Path
+if ((Split-Path $Setup -Leaf) -notmatch '-TEST-Setup\.exe$') {
+    throw "Use the test edition (installer\build_installer.ps1 -Test); a normal Setup would replace a real install."
+}
 $version = [regex]::Match((Split-Path $Setup -Leaf), '(\d+\.\d+\.\d+)').Groups[1].Value
-$appId = "{C4736091-9D04-4E7B-B53D-4FA025CCB796}_is1"
-$uninstKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\$appId"
-$startMenu = Join-Path ([Environment]::GetFolderPath("Programs")) "Citizen Assistant"
+$appName = "Citizen Assistant Test"
+$uninstKey = "HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{6F1D2A0B-5E51-4C59-9B67-2B7C0F3A9D14}_is1"
+$startMenu = Join-Path ([Environment]::GetFolderPath("Programs")) $appName
 $userData = Join-Path $env:APPDATA "Citizen Assistant"
+$exe = Join-Path $Dir "CitizenAssistant.exe"
+$tmpData = Join-Path $env:TEMP "ca-install-test-appdata"
 $failures = 0
 
 function Check([string]$label, [bool]$ok, [string]$detail = "") {
@@ -29,13 +37,37 @@ function Snapshot([string]$path) {
 
 function RunSetup([string[]]$extra) {
     $log = Join-Path $env:TEMP "ca-setup-$([guid]::NewGuid().ToString('N').Substring(0,8)).log"
-    $args = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=`"$Dir`"", "/LOG=`"$log`"") + $extra
+    $args = @("/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/DIR=`"$Dir`"", "/LOG=`"$log`"", "/TASKS=`"`"") + $extra
     $p = Start-Process -FilePath $Setup -ArgumentList $args -Wait -PassThru
     return @{ Code = $p.ExitCode; Log = $log }
 }
 
+# The installed program, run for real with a temporary settings folder.
+function StartApp {
+    if (Test-Path $tmpData) { Remove-Item -Recurse -Force $tmpData }
+    New-Item -ItemType Directory $tmpData | Out-Null
+    $psi = New-Object Diagnostics.ProcessStartInfo $exe
+    $psi.UseShellExecute = $false
+    $psi.EnvironmentVariables["APPDATA"] = $tmpData
+    $p = [Diagnostics.Process]::Start($psi)
+    Start-Sleep 12
+    return $p
+}
+
+function StopApp($p) {
+    if ($p -and -not $p.HasExited) { $p.Kill(); $p.WaitForExit(5000) | Out-Null }
+    Start-Sleep 1
+}
+
+function NoLeftovers {
+    -not (Test-Path "$Dir\_internal.old") -and -not (Test-Path "$Dir\CitizenAssistant.exe.old") -and -not (Test-Path "$Dir\.update-in-progress")
+}
+
+if (Get-Process CitizenAssistant -ErrorAction SilentlyContinue) {
+    throw "Citizen Assistant is running. Quit it first: the test runs the installed program, and only one copy can run."
+}
 if (Test-Path $uninstKey) {
-    throw "Citizen Assistant is already installed (uninstall entry exists); this test would replace it. Uninstall it first."
+    throw "$appName is already installed (an earlier test did not finish). Uninstall it from Settings > Apps first."
 }
 if (Test-Path $Dir) { Remove-Item -Recurse -Force $Dir }
 $dataBefore = Snapshot $userData
@@ -43,9 +75,9 @@ Write-Host "Testing $Setup (v$version) in $Dir"
 
 # 1. Fresh install --------------------------------------------------------
 Write-Host "1. Fresh install"
-$r = RunSetup @("/TASKS=`"`"")
+$r = RunSetup @()
 Check "setup exits 0" ($r.Code -eq 0) "(exit $($r.Code))"
-Check "program installed" (Test-Path "$Dir\CitizenAssistant.exe")
+Check "program installed" (Test-Path $exe)
 Check "runtime folder installed" (Test-Path "$Dir\_internal")
 Check "CHANGES.md installed" (Test-Path "$Dir\CHANGES.md")
 Check "uninstaller installed" (Test-Path "$Dir\unins000.exe")
@@ -53,71 +85,69 @@ $entry = Get-ItemProperty $uninstKey -ErrorAction SilentlyContinue
 Check "listed in installed apps" ($null -ne $entry)
 Check "installed apps shows v$version" ($entry.DisplayVersion -eq $version) "(DisplayVersion $($entry.DisplayVersion))"
 Check "per-user install (no admin)" ($uninstKey -like "HKCU:*")
-Check "Start menu shortcut" (Test-Path "$startMenu\Citizen Assistant.lnk")
-Check "Start menu uninstall shortcut" (Test-Path "$startMenu\Uninstall Citizen Assistant.lnk")
-$sh = (New-Object -ComObject WScript.Shell).CreateShortcut("$startMenu\Citizen Assistant.lnk")
-Check "shortcut points at the installed program" ($sh.TargetPath -eq "$Dir\CitizenAssistant.exe") "($($sh.TargetPath))"
+Check "Start menu shortcut" (Test-Path "$startMenu\$appName.lnk")
+Check "Start menu uninstall shortcut" (Test-Path "$startMenu\Uninstall $appName.lnk")
+$sh = (New-Object -ComObject WScript.Shell).CreateShortcut("$startMenu\$appName.lnk")
+Check "shortcut points at the installed program" ($sh.TargetPath -eq $exe) "($($sh.TargetPath))"
 
-# 1b. The installed program starts ------------------------------------------
-# Only one copy may run (a named mutex), so this needs no other copy open. It
-# runs with a temporary settings folder so real settings are never used.
-Write-Host "1b. Installed program starts"
-if (Get-Process CitizenAssistant -ErrorAction SilentlyContinue | Where-Object { $_.Path -ne "$Dir\CitizenAssistant.exe" }) {
-    Write-Host "  SKIP  another Citizen Assistant is running; quit it to test start-up"
-} else {
-    $tmpData = Join-Path $env:TEMP "ca-install-test-appdata"
-    if (Test-Path $tmpData) { Remove-Item -Recurse -Force $tmpData }
-    New-Item -ItemType Directory $tmpData | Out-Null
-    $psi = New-Object Diagnostics.ProcessStartInfo "$Dir\CitizenAssistant.exe"
-    $psi.UseShellExecute = $false
-    $psi.EnvironmentVariables["APPDATA"] = $tmpData
-    $proc = [Diagnostics.Process]::Start($psi)
-    Start-Sleep 15
-    $alive = -not $proc.HasExited
-    Check "program is still running after 15 s" $alive $(if (-not $alive) { "(exit $($proc.ExitCode))" } else { "" })
-    $errLog = Join-Path $tmpData "Citizen Assistant\error.log"
-    Check "no error.log written" (-not (Test-Path $errLog)) $(if (Test-Path $errLog) { (Get-Content $errLog -Tail 3) -join " | " } else { "" })
-    if ($alive) { $proc.Kill(); $proc.WaitForExit(5000) | Out-Null }
-    Remove-Item -Recurse -Force $tmpData -ErrorAction SilentlyContinue
-}
+# 2. The installed program starts -------------------------------------------
+Write-Host "2. Installed program starts"
+$app = StartApp
+Check "program is still running after 12 s" (-not $app.HasExited) $(if ($app.HasExited) { "(exit $($app.ExitCode))" } else { "" })
+$errLog = Join-Path $tmpData "Citizen Assistant\error.log"
+Check "no error.log written" (-not (Test-Path $errLog)) $(if (Test-Path $errLog) { (Get-Content $errLog -Tail 3) -join " | " } else { "" })
 
-# 2. Upgrade over the same version ------------------------------------------
-Write-Host "2. Upgrade in place"
-$exeHash = (Get-FileHash "$Dir\CitizenAssistant.exe").Hash
-$r = RunSetup @("/TASKS=`"`"")
-Check "upgrade exits 0" ($r.Code -eq 0) "(exit $($r.Code))"
-Check "program still there" ((Test-Path "$Dir\CitizenAssistant.exe") -and (Get-FileHash "$Dir\CitizenAssistant.exe").Hash -eq $exeHash)
-Check "old copies cleaned up" (-not (Test-Path "$Dir\_internal.old") -and -not (Test-Path "$Dir\CitizenAssistant.exe.old"))
-Check "no unfinished-update marker" (-not (Test-Path "$Dir\.update-in-progress"))
+# 3. Update while the real program runs -------------------------------------
+Write-Host "3. Update while the program is running"
+$exeHash = (Get-FileHash $exe).Hash
+$r = RunSetup @()
+Check "setup stops while the program runs" ($r.Code -ne 0) "(exit $($r.Code))"
+Check "log says it is running" ((Get-Content $r.Log -Raw) -match "(?i)running|mutex")
+Check "program kept running" (-not $app.HasExited)
+Check "nothing changed on disk" ((Get-FileHash $exe).Hash -eq $exeHash -and (Test-Path "$Dir\_internal\python313.dll") -and (NoLeftovers))
+StopApp $app
 
-# 3. Upgrade while the program's files are in use ---------------------------
-Write-Host "3. Upgrade while files are in use (simulated running copy)"
-$locked = [IO.File]::Open("$Dir\CitizenAssistant.exe", "Open", "Read", "None")
+# 4. Update after quitting --------------------------------------------------
+Write-Host "4. Update after quitting"
+$r = RunSetup @()
+Check "update exits 0" ($r.Code -eq 0) "(exit $($r.Code))"
+Check "program in place" ((Test-Path $exe) -and (Get-FileHash $exe).Hash -eq $exeHash)
+Check "old copies cleaned up, no unfinished-update marker" (NoLeftovers)
+
+# 5. Update while a file is locked by something else -----------------------
+Write-Host "5. Update while another program holds a file"
+$locked = [IO.File]::Open($exe, "Open", "Read", "None")
 try {
     # /NOCLOSEAPPLICATIONS: do not let setup close this PowerShell, which holds the lock.
-    $r = RunSetup @("/TASKS=`"`"", "/NOCLOSEAPPLICATIONS")
+    $r = RunSetup @("/NOCLOSEAPPLICATIONS")
 } finally { $locked.Close() }
-Check "setup refuses while in use" ($r.Code -ne 0) "(exit $($r.Code))"
+Check "setup refuses" ($r.Code -ne 0) "(exit $($r.Code))"
 Check "says the program is still running" ((Get-Content $r.Log -Raw) -match "still running")
-Check "previous version put back intact" ((Test-Path "$Dir\_internal\python313.dll") -and (Get-FileHash "$Dir\CitizenAssistant.exe").Hash -eq $exeHash)
-Check "no half-moved files left" (-not (Test-Path "$Dir\_internal.old") -and -not (Test-Path "$Dir\CitizenAssistant.exe.old") -and -not (Test-Path "$Dir\.update-in-progress"))
+Check "previous version put back intact" ((Test-Path "$Dir\_internal\python313.dll") -and (Get-FileHash $exe).Hash -eq $exeHash)
+Check "no half-moved files left" (NoLeftovers)
 
-# 4. Uninstall -------------------------------------------------------------
-Write-Host "4. Uninstall"
+# 6. Uninstall while the real program runs, then after quitting --------------
+Write-Host "6. Uninstall"
+$app = StartApp
+$p = Start-Process -FilePath "$Dir\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
+Start-Sleep 3
+Check "uninstall stops while the program runs" ((Test-Path $exe) -and (Test-Path $uninstKey)) "(exit $($p.ExitCode))"
+StopApp $app
 $p = Start-Process -FilePath "$Dir\unins000.exe" -ArgumentList "/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART" -Wait -PassThru
 # The uninstaller finishes in a copy of itself; give it a moment.
 $end = (Get-Date).AddSeconds(30)
-while ((Get-Date) -lt $end -and (Test-Path "$Dir\CitizenAssistant.exe")) { Start-Sleep -Milliseconds 500 }
+while ((Get-Date) -lt $end -and (Test-Path $exe)) { Start-Sleep -Milliseconds 500 }
 Start-Sleep 2
 Check "uninstaller exits 0" ($p.ExitCode -eq 0) "(exit $($p.ExitCode))"
-Check "program removed" (-not (Test-Path "$Dir\CitizenAssistant.exe") -and -not (Test-Path "$Dir\_internal"))
+Check "program removed" (-not (Test-Path $exe) -and -not (Test-Path "$Dir\_internal"))
 Check "removed from installed apps" (-not (Test-Path $uninstKey))
-Check "Start menu shortcuts removed" (-not (Test-Path "$startMenu\Citizen Assistant.lnk"))
+Check "Start menu shortcuts removed" (-not (Test-Path "$startMenu\$appName.lnk"))
 
-# 5. User data --------------------------------------------------------------
-Write-Host "5. Settings"
+# 7. User data --------------------------------------------------------------
+Write-Host "7. Settings"
 Check "%APPDATA%\Citizen Assistant unchanged" ((Snapshot $userData) -eq $dataBefore)
 
+Remove-Item -Recurse -Force $tmpData -ErrorAction SilentlyContinue
 if (Test-Path $Dir) { Remove-Item -Recurse -Force $Dir -ErrorAction SilentlyContinue }
 Write-Host ("-" * 70)
 if ($failures -eq 0) { Write-Host "ALL INSTALLER CHECKS PASSED" } else { Write-Host "$failures INSTALLER CHECK(S) FAILED" }

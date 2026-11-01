@@ -2,7 +2,8 @@
 # The version comes from app/version.py so the file name matches the release.
 #   installer\build_installer.ps1                    # dist\CitizenAssistant -> dist\
 #   installer\build_installer.ps1 -DistDir X -OutDir Y
-param([string]$Iscc = "", [string]$DistDir = "", [string]$OutDir = "")
+#   installer\build_installer.ps1 -Test             # "Citizen Assistant Test" edition for test_installer.ps1
+param([string]$Iscc = "", [string]$DistDir = "", [string]$OutDir = "", [switch]$Test)
 
 $root = Split-Path -Parent $PSScriptRoot
 $line = Select-String -Path (Join-Path $root "app\version.py") -Pattern '^VERSION\s*=\s*"([^"]+)"'
@@ -24,5 +25,7 @@ if (-not (Test-Path (Join-Path $DistDir "CitizenAssistant.exe"))) {
 New-Item -ItemType Directory -Force $OutDir | Out-Null
 # Resolved paths, not installer\..\dist: Qt's deepest files are close to the
 # 260 character path limit.
-& $Iscc "/DMyAppVersion=$version" "/DDistDir=$DistDir" "/DOutDir=$((Resolve-Path $OutDir).Path)" (Join-Path $PSScriptRoot "citizen_assistant.iss")
+$defines = @("/DMyAppVersion=$version", "/DDistDir=$DistDir", "/DOutDir=$((Resolve-Path $OutDir).Path)")
+if ($Test) { $defines += "/DTestBuild=1" }
+& $Iscc @defines (Join-Path $PSScriptRoot "citizen_assistant.iss")
 if ($LASTEXITCODE -ne 0) { throw "ISCC failed ($LASTEXITCODE)." }

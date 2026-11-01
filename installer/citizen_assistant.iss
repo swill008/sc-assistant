@@ -17,14 +17,30 @@
   #define OutDir "..\dist"
 #endif
 
-#define MyAppName "Citizen Assistant"
 #define MyAppPublisher "swill008"
 #define MyAppURL "https://github.com/swill008/citizen-assistant"
 #define MyAppExeName "CitizenAssistant.exe"
+#ifdef TestBuild
+  ; installer\test_installer.ps1 builds this edition: its own name, AppId and
+  ; folders, so testing never touches a real install.
+  #define MyAppName "Citizen Assistant Test"
+  #define MyAppIdGuid "{{6F1D2A0B-5E51-4C59-9B67-2B7C0F3A9D14}"
+  #define MyOutputName "CitizenAssistant-" + MyAppVersion + "-TEST-Setup"
+#else
+  #define MyAppName "Citizen Assistant"
+  #define MyAppIdGuid "{{C4736091-9D04-4E7B-B53D-4FA025CCB796}"
+  #define MyOutputName "CitizenAssistant-" + MyAppVersion + "-Setup"
+#endif
 
 [Setup]
 ; Never change the AppId: updates and uninstall find the install by it.
-AppId={{C4736091-9D04-4E7B-B53D-4FA025CCB796}
+AppId={#MyAppIdGuid}
+; The app holds this mutex while it runs (app/main.py, single instance).
+; Setup and the uninstaller check it before changing anything: interactively
+; they ask you to quit Citizen Assistant; silently they stop. Without it a
+; running copy's files were renamed aside, the update "succeeded" and the old
+; version kept running.
+AppMutex=CitizenAssistantOverlay
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
@@ -34,14 +50,14 @@ AppSupportURL={#MyAppURL}/issues
 AppUpdatesURL={#MyAppURL}/releases
 VersionInfoVersion={#MyAppVersion}
 PrivilegesRequired=lowest
-DefaultDirName={autopf}\Citizen Assistant
+DefaultDirName={autopf}\{#MyAppName}
 DisableDirPage=no
 UsePreviousAppDir=yes
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 LicenseFile=..\LICENSE
 OutputDir={#OutDir}
-OutputBaseFilename=CitizenAssistant-{#MyAppVersion}-Setup
+OutputBaseFilename={#MyOutputName}
 SetupIconFile=..\app.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}
