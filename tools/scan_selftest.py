@@ -257,10 +257,12 @@ def check_tracking_controls() -> int:
     from app.ui.settings_panel import SettingsPanel
 
     failures = 0
-    failures += _check("config: tracking_range defaults to 400, anchor to None, max_value 60000",
+    failures += _check("config: tracking_range defaults to 400, anchor to None, "
+                       "reader limits 2,000-100,000",
                        config_mod.DEFAULTS.get("tracking_range") == 400
                        and "anchor" in config_mod.DEFAULTS and config_mod.DEFAULTS["anchor"] is None
-                       and config_mod.DEFAULTS["max_value"] == 60000)
+                       and config_mod.DEFAULTS["min_value"] == 2000
+                       and config_mod.DEFAULTS["max_value"] == 100000)
     panel = SettingsPanel()
     emitted: list[int] = []
     panel.tracking_changed.connect(emitted.append)
@@ -642,6 +644,10 @@ def _bare_overlay(cfg):
     o._tracked_rect = None
     if hasattr(o, "_init_tracking_state"):       # missing in the old main.py
         o._init_tracking_state()
+    if hasattr(o, "_init_result_state"):         # missing before plan L
+        o._init_result_state()
+    o._resetting = False
+    o.unmatched = _FakeUnmatched()
     o.scan = _FakeScan2()
     o.outline = _FakeOutline()
     o.hotkeys = _FakeHotkeys()
@@ -658,6 +664,28 @@ def _bare_overlay(cfg):
     o.notes = _FakeWindow("notes", visible=False)
     o.combat_panel = _FakeWindow("combat")
     return o
+
+
+class _FakeUnmatched:
+    """UnmatchedLog stand-in: records record() calls, says True once per value."""
+
+    def __init__(self):
+        self.records: list = []
+        self.folder = Path(tempfile.gettempdir()) / "ca_unmatched_fake"
+        self.cleared = 0
+
+    def record(self, value, kind, crop=None, when=None):
+        fresh = all(v != value for v, _k, _c in self.records)
+        self.records.append((value, kind, crop))
+        return fresh
+
+    def entries(self):
+        return [{"value": v, "kind": k, "time": 0.0, "image": ""}
+                for v, k, _c in reversed(self.records)]
+
+    def clear(self):
+        self.cleared += 1
+        self.records.clear()
 
 
 def _secondary_region(width=57, height=25) -> tuple:
@@ -1195,6 +1223,355 @@ def check_signature_refresh() -> int:
     return failures
 
 
+# ---------------------------------------------------------------------------
+# Plan L: per-read feedback (SCANNED SIGNATURE, result border) and the
+# unmatched recorder / RESET SETTINGS wiring.
+class _Clock:
+    """Stands in for main.py's ``time`` module: monotonic() is set by hand."""
+
+    def __init__(self, start=1000.0):
+        self.now = start
+
+    def monotonic(self):
+        return self.now
+
+    def __getattr__(self, name):
+        import time
+        return getattr(time, name)
+
+
+def _calls(window, name):
+    return [args for attr, args in window.calls if attr == name]
+
+
+def _failed(raw=""):
+    from types import SimpleNamespace
+
+    return SimpleNamespace(ok=False, value=None, confidence=0.0, crop=None, raw=raw), []
+
+
+def _locked(o):
+    o._on_track_state({"state": "locked", "digits": {"left": 0, "top": 0, "width": 50, "height": 20},
+                       "pin": None})
+
+
+def check_user_case_76000() -> int:
+    """The user's case: 76,000 (ROC x19 Feynmaline) is read by the reader,
+    matched as ROC x19 with DEBRIS x38 as the second exact match, and reaches
+    the panel (SCANNED SIGNATURE, set_scan, green border)."""
+    from app import main as main_mod
+    from app.config import Config
+    from app.mining import MiningData
+    from app.ocr import OCRResult
+
+    failures = 0
+    data = MiningData()
+    scan = main_mod.ScanThread(data, Config())
+    reader = SignatureOCR(scan._min_value, scan._max_value)
+    got = reader._numbers([("76,000", 0.98)])
+    failures += _check("the reader keeps 76,000 (default limit)", got == [(76000, 0.98)],
+                       f"(numbers {got}, max_value {scan._max_value})")
+    low = reader._numbers([("2,000", 0.98), ("100,001", 0.98)])
+    failures += _check("the reader keeps 2,000 (one plant / panel), drops over 100,000",
+                       low == [(2000, 0.98)], f"(numbers {low}, min_value {scan._min_value})")
+
+    class _OCR76:
+        def read(self, crop):
+            return OCRResult(value=76000, confidence=0.99, crop=crop, raw="76,000")
+
+    import numpy as np
+
+    emitted: list = []
+    scan.result.connect(lambda res, matches: emitted.append((res, matches)))
+    scan._read_crop(np.zeros((20, 50, 3), np.uint8), _OCR76())
+    res, matches = emitted[-1] if emitted else (None, [])
+    kinds = [(m.kind, m.count, m.exact) for m in matches]
+    failures += _check("the matcher gives ROC x19 first, DEBRIS x38 second",
+                       kinds[:2] == [("roc", 19, True), ("debris", 38, True)], f"(matches {kinds})")
+
+    o = _bare_overlay(_test_cfg())
+    o._on_result(res, matches)
+    scanned = _calls(o.panel, "set_scanned")
+    failures += _check("76,000 reaches SCANNED SIGNATURE", scanned == [(76000,)], f"(set_scanned {scanned})")
+    shown = _calls(o.panel, "set_scan")
+    failures += _check("76,000 reaches the panel as ROC x19",
+                       bool(shown) and shown[-1][0] == 76000 and shown[-1][3][0].kind == "roc"
+                       and shown[-1][3][0].count == 19, f"(set_scan {[a[:3] for a in shown]})")
+    result = _calls(o.panel, "set_result")
+    failures += _check("76,000 confirmed: green border (match)", result == [("match",)], f"(set_result {result})")
+    failures += _check("an exact match is not recorded as unmatched", not o.unmatched.records,
+                       f"(records {o.unmatched.records})")
+    return failures
+
+
+def check_real_panel_76000() -> int:
+    """The same 76,000 through main.py into the real MiningPanel (never shown):
+    both labels, the second line and the green border, then lost -> None."""
+    from app import main as main_mod
+    from app.config import Config
+    from app.mining import MiningData
+    from app.ui.mining_panel import MiningPanel
+
+    failures = 0
+    data = MiningData()
+    scan = main_mod.ScanThread(data, Config())
+    from app.ocr import OCRResult
+
+    res = OCRResult(value=76000, confidence=0.99, raw="76,000")
+    matches = data.lookup(76000, scan._tolerance)
+    clock = _Clock()
+    real_time = main_mod.time
+    main_mod.time = clock
+    o = _bare_overlay(_test_cfg())
+    o.panel = MiningPanel()
+    o.panel.setWindowOpacity(0.0)
+    o.data = data
+    try:
+        o._on_result(res, matches)
+        p = o.panel
+        failures += _check("real panel: SCANNED SIGNATURE 76,000", "76,000" in p.scanned_text,
+                           f"({p.scanned_text!r})")
+        failures += _check("real panel: MATCHED SIGNATURE 76,000", "76,000" in p.matched_text,
+                           f"({p.matched_text!r})")
+        failures += _check("real panel: second line or DEBRIS x38", "DEBRIS" in p.alt_text and "38" in p.alt_text,
+                           f"({p.alt_text!r})")
+        failures += _check("real panel: green border", p.result == "match", f"({p.result!r})")
+        clock.now += 2.5
+        o._check_freshness()
+        failures += _check("real panel: lost -> thin edge (None)", p.result is None, f"({p.result!r})")
+    finally:
+        main_mod.time = real_time
+        o.panel.deleteLater()
+    return failures
+
+
+def check_scanned_every_read() -> int:
+    """SCANNED SIGNATURE on every read: a first read that waits for
+    confirmation shows its number (no colour yet); a failed read with the
+    plate there shows "—"; no plate shows nothing new."""
+    failures = 0
+    o = _bare_overlay(_test_cfg(stability_reads=2))
+    o._on_result(*_read(42000, confidence=0.5))          # waits for a second read
+    failures += _check("unconfirmed first read: SCANNED SIGNATURE 42,000",
+                       _calls(o.panel, "set_scanned") == [(42000,)], f"({_calls(o.panel, 'set_scanned')})")
+    failures += _check("unconfirmed first read: no border colour",
+                       all(a == (None,) for a in _calls(o.panel, "set_result")),
+                       f"(set_result {_calls(o.panel, 'set_result')})")
+    o.panel.calls.clear()
+    o._on_result(*_failed("12"))                           # fixed box, unreadable
+    failures += _check("unreadable read (fixed box): SCANNED SIGNATURE —",
+                       _calls(o.panel, "set_scanned") == [(None,)], f"({_calls(o.panel, 'set_scanned')})")
+    o.panel.calls.clear()
+    o._on_track_state({"state": "searching", "digits": None, "pin": None})
+    o._on_result(*_failed("no plate"))
+    failures += _check("no plate: SCANNED SIGNATURE untouched", not _calls(o.panel, "set_scanned"),
+                       f"({_calls(o.panel, 'set_scanned')})")
+    return failures
+
+
+def check_result_border() -> int:
+    """Border: green / yellow only for confirmed results ("~" near-guess is
+    yellow), red only after ~1 s of a tracked plate that cannot be read, never
+    with tracking off, back to None when the card goes lost."""
+    from app import main as main_mod
+
+    if not hasattr(main_mod.OverlayApp, "_set_result"):
+        return _check("main.py feeds the result border (set_result)", False)
+    failures = 0
+    clock = _Clock()
+    real_time = main_mod.time
+    main_mod.time = clock
+    try:
+        # Tracking off (fixed box): unreadable for 3 s is never red.
+        o = _bare_overlay(_test_cfg())
+        for _ in range(13):
+            o._on_result(*_failed("7"))
+            clock.now += 0.25
+        failures += _check("tracking off: never red", ("noread",) not in _calls(o.panel, "set_result"),
+                           f"(set_result {_calls(o.panel, 'set_result')})")
+
+        # No plate (searching) for 3 s: never red.
+        o = _bare_overlay(_test_cfg())
+        o._on_track_state({"state": "searching", "digits": None, "pin": None})
+        for _ in range(13):
+            o._on_result(*_failed("no plate"))
+            clock.now += 0.25
+        failures += _check("no plate on screen: never red", ("noread",) not in _calls(o.panel, "set_result"),
+                           f"(set_result {_calls(o.panel, 'set_result')})")
+
+        # Tracked plate: green, then unreadable. Red only after ~1 s.
+        o = _bare_overlay(_test_cfg())
+        _locked(o)
+        o._on_result(*_read(42000))
+        failures += _check("confirmed exact read: green (match)", o._result == "match"
+                           and _calls(o.panel, "set_result")[-1:] == [("match",)],
+                           f"(set_result {_calls(o.panel, 'set_result')})")
+        o.panel.calls.clear()
+        clock.now += 0.25
+        o._on_result(*_failed("4?,0"))
+        clock.now += 0.5
+        o._on_result(*_failed("4?,0"))
+        failures += _check("plate unreadable for 0.5 s: not red yet", not _calls(o.panel, "set_result"),
+                           f"(set_result {_calls(o.panel, 'set_result')})")
+        clock.now += 0.55
+        o._on_result(*_failed("4?,0"))
+        failures += _check("plate unreadable for ~1 s: red (noread)",
+                           _calls(o.panel, "set_result") == [("noread",)],
+                           f"(set_result {_calls(o.panel, 'set_result')})")
+        failures += _check("during red: SCANNED SIGNATURE —, matched side kept (no set_scan)",
+                           _calls(o.panel, "set_scanned") == [(None,)] * 3 and not _calls(o.panel, "set_scan"),
+                           f"(set_scanned {_calls(o.panel, 'set_scanned')}, "
+                           f"set_scan {len(_calls(o.panel, 'set_scan'))})")
+        clock.now += 1.5                       # 2.8 s since the last good read
+        o._check_freshness()
+        failures += _check("red stays while the tracked plate is still unreadable", o._result == "noread",
+                           f"(result {o._result})")
+        o._on_track_state({"state": "searching", "digits": None, "pin": None})
+        failures += _check("plate leaves the screen: red ends (None)", o._result is None
+                           and _calls(o.panel, "set_result")[-1:] == [(None,)],
+                           f"(set_result {_calls(o.panel, 'set_result')})")
+
+        # Single dropped frames between good reads: never red.
+        o = _bare_overlay(_test_cfg())
+        _locked(o)
+        for i in range(16):
+            o._on_result(*(_read(42000) if i % 2 else _failed("4?,0")))
+            clock.now += 0.25
+        failures += _check("dropped frames between good reads: never red",
+                           ("noread",) not in _calls(o.panel, "set_result"),
+                           f"(set_result {_calls(o.panel, 'set_result')})")
+
+        # Near-guess: yellow, recorded once.
+        o = _bare_overlay(_test_cfg())
+        o._on_result(*_read(43000, exact=False))
+        o._on_result(*_read(43000, exact=False))
+        failures += _check("confirmed \"~\" near-guess: yellow (nomatch)",
+                           _calls(o.panel, "set_result")[-1:] == [("nomatch",)],
+                           f"(set_result {_calls(o.panel, 'set_result')})")
+        recs = [(v, k) for v, k, _c in o.unmatched.records]
+        failures += _check("near-guess recorded once as unmatched (value, \"unknown\")",
+                           recs == [(43000, "unknown")], f"(records {recs})")
+        listed = _calls(o.settings, "set_unmatched")
+        failures += _check("a new unmatched entry is listed in Settings",
+                           len(listed) == 1 and listed[0][0][0]["value"] == 43000, f"(set_unmatched {listed})")
+
+        # Lost: 2 s after the last good read the border goes back to None.
+        clock.now += 2.5
+        o._check_freshness()
+        failures += _check("card lost: border back to None", o._result is None
+                           and _calls(o.panel, "set_result")[-1:] == [(None,)],
+                           f"(set_result {_calls(o.panel, 'set_result')})")
+        o._on_result(*_read(43000, exact=False))
+        o._on_result(*_read(43000, exact=False))
+        failures += _check("the same reading back after lost is offered to the recorder again",
+                           len(o.unmatched.records) == 2, f"({len(o.unmatched.records)} record calls)")
+
+        # A new reading waiting for confirmation: no colour.
+        o = _bare_overlay(_test_cfg(stability_reads=2))
+        o._on_result(*_read(42000, confidence=0.5))
+        o._on_result(*_read(42000, confidence=0.5))
+        o._on_result(*_read(8000, confidence=0.5))
+        failures += _check("a new reading waiting for confirmation: border None",
+                           _calls(o.panel, "set_result") == [("match",), (None,)],
+                           f"(set_result {_calls(o.panel, 'set_result')})")
+    finally:
+        main_mod.time = real_time
+    return failures
+
+
+def check_unmatched_and_reset_wiring() -> int:
+    """OPEN FOLDER / CLEAR, the list at start, and RESET SETTINGS: a fresh
+    default Config and nothing old written back on restart or quit; an error
+    keeps the settings and the scanner."""
+    import json
+    import subprocess
+    from types import SimpleNamespace
+
+    from app import config as app_config
+    from app import main as main_mod
+
+    failures = 0
+    o = _bare_overlay(_test_cfg())
+    if not hasattr(o, "_open_unmatched_folder"):
+        return _check("main.py has the unmatched / reset handlers", False)
+    opened: list = []
+    real_open = app_config.open_folder
+    app_config.open_folder = opened.append
+    try:
+        o._open_unmatched_folder()
+    finally:
+        app_config.open_folder = real_open
+    failures += _check("OPEN FOLDER opens the recorder's folder", opened == [o.unmatched.folder],
+                       f"(opened {opened})")
+    o.unmatched.records.append((9000, "unknown", None))
+    o._show_unmatched()
+    failures += _check("start: Settings lists the recorder's entries",
+                       _calls(o.settings, "set_unmatched")[-1][0][0]["value"] == 9000)
+    o._clear_unmatched()
+    failures += _check("CLEAR empties the recorder and the list",
+                       o.unmatched.cleared == 1 and _calls(o.settings, "set_unmatched")[-1] == ([],))
+
+    # RESET SETTINGS on a real settings file in the test's own APPDATA.
+    folder = app_config.config_dir()
+    folder.mkdir(parents=True, exist_ok=True)
+    old = app_config.Config()
+    old["poll_ms"] = 500
+    old["tracking_range"] = 150
+    old.save()
+    cfg = app_config.Config.load()
+    o = _bare_overlay(cfg)
+    o.scan = SimpleNamespace(stop=lambda: None, wait=lambda ms: True, resume=lambda: None)
+    o.combat = o.blueprint_tracker = SimpleNamespace(close=lambda: None)
+    o.hotkeys = SimpleNamespace(stop=lambda: None, wait=lambda ms: True)
+    o.tray = SimpleNamespace(hide=lambda: None)
+    o.voice = SimpleNamespace(stop=lambda: None)
+    o.app = SimpleNamespace(quit=lambda: None)
+    o._launch_args = []
+    launched: list = []
+    real_popen = main_mod.subprocess.Popen
+    main_mod.subprocess.Popen = lambda args, **kw: launched.append(list(args))
+    try:
+        o._reset_settings()
+        o.save_config()                   # main()'s aboutToQuit hook
+    finally:
+        main_mod.subprocess.Popen = real_popen
+    assert main_mod.subprocess.Popen is subprocess.Popen
+    on_disk = (app_config.CONFIG_PATH.read_text(encoding="utf-8")[:80]
+               if app_config.CONFIG_PATH.is_file() else "")
+    failures += _check("reset: restart and quit wrote no settings back (no config.json)",
+                       not app_config.CONFIG_PATH.is_file(), f"(on disk {on_disk!r})")
+    backups = [p for p in folder.parent.iterdir() if p.name.startswith(f"{folder.name} backup ")]
+    failures += _check("reset: a backup folder holds the old settings",
+                       any(json.loads((b / "config.json").read_text(encoding="utf-8")).get("poll_ms") == 500
+                           for b in backups if (b / "config.json").is_file()), f"(backups {backups})")
+    failures += _check("reset: the app restarts", len(launched) == 1 and "--restart" in launched[0],
+                       f"(launched {launched})")
+    failures += _check("reset: the app now holds a fresh default Config",
+                       o.cfg is not cfg and o.cfg["poll_ms"] == app_config.DEFAULTS["poll_ms"])
+    # A failing reset: error shown, nothing removed, scanner back on, no restart.
+    old.save()
+    cfg = app_config.Config.load()
+    o = _bare_overlay(cfg)
+    resumed: list = []
+    o.scan = SimpleNamespace(stop=lambda: None, wait=lambda ms: True, resume=lambda: resumed.append(1))
+    launched.clear()
+    o.restart = lambda: launched.append(["restart"])
+    real_reset = app_config.reset_to_defaults
+
+    def broken(folder=None):
+        raise OSError("config.json is in use")
+    app_config.reset_to_defaults = broken
+    try:
+        o._reset_settings()
+    finally:
+        app_config.reset_to_defaults = real_reset
+    errors = _calls(o.settings, "set_reset_error")
+    failures += _check("reset error: Settings shows it", errors == [("config.json is in use",)], f"({errors})")
+    failures += _check("reset error: settings kept, scanner resumed, no restart",
+                       o.cfg is cfg and resumed == [1] and not launched and app_config.CONFIG_PATH.is_file())
+    return failures
+
+
 def main() -> int:
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
@@ -1233,6 +1610,12 @@ def main() -> int:
     failures += check_first_run_attention()
     failures += check_update_handoff_failure()
     failures += check_signature_refresh()
+    print("-" * 78)
+    failures += check_user_case_76000()
+    failures += check_real_panel_76000()
+    failures += check_scanned_every_read()
+    failures += check_result_border()
+    failures += check_unmatched_and_reset_wiring()
     print("-" * 78)
     failures += check_outline()
     failures += check_quit_button()

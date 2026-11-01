@@ -1,0 +1,272 @@
+{
+ "version": "4.10.2-live.12913470",
+ "note": "Excerpt of scmdb.net mining_data-4.10.2-live.12913470.json (fetched 2026-11-01): clusteringPresets names and deposit counts only. Used by tools/nextdata_selftest.py.",
+ "clusteringPresets": {
+  "fe6811ff-35ad-4c26-a87a-3e88d06ef1cd": {
+   "name": "BushFieldLarge",
+   "params": []
+  },
+  "50b251a4-2395-435f-bf33-53548649cd00": {
+   "name": "Harvestables Cluster Large",
+   "params": [
+    {
+     "minSize": 5,
+     "maxSize": 10
+    }
+   ]
+  },
+  "61404ece-5cbc-4952-805a-0053345dd91d": {
+   "name": "Harvestables Cluster Low",
+   "params": [
+    {
+     "minSize": 2,
+     "maxSize": 3
+    }
+   ]
+  },
+  "c4d0e865-86f1-427f-a8d8-ff701557c269": {
+   "name": "Harvestables Cluster Medium",
+   "params": [
+    {
+     "minSize": 3,
+     "maxSize": 5
+    }
+   ]
+  },
+  "d3bc17e2-7a06-450a-82a0-1c5774329054": {
+   "name": "MiningCluster Med Lrg",
+   "params": [
+    {
+     "minSize": 10,
+     "maxSize": 22
+    },
+    {
+     "minSize": 13,
+     "maxSize": 24
+    },
+    {
+     "minSize": 15,
+     "maxSize": 25
+    }
+   ]
+  },
+  "4ffceda3-639a-4c1f-9e24-cf4df9af1253": {
+   "name": "MiningCluster Sml Med",
+   "params": [
+    {
+     "minSize": 10,
+     "maxSize": 18
+    },
+    {
+     "minSize": 12,
+     "maxSize": 20
+    },
+    {
+     "minSize": 13,
+     "maxSize": 21
+    }
+   ]
+  },
+  "9776d961-d608-47c1-a338-927a6e9e8a88": {
+   "name": "Mining Rare Cluster",
+   "params": [
+    {
+     "minSize": 2,
+     "maxSize": 3
+    },
+    {
+     "minSize": 3,
+     "maxSize": 4
+    }
+   ]
+  },
+  "ea8562fe-4d9f-4366-a5c2-114d18a2f7c3": {
+   "name": "SalvageScrap",
+   "params": [
+    {
+     "minSize": 3,
+     "maxSize": 15
+    },
+    {
+     "minSize": 3,
+     "maxSize": 8
+    },
+    {
+     "minSize": 3,
+     "maxSize": 5
+    }
+   ]
+  },
+  "26f40438-7add-46ea-924a-2f3fd4acab7d": {
+   "name": "SalvageScrap Pyro",
+   "params": [
+    {
+     "minSize": 10,
+     "maxSize": 15
+    },
+    {
+     "minSize": 7,
+     "maxSize": 10
+    },
+    {
+     "minSize": 5,
+     "maxSize": 7
+    }
+   ]
+  },
+  "2c2fd5fb-7e69-487c-a89b-aa7f0f81dc72": {
+   "name": "Salvage Cluster Elite Common",
+   "params": [
+    {
+     "minSize": 3,
+     "maxSize": 3
+    }
+   ]
+  },
+  "4ea7cc50-5077-41ea-875b-4df58330a0b9": {
+   "name": "Salvage Cluster Elite Rare",
+   "params": [
+    {
+     "minSize": 2,
+     "maxSize": 2
+    }
+   ]
+  },
+  "2239d6ba-ac77-4db4-9ac3-c16ce78f7779": {
+   "name": "Salvage Cluster Elite Uncommon",
+   "params": [
+    {
+     "minSize": 3,
+     "maxSize": 3
+    }
+   ]
+  },
+  "47b073fa-4c40-4eeb-a19f-eda0ac00ba89": {
+   "name": "Salvage Cluster Normal Common",
+   "params": [
+    {
+     "minSize": 2,
+     "maxSize": 2
+    }
+   ]
+  },
+  "d822672a-2b30-4ad3-84c5-949047b978f0": {
+   "name": "Salvage Cluster Normal Rare",
+   "params": [
+    {
+     "minSize": 2,
+     "maxSize": 2
+    }
+   ]
+  },
+  "394e415c-d177-4b5e-97ef-8eba9eb54bbc": {
+   "name": "Salvage Cluster Normal Uncommon",
+   "params": [
+    {
+     "minSize": 2,
+     "maxSize": 2
+    }
+   ]
+  },
+  "2fabb75c-c641-483e-a353-96dc83093132": {
+   "name": "Salvage Cluster Poor Common",
+   "params": [
+    {
+     "minSize": 2,
+     "maxSize": 2
+    }
+   ]
+  },
+  "2f064233-7070-4992-b62e-1c4f5dccd7eb": {
+   "name": "Salvage Cluster Poor Rare",
+   "params": [
+    {
+     "minSize": 3,
+     "maxSize": 3
+    }
+   ]
+  },
+  "f0dc276e-dd23-4b03-a3e8-faee717ea276": {
+   "name": "Salvage Cluster Poor Uncommon",
+   "params": [
+    {
+     "minSize": 3,
+     "maxSize": 3
+    }
+   ]
+  },
+  "1f5f80cc-1b4d-41df-8481-5d07d00441a7": {
+   "name": "CommonShipMineable Cluster",
+   "params": [
+    {
+     "minSize": 6,
+     "maxSize": 6
+    },
+    {
+     "minSize": 5,
+     "maxSize": 5
+    },
+    {
+     "minSize": 4,
+     "maxSize": 4
+    }
+   ]
+  },
+  "b097c899-4a14-4092-8d07-75c1cf9d05c2": {
+   "name": "EpicShipMineable Cluster",
+   "params": [
+    {
+     "minSize": 3,
+     "maxSize": 3
+    },
+    {
+     "minSize": 2,
+     "maxSize": 2
+    }
+   ]
+  },
+  "3638ea41-8218-4f04-948c-40beaa3e9ee9": {
+   "name": "LegendaryShipMineable Cluster",
+   "params": [
+    {
+     "minSize": 2,
+     "maxSize": 2
+    }
+   ]
+  },
+  "cd074871-2f6d-45c1-a88f-38b21ef02309": {
+   "name": "RareShipMineable Cluster",
+   "params": [
+    {
+     "minSize": 4,
+     "maxSize": 4
+    },
+    {
+     "minSize": 3,
+     "maxSize": 3
+    },
+    {
+     "minSize": 2,
+     "maxSize": 2
+    }
+   ]
+  },
+  "cf2ebacb-255a-40e6-b300-7414c949ce76": {
+   "name": "UncommonShipMineable Cluster",
+   "params": [
+    {
+     "minSize": 5,
+     "maxSize": 5
+    },
+    {
+     "minSize": 4,
+     "maxSize": 4
+    },
+    {
+     "minSize": 3,
+     "maxSize": 3
+    }
+   ]
+  }
+ }
+}

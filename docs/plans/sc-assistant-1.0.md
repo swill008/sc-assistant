@@ -131,6 +131,61 @@ Marked `ONE-TIME (rename to SC Assistant)` in the code; it can go once no
 - tools/make_shortcuts.ps1: `$oldName`, `Test-SourceShortcut`,
   `Remove-OldShortcuts`; uninstall.bat comment.
 
+## Next release (planning, 2026-11-01) — K-N built 2026-11-01, not released
+Requested by the user: a button to wipe settings back to defaults; recognise
+every scannable item; visible feedback for every read (no silent discards).
+
+- K. [built] Scan limits (decided 2026-11-01; replaces the earlier "ground limit
+  30"). Finding: the user's 76,000 Feynmaline (19 ROC deposits x 4,000) was
+  lost twice: the reader drops values over max_value 60,000, and the matcher
+  allowed at most 8 ground deposits (it would have said DEBRIS x38). Game data
+  (scmdb 4.10.2 live clusteringPresets; Star Citizen Wiki): ROC clusters
+  10-25 deposits, hand mining 10-21, ship rocks up to 6, salvage scrap up to
+  15; whole derelicts not in the data.
+  - Limits per kind (1a): ROC 25, hand mining 21, ship 10, salvage 50,
+    lower limit 1; a test compares them with the newest scmdb data.
+  - Reader accepts up to 100,000 (2a), the largest real reading; above
+    that counts as unreadable (red). Default only, no settings-file update.
+  - When a number fits two kinds, both are shown on two lines (e.g.
+    "ROC x19 · FEYNMALINE / ..." then "or DEBRIS x38").
+  - Red border (3a): only while the scan plate is on screen (tracking found
+    the pin) and its number cannot be read for about a second in a row; no
+    red with tracking off or an empty screen; single dropped frames no.
+  - During red (4a): "SCANNED SIGNATURE —"; the matched side and ore name
+    keep the last good result.
+- L. [built] Per-read feedback (decided with the user, 2026-11-01). The signature
+  line becomes two labels:
+  - left "SCANNED SIGNATURE <n>": the number from the latest scan, updated
+    on every read (today an unreadable crop is dropped silently in
+    _on_result and an unconfirmed first read only shows "reading");
+  - right "MATCHED SIGNATURE <n>": the signature of the result shown below.
+  - Result border (user, 2026-11-01; replaces the earlier "scanned number
+    turns green/yellow"): all text, numbers and chips keep today's colours
+    (ore names use rarity colours). The card gets a thick result border,
+    about 3 px at 100% scale (1a): green = read + exact match, yellow =
+    read, no match, red = could not read. When the card greys out 2 s after
+    the scan leaves the screen, the border returns to today's thin cyan edge
+    (2a). A first read waiting for confirmation shows no colour; only a
+    confirmed result colours the border (3a). Border only, no other colour
+    changes (4a). "—" when nothing was read.
+  - The "NN% MATCH" text moves under the matched signature for now (1b),
+    renamed "READ NN%" so it is not confused with the match.
+  - Nothing matched: the right side reads "MATCHED SIGNATURE —" (decided 1a).
+- M. [built] Recorder for unmatched readings (decided 4b): every reading the app
+  cannot match is saved (number, time, small picture of the box, kind of
+  scan) and listed in Settings. Review (user, 2026-11-01): when the user
+  comes back with missing scans, read %APPDATA%\SC Assistant\unmatched\
+  (index.json + pictures) together and decide what to add.
+- Data gaps found 2026-11-01: harvestables use 2,000 per plant like salvage
+  (grimhex; scmdb clusters 2-10). Decided 1a: 2,000 x 1-10 also shows
+  "or HARVESTABLES xn" on the second line under DEBRIS. Agricium 3,885
+  (scmdb game files) vs 3,895 (grimhex): decided 2a, keep scmdb's 3,885 and
+  let the recorder settle it.
+- N. [built] Reset to defaults (decided 5a, 6a): settings only (box, pin, monitor,
+  reads/s, TRACKING, SHOW BOX, hotkeys, pinned windows) plus downloaded
+  caches; notes, inventory and blueprints are kept. Click twice like QUIT;
+  a dated backup folder is kept next to the settings; then the app restarts.
+
 ## Parked (2026-11-01): SuperCargo button
 A CARGO nav-bar button that shows/hides SuperCargo and its overlay. Planned
 method: `--show` / `--hide` / `--toggle` switches added to the user's

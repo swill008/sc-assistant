@@ -16,6 +16,7 @@ from PySide6.QtGui import (QAction, QColor, QFont, QGuiApplication, QIcon,
                            QShortcut)
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
+from . import config as app_config
 from . import display, win32
 from .blueprints import BlueprintTracker
 from .capture import is_region_valid
@@ -37,6 +38,7 @@ from .ui.region_selector import RegionSelector
 from .ui.settings_panel import SettingsPanel
 from .ui.uex_panel import UexPanel
 from .ui import theme
+from .unmatched import UnmatchedLog
 from .version import APP_NAME, MUTEX_NAME, OLD_MUTEX_NAME
 from .version import label as version_label
 from .voice import Voice, spoken_text
@@ -65,6 +67,9 @@ TOOLS = [
 TOOL_HOTKEY_BASE = 100
 # How long the DRAW REGION result stays on screen (even with SHOW BOX off).
 CONFIRM_MS = 3000
+# Seconds in a row the tracked plate must stay unreadable before the result
+# border turns red ("noread"); single dropped frames never do.
+NOREAD_SECONDS = 1.0
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +182,12 @@ class ScanThread(QThread):
 
     def stop(self) -> None:
         self._stop = True
+
+    def resume(self) -> None:
+        """Start again after stop() (RESET SETTINGS failed)."""
+        self._stop = False
+        if not self.isRunning():
+            self.start(QThread.Priority.LowPriority)
 
     # ------------------------------------------------------------------
     def run(self) -> None:  # noqa: D102
@@ -524,6 +535,10 @@ class OverlayApp(QObject):
         self._last_res = None
         self._paused = False
         self._last_match_name = ""
+        self._init_result_state()
+        # RESET SETTINGS in progress: nothing may write the old settings back.
+        self._resetting = False
+        self.unmatched = UnmatchedLog()
 
         self.nav = NavBar(TOOLS)
         self.panel = MiningPanel()
@@ -619,6 +634,9 @@ class OverlayApp(QObject):
         self.settings.outline_toggled.connect(self._on_outline)
         self.settings.tracking_changed.connect(self._on_tracking)
         self.settings.hotkeys_changed.connect(self._on_hotkeys_changed)
+        self.settings.open_unmatched_folder.connect(self._open_unmatched_folder)
+        self.settings.clear_unmatched.connect(self._clear_unmatched)
+        self.settings.reset_requested.connect(self._reset_settings)
         for panel_id, widget in self._panels().items():
             widget.pin_toggled.connect(
                 lambda pinned, pid=panel_id: self._on_pin(pid, pinned))
@@ -722,6 +740,7 @@ class OverlayApp(QObject):
                                           locked=self.capture_visible)
         self.settings.set_voice_hint(
             "" if self.voice.available else "No speech engine available")
+        self._show_unmatched()
 
         ore_pos = self.cfg.get("orefinder_pos")
         if isinstance(ore_pos, list) and len(ore_pos) == 2:
@@ -1165,6 +1184,8 @@ class OverlayApp(QObject):
             self._last_locked = None
             self._update_outline()
         self.panel.set_state("paused" if paused else "reading")
+        self._noread_since = None
+        self._set_result(None)
         if paused and self._last_value is not None:
             self.panel.set_scan(self._last_value, 0.0, "lost",
                                 self._last_matches, "paused")
@@ -1376,6 +1397,10 @@ class OverlayApp(QObject):
         self._track_info = dict(info)
         if info.get("state") != "locked":
             self._lock_value = None
+            # Red means "plate on screen, number unreadable": no plate, no red.
+            self._noread_since = None
+            if self._result == "noread":
+                self._set_result(None)
         if info.get("state") == "locked" and info.get("digits"):
             self._last_locked = (info["digits"], info.get("pin"))
         elif info.get("state") == "fixed":
@@ -1617,8 +1642,11 @@ class OverlayApp(QObject):
 
         if not res.ok:
             self._recent.clear()
+            self._on_unreadable(res)
             return
 
+        self._noread_since = None
+        self.panel.set_scanned(res.value)
         self._recent.append(res.value)
         # Refresh the liveness timer on any readable number: "lost" means the
         # HUD left the screen, not that we are unsure which of two readings is
@@ -1645,6 +1673,7 @@ class OverlayApp(QObject):
         )
         if not stable and not fast_lock:
             self.panel.set_state("reading")
+            self._set_result(None)          # only a confirmed result colours it
             return
 
         self._last_value = value
@@ -1659,6 +1688,10 @@ class OverlayApp(QObject):
             if near:
                 note = f"closest {near[0].name} ×{near[0].count} ({near[0].target:,})"
         self.panel.set_scan(value, res.confidence, "stable", matches, note)
+        exact = top is not None and top.exact      # "~" near-guess: no match
+        self._set_result("match" if exact else "nomatch")
+        if not exact:
+            self._record_unmatched(value, res.crop)
 
         if self._track_info.get("state") == "locked" and self._lock_value != value:
             self._lock_value = value
@@ -1670,6 +1703,88 @@ class OverlayApp(QObject):
             self._announce_signature(value, top)
         # Here the value is shown (fast single read or identical reads).
         self._maybe_learn_pin(top)
+
+    def _init_result_state(self) -> None:
+        self._result: str | None = None          # what the border shows now
+        # monotonic time the tracked plate became unreadable, None while read.
+        self._noread_since: float | None = None
+        # Unmatched value already offered to the recorder while it is shown.
+        self._unmatched_value: int | None = None
+
+    def _set_result(self, result: str | None) -> None:
+        if result != self._result:
+            self._result = result
+            self.panel.set_result(result)
+
+    def _on_unreadable(self, res) -> None:
+        """A read with no number: "—" while a plate is there, red after
+        NOREAD_SECONDS in a row of a tracked plate that cannot be read."""
+        state = self._track_info.get("state")
+        if getattr(res, "raw", "") == "no plate" or state == "searching":
+            self._noread_since = None
+            return                  # nothing on screen: nothing to report
+        self.panel.set_scanned(None)
+        if state != "locked":
+            return                  # fixed box: no way to know a plate is there
+        now = time.monotonic()
+        if self._noread_since is None:
+            self._noread_since = now
+        elif now - self._noread_since >= NOREAD_SECONDS:
+            self._set_result("noread")
+
+    def _record_unmatched(self, value: int, crop) -> None:
+        if value == self._unmatched_value:
+            return                  # same reading still on screen
+        self._unmatched_value = value
+        try:
+            if self.unmatched.record(value, "unknown", crop):
+                self.settings.set_unmatched(self.unmatched.entries())
+        except Exception:
+            pass                    # a full disk must not stop the scanner
+
+    def _show_unmatched(self) -> None:
+        try:
+            entries = self.unmatched.entries()
+        except Exception:
+            entries = []
+        self.settings.set_unmatched(entries)
+
+    def _open_unmatched_folder(self) -> None:
+        try:
+            self.unmatched.folder.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            pass
+        app_config.open_folder(self.unmatched.folder)
+
+    def _clear_unmatched(self) -> None:
+        try:
+            self.unmatched.clear()
+        except Exception:
+            pass
+        self._unmatched_value = None
+        self.settings.set_unmatched([])
+
+    def _reset_settings(self) -> None:
+        """RESET SETTINGS: back up and remove the settings, then restart."""
+        self.scan.stop()
+        self.scan.wait(1500)
+        try:
+            app_config.reset_to_defaults()
+        except Exception as exc:
+            # Nothing was removed: keep working with the current settings.
+            self.settings.set_reset_error(str(exc))
+            self.scan.resume()
+            return
+        # The old Config must never be saved again (restart and quit save
+        # state): a fresh default one replaces it and saving is turned off.
+        self.cfg = Config()
+        self._resetting = True
+        self.restart()
+
+    def save_config(self) -> None:
+        """aboutToQuit: write the settings, unless they were just reset."""
+        if not self._resetting:
+            self.cfg.save()
 
     def _announce_signature(self, value: int, top) -> None:
         """Speak a locked rock once, not on every read while flying at it.
@@ -1707,6 +1822,11 @@ class OverlayApp(QObject):
             return
         self.panel.set_state("idle")
         self.panel.set_scan(self._last_value, 0.0, "lost", self._last_matches)
+        self._unmatched_value = None
+        # Lost: back to the thin edge. Red stays while the tracked plate is
+        # still on screen and unreadable (it went "lost" because of that).
+        if self._result != "noread":
+            self._set_result(None)
         # Keep the spoken signature through brief flicker; only forget it after
         # a real break so a new rock of the same type can announce again.
         try:
@@ -1751,6 +1871,8 @@ class OverlayApp(QObject):
 
     # ------------------------------------------------------------------
     def _save_state(self) -> None:
+        if self._resetting:
+            return          # the settings were reset: write nothing back
         try:
             self.cfg["mining_panel_pos"] = [self.panel.x(), self.panel.y()]
             self.cfg["orefinder_pos"] = [self.orefinder.x(), self.orefinder.y()]
@@ -1924,7 +2046,9 @@ def main(argv: list[str] | None = None) -> int:
                          capture_visible=args.capture_visible,
                          launch_args=(list(argv) if argv is not None
                                       else sys.argv[1:]))
-    app.aboutToQuit.connect(lambda: cfg.save())
+    # overlay.cfg via save_config: RESET SETTINGS replaces it and turns
+    # saving off, so quitting cannot write the old settings back.
+    app.aboutToQuit.connect(overlay.save_config)
     overlay.start()
     if args.open:
         QTimer.singleShot(350, lambda: overlay.open_tool(args.open))

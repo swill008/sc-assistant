@@ -77,7 +77,7 @@ class OCRResult:
 
 
 class SignatureOCR:
-    def __init__(self, min_value: int = 2500, max_value: int = 60000, threads: int = 1):
+    def __init__(self, min_value: int = 2000, max_value: int = 100000, threads: int = 1):
         self.min_value = min_value
         self.max_value = max_value
         self.threads = max(1, int(threads))

@@ -7,7 +7,10 @@ Runs the real OverlayApp twice against a temporary settings folder (your own
 BOX and MONITOR through the Settings controls, saves a pin from the 5K2K test
 image the way DRAW REGION does, and quits with QUIT. The file on disk must hold
 every change; the second run, started from that file, must show each one in
-Settings and use it in the scanner.
+Settings and use it in the scanner. A third run uses UNMATCHED READINGS (OPEN
+FOLDER, CLEAR) and RESET SETTINGS: the restart is caught, the settings file
+must stay gone after the restart and quit (nothing old written back), a dated
+backup holds it, and a fourth run starts on the defaults.
 """
 from __future__ import annotations
 
@@ -48,6 +51,82 @@ def _pump(seconds: float) -> None:
     while time.monotonic() < end:
         QApplication.processEvents()
         time.sleep(0.01)
+
+
+def _reset_run(app, saved: dict) -> int:
+    """Third run: UNMATCHED READINGS buttons, then RESET SETTINGS (two clicks).
+    The restart is caught (no process is started); the settings file must be
+    gone after the restart and quit, a dated backup must hold the old one, and
+    the next start must use the defaults."""
+    from app import config as app_config
+    from app import main as main_mod
+    from app.config import CONFIG_PATH, DEFAULTS, Config, config_dir
+    from app.main import OverlayApp
+
+    failures = 0
+    print("Third run: UNMATCHED READINGS, then RESET SETTINGS")
+    three = OverlayApp(app, Config.load())
+    three.start()
+    three.panel.hide()
+    _pump(0.5)
+    s = three.settings
+    if not hasattr(s, "reset_btn") or not hasattr(three, "unmatched"):
+        return _check("RESET SETTINGS and UNMATCHED READINGS are wired", False)
+
+    opened: list = []
+    real_open, real_popen = app_config.open_folder, main_mod.subprocess.Popen
+    app_config.open_folder = opened.append
+    launched: list = []
+    main_mod.subprocess.Popen = lambda args, **kw: launched.append(list(args))
+    try:
+        three.unmatched.record(9999, "unknown", None)
+        three._show_unmatched()
+        s.unmatched_open_btn.click()
+        failures += _check("OPEN FOLDER opens the unmatched folder",
+                           opened == [config_dir() / "unmatched"], f"(opened {opened})")
+        s.unmatched_clear_btn.click()
+        s.unmatched_clear_btn.click()
+        failures += _check("CLEAR (two clicks) empties the unmatched readings",
+                           three.unmatched.entries() == [], f"({three.unmatched.entries()})")
+
+        s.reset_btn.click()
+        _pump(0.1)
+        failures += _check("one RESET click keeps the settings", CONFIG_PATH.is_file() and not launched)
+        s.reset_btn.click()
+        _pump(0.5)
+        three.save_config()                # what main()'s aboutToQuit hook runs
+    finally:
+        app_config.open_folder, main_mod.subprocess.Popen = real_open, real_popen
+    failures += _check("second RESET click restarts the app",
+                       len(launched) == 1 and "--restart" in launched[0], f"(launched {launched})")
+    failures += _check("reset stopped the scanner", three.scan.isFinished())
+    failures += _check("restart and quit wrote no settings back (no config.json)",
+                       not CONFIG_PATH.is_file(),
+                       f"({CONFIG_PATH.read_text(encoding='utf-8')[:80] if CONFIG_PATH.is_file() else ''})")
+    failures += _check("pin removed", not (config_dir() / "anchor.png").is_file())
+    folder = config_dir()
+    backups = [p for p in folder.parent.iterdir() if p.name.startswith(f"{folder.name} backup ")]
+    kept = [json.loads((b / "config.json").read_text(encoding="utf-8")) for b in backups
+            if (b / "config.json").is_file()]
+    failures += _check("a dated backup holds the old settings",
+                       any(k.get("poll_ms") == saved.get("poll_ms") for k in kept), f"(backups {backups})")
+    three.outline.hide()
+    for w in (three.nav, three.panel, three.settings):
+        w.hide()
+
+    print("Fourth run: start after the reset")
+    four = OverlayApp(app, Config.load())
+    four.start()
+    four.panel.hide()
+    _pump(0.5)
+    failures += _check("READS / S back to the default",
+                       four.scan._interval == int(DEFAULTS["poll_ms"]), f"(interval {four.scan._interval})")
+    failures += _check("no box and no pin after the reset",
+                       four.cfg["region"] == DEFAULTS["region"] and not four.scan.tracking)
+    four.nav.quit_btn.click()
+    four.nav.quit_btn.click()
+    _pump(0.3)
+    return failures
 
 
 def main() -> int:
@@ -148,6 +227,9 @@ def main() -> int:
     failures += _check("quitting again keeps every setting",
                        all(resaved.get(k) == saved.get(k) for k in
                            ("poll_ms", "tracking_range", "show_region_outline", "game_monitor", "region", "anchor")))
+
+    # ---- RESET SETTINGS: defaults after the restart, nothing written back --
+    failures += _reset_run(app, saved)
 
     # ---- fresh start with no region: no picker forced on screen ----------
     print("Fresh start, no region saved")

@@ -12,7 +12,11 @@ from . import theme
 from .pin_button import PinButton
 
 PANEL_WIDTH = 372      # fits the header with the tracking chip and pin (was 330)
-PANEL_HEIGHT = 158
+PANEL_HEIGHT = 172     # two signature rows, READ and the "or ..." line (was 158)
+VERDICT_HEIGHT = PANEL_HEIGHT - 50   # margins, header and spacing take 50
+RESULT_BORDER = 3.0    # result border width, design px
+RESULTS = ("match", "nomatch", "noread")
+NONE_TEXT = "—"
 
 
 def ground_kind(match: Match) -> str:
@@ -20,24 +24,64 @@ def ground_kind(match: Match) -> str:
     return "HAND MINING" if match.kind == "fps" else "ROC"
 
 
+def match_label(match: Match) -> str:
+    """Upper-case label of a match; falls back to name / kind for a kind
+    this panel does not know."""
+    try:
+        label = match.label
+    except Exception:  # noqa: BLE001 - an unknown kind must not break painting
+        label = ""
+    return str(label or match.name or match.kind).upper()
+
+
+def alt_match(matches: list[Match]) -> Match | None:
+    """Second exact match of another kind than matches[0], or None."""
+    if not matches:
+        return None
+    top = matches[0]
+    return next((m for m in matches[1:] if m.exact and m.kind != top.kind), None)
+
+
 class _Verdict(QWidget):
-    """The mineral reading: name, count, signature and confidence."""
+    """The mineral reading: scanned and matched signatures, name, count and
+    read confidence."""
+
+    # Layout, design px: one rect per text (rows()) so tests can check overlaps.
+    CAPTION_Y, CAPTION_H = 0, 12
+    VALUE_Y, VALUE_H = 12, 16
+    READ_Y, READ_H = 28, 12
+    HEAD_Y, HEAD_H = 40, 35
+    DETAIL_Y, DETAIL_H = 76, 15
+    ALT_Y, ALT_H = 91, 15
+    METER_FROM_BOTTOM = 9
+    NOTE_H = 12
+    BAR_W = 88.0
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setFixedHeight(theme.px(PANEL_HEIGHT - 50))
+        self.setFixedHeight(theme.px(VERDICT_HEIGHT))
+        self._scanned: int | None = None
         self._value: int | None = None
         self._confidence = 0.0
         self._state = "idle"
         self._match: Match | None = None
+        self._alt: Match | None = None
         self._note = ""
 
+    def set_scanned(self, value: int | None) -> None:
+        if value == self._scanned:
+            return
+        self._scanned = value
+        self.update()
+
     def set_scan(self, value: int | None, confidence: float, state: str,
-                 match: Match | None, note: str = "") -> None:
+                 match: Match | None, note: str = "",
+                 alt: Match | None = None) -> None:
         self._value = value
         self._confidence = max(0.0, min(1.0, confidence))
         self._state = state
         self._match = match
+        self._alt = alt
         self._note = note
         # Ground readings: the full candidate list, as the detail line is
         # elided to the panel width.
@@ -48,76 +92,120 @@ class _Verdict(QWidget):
         self.update()
 
     # ------------------------------------------------------------------
+    # Texts (also read by the tests)
+    def scanned_value_text(self) -> str:
+        return NONE_TEXT if self._scanned is None else f"{self._scanned:,}"
+
+    def matched_value_text(self) -> str:
+        return NONE_TEXT if self._match is None else f"{self._match.target:,}"
+
+    def read_text(self) -> str:
+        return "" if self._value is None else f"READ {int(self._confidence * 100)}%"
+
+    def alt_text(self) -> str:
+        if self._alt is None:
+            return ""
+        return f"or {match_label(self._alt)} ×{self._alt.count}"
+
+    @staticmethod
+    def caption_font() -> QFont:
+        return theme.pfont(7, QFont.Weight.Bold, spacing=1.4)
+
+    @staticmethod
+    def value_font() -> QFont:
+        return theme.pfont(9, QFont.Weight.DemiBold, spacing=0.5)
+
+    @staticmethod
+    def read_font() -> QFont:
+        return theme.pfont(7, QFont.Weight.Medium, spacing=0.7)
+
+    @staticmethod
+    def detail_font() -> QFont:
+        return theme.pfont(8, QFont.Weight.Medium, spacing=0.2)
+
+    def rows(self, w: int, h: int) -> dict[str, tuple[QRectF, QFont, Qt.AlignmentFlag]]:
+        """name -> (rect, font, alignment) for every text the card draws."""
+        left = Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        right = Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter
+        half = w / 2.0
+        y = h - self.METER_FROM_BOTTOM
+        return {
+            "scanned_caption": (QRectF(0, self.CAPTION_Y, half, self.CAPTION_H),
+                                self.caption_font(), left),
+            "matched_caption": (QRectF(half, self.CAPTION_Y, half, self.CAPTION_H),
+                                self.caption_font(), right),
+            "scanned_value": (QRectF(0, self.VALUE_Y, half, self.VALUE_H),
+                              self.value_font(), left),
+            "matched_value": (QRectF(half, self.VALUE_Y, half, self.VALUE_H),
+                              self.value_font(), right),
+            "read": (QRectF(half, self.READ_Y, half, self.READ_H), self.read_font(), right),
+            "headline": (QRectF(0, self.HEAD_Y, w - 48, self.HEAD_H), theme.phud_font(26), left),
+            "count": (QRectF(w - 48, self.HEAD_Y, 48, self.HEAD_H), theme.phud_font(15), right),
+            "detail": (QRectF(0, self.DETAIL_Y, w, self.DETAIL_H), self.detail_font(), left),
+            "alt": (QRectF(0, self.ALT_Y, w, self.ALT_H), self.detail_font(), left),
+            "note": (QRectF(self.BAR_W + 8, y - self.NOTE_H / 2, w - self.BAR_W - 8,
+                            self.NOTE_H), theme.pfont(7, QFont.Weight.Medium), right),
+        }
+
+    # ------------------------------------------------------------------
     def paintEvent(self, event):  # noqa: N802
         p, w, h = theme.paint(self)
         p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         lost = self._state == "lost"
+        rows = self.rows(w, h)
+        value_pen = theme.MUTED if lost else theme.TEXT
 
-        # SIGNATURE 7,200 ................ 82% MATCH
-        p.setFont(theme.pfont(7, QFont.Weight.Bold, spacing=1.4))
-        p.setPen(theme.DIM)
-        p.drawText(QRectF(0, 0, 84, 15), Qt.AlignmentFlag.AlignLeft, "SIGNATURE")
+        def text(name: str, colour: QColor, value: str, width: float | None = None) -> None:
+            rect, font, align = rows[name]
+            if width is not None:
+                rect = QRectF(rect.x(), rect.y(), width, rect.height())
+            p.setFont(font)
+            p.setPen(colour)
+            p.drawText(rect, align, QFontMetrics(font).elidedText(
+                value, Qt.TextElideMode.ElideRight, int(rect.width())))
+
+        # SCANNED SIGNATURE ............ MATCHED SIGNATURE
+        # 7,200                                      7,200
+        #                                         READ 82%
+        text("scanned_caption", theme.DIM, "SCANNED SIGNATURE")
+        text("matched_caption", theme.DIM, "MATCHED SIGNATURE")
+        text("scanned_value", value_pen, self.scanned_value_text())
+        text("matched_value", value_pen, self.matched_value_text())
         if self._value is not None:
-            p.setFont(theme.pfont(9, QFont.Weight.DemiBold, spacing=0.5))
-            p.setPen(theme.MUTED if lost else theme.TEXT)
-            p.drawText(QRectF(82, 0, 120, 15), Qt.AlignmentFlag.AlignLeft,
-                       f"{self._value:,}")
+            text("read", theme.DIM if lost else
+                 (theme.GOOD if self._confidence >= 0.75 else theme.AMBER),
+                 self.read_text())
 
-            p.setFont(theme.pfont(7, QFont.Weight.Medium, spacing=0.7))
-            p.setPen(theme.DIM if lost else
-                     (theme.GOOD if self._confidence >= 0.75 else theme.AMBER))
-            p.drawText(QRectF(0, 0, w, 15),
-                       Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                       f"{int(self._confidence * 100)}% MATCH")
-
-        # Headline
+        # Headline: the name takes the whole width when there is no count.
         name, color, count = self._headline(lost)
-        p.setFont(theme.phud_font(26))
-        metrics = QFontMetrics(p.font())
-        avail = w - (48 if count else 0)
-        p.setPen(color)
-        p.drawText(QRectF(0, 20, avail, 38),
-                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                   metrics.elidedText(name, Qt.TextElideMode.ElideRight, avail))
+        text("headline", color, name, width=None if count else w)
         if count:
-            p.setFont(theme.phud_font(15))
-            p.setPen(theme.DIM if lost else theme.TEXT)
-            p.drawText(QRectF(0, 20, w, 38),
-                       Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                       count)
+            text("count", theme.DIM if lost else theme.TEXT, count)
 
-        # Detail
-        p.setFont(theme.pfont(8, QFont.Weight.Medium, spacing=0.2))
-        p.setPen(theme.DIM if lost else theme.MUTED)
-        p.drawText(QRectF(0, 62, w, 15),
-                   Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter,
-                   QFontMetrics(p.font()).elidedText(
-                       self._detail(), Qt.TextElideMode.ElideRight, w))
+        # Detail, then a second exact match of another kind
+        text("detail", theme.DIM if lost else theme.MUTED, self._detail())
+        alt = self.alt_text()
+        if alt:
+            text("alt", theme.DIM if lost else theme.MUTED, alt)
 
         # Confidence meter
-        bar_w = 88.0
-        y = h - 10
+        y = h - self.METER_FROM_BOTTOM
         p.setPen(Qt.PenStyle.NoPen)
         p.setBrush(QColor(255, 255, 255, 16))
-        p.drawRoundedRect(QRectF(0, y, bar_w, 3), 1.5, 1.5)
+        p.drawRoundedRect(QRectF(0, y, self.BAR_W, 3), 1.5, 1.5)
         if self._value is not None and not lost:
             p.setBrush(theme.GOOD if self._confidence >= 0.75 else theme.AMBER)
             p.drawRoundedRect(
-                QRectF(0, y, max(3.0, bar_w * self._confidence), 3), 1.5, 1.5)
+                QRectF(0, y, max(3.0, self.BAR_W * self._confidence), 3), 1.5, 1.5)
 
         if self._note:
-            p.setFont(theme.pfont(7, QFont.Weight.Medium))
-            p.setPen(theme.DIM)
-            p.drawText(QRectF(bar_w + 8, y - 7, w - bar_w - 8, 14),
-                       Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter,
-                       QFontMetrics(p.font()).elidedText(
-                           self._note, Qt.TextElideMode.ElideRight,
-                           int(w - bar_w - 8)))
+            text("note", theme.DIM, self._note)
 
     # ------------------------------------------------------------------
     def _headline(self, lost: bool) -> tuple[str, QColor, str]:
         if self._match is not None:
             name = self._match.label if self._match.is_ground else self._match.name
+            name = name or match_label(self._match)
             if not self._match.exact:
                 # Not an exact multiple of this ore's signature: mark it so a
                 # nearest-guess is never mistaken for a confirmation.
@@ -137,6 +225,9 @@ class _Verdict(QWidget):
                 if not minerals:
                     return "SIZE ONLY · MINERAL DEPENDS ON LOCATION"
                 return f"{ground_kind(self._match)} · {' / '.join(minerals)}"
+            if self._match.kind != "ship":
+                # Harvestables, or a kind this panel does not know yet.
+                return (self._match.secondary or match_label(self._match)).upper()
             bits = [theme.RARITY_NAME.get(self._match.rarity, "")]
             if self._match.secondary:
                 bits.append(self._match.secondary)
@@ -167,6 +258,7 @@ class MiningPanel(QWidget):
         self._scan_sig: tuple | None = None
         self._state = ""
         self._track_state: str | None = None
+        self._result: str | None = None
         self._build()
 
     # ------------------------------------------------------------------
@@ -283,12 +375,53 @@ class MiningPanel(QWidget):
     def set_scan(self, value: int | None, confidence: float, state: str,
                  matches: list[Match], note: str = "") -> None:
         top = matches[0] if matches else None
+        alt = alt_match(matches)
         key = (value, round(float(confidence), 2), state,
-               (top.kind, top.name, top.count, top.delta, top.minerals) if top else None, note)
+               (top.kind, top.name, top.count, top.target, top.delta, top.minerals)
+               if top else None,
+               (alt.kind, alt.name, alt.count) if alt else None, note)
         if key == self._scan_sig:
             return
         self._scan_sig = key
-        self.verdict.set_scan(value, confidence, state, top, note)
+        self.verdict.set_scan(value, confidence, state, top, note, alt)
+
+    def set_scanned(self, value: int | None) -> None:
+        """Left label: the number from the latest read; None shows "—"."""
+        self.verdict.set_scanned(value)
+
+    def set_result(self, result: str | None) -> None:
+        """Result border: "match" green, "nomatch" yellow, "noread" red;
+        None is the plain thin edge."""
+        if result is not None and result not in RESULTS:
+            raise ValueError(f"unknown result {result!r}")
+        if result == self._result:
+            return
+        self._result = result
+        self.update()
+
+    @property
+    def result(self) -> str | None:
+        return self._result
+
+    def result_colour(self) -> QColor | None:
+        return {"match": theme.GOOD, "nomatch": theme.AMBER,
+                "noread": theme.BAD}.get(self._result or "")
+
+    @property
+    def scanned_text(self) -> str:
+        return f"SCANNED SIGNATURE {self.verdict.scanned_value_text()}"
+
+    @property
+    def matched_text(self) -> str:
+        return f"MATCHED SIGNATURE {self.verdict.matched_value_text()}"
+
+    @property
+    def read_text(self) -> str:
+        return self.verdict.read_text()
+
+    @property
+    def alt_text(self) -> str:
+        return self.verdict.alt_text()
 
     def set_scan_idle(self, note: str = "") -> None:
         self.set_scan(None, 0.0, "idle", [], note)
@@ -331,5 +464,15 @@ class MiningPanel(QWidget):
     def paintEvent(self, event):  # noqa: N802
         p, w, h = theme.paint(self)
         theme.paint_card(p, QRectF(0, 0, w, h), radius=12)
-        p.setPen(QPen(QColor(79, 209, 224, 90), 1.0))
-        p.drawLine(16, 1, w - 16, 1)
+        colour = self.result_colour()
+        if colour is None:
+            p.setPen(QPen(QColor(79, 209, 224, 90), 1.0))
+            p.drawLine(16, 1, w - 16, 1)
+            return
+        # Thick result border just inside the card edge; the painter is
+        # pre-scaled, so this is theme.px(RESULT_BORDER) on screen.
+        half = RESULT_BORDER / 2.0
+        p.setPen(QPen(colour, RESULT_BORDER))
+        p.setBrush(Qt.BrushStyle.NoBrush)
+        p.drawPath(theme.card_path(QRectF(half, half, w - RESULT_BORDER, h - RESULT_BORDER),
+                                   12 - half))

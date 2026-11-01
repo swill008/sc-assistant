@@ -5,7 +5,106 @@
 Citizen Assistant is now **SC Assistant**, and the version number starts again
 at 1.0.0. Also: data safety for the user's own files, visible HUD-tracking
 feedback, signature data from scmdb.net, release notes, update and scanner
-fixes, rebindable hotkeys, window pins and first-run guidance.
+fixes, rebindable hotkeys, window pins and first-run guidance, scan limits from
+the game data, feedback on every read, a recorder for unmatched readings and a
+settings reset.
+
+### Scan limits from the game data
+
+**What happened.** The user's 76,000 Feynmaline (19 ROC deposits × 4,000) was
+lost twice: the reader dropped every value over `max_value` 60,000, and the
+matcher allowed at most 8 ground deposits (it would have said DEBRIS ×38).
+
+**Change.** Limits per kind, from scmdb 4.10.2 live `clusteringPresets` and the
+Star Citizen Wiki (ROC clusters 10-25 deposits, hand mining 10-21, ship rocks
+up to 6, salvage scrap up to 15; whole derelicts are not in the data):
+
+- Module constants in `app/mining.py`, lower limit 1: ship 10 (`MAX_CLUSTER`,
+  unchanged), ROC 25, hand mining (FPS) 21, salvage debris 50,
+  harvestables 10. The bundled `signatures.json` ground `max_cluster` (8)
+  became `roc_max_cluster` 25 and `fps_max_cluster` 21, so it does not lower
+  them; `MiningData.ground_max_cluster` is now the larger of the two.
+- Debris no longer appends `OR ROC DEPOSIT ×n` to its detail line; the other
+  kind is the panel's second line instead.
+- New kind `harvest`: base 2,000 (like debris, per grimhex), 1-10 plants,
+  label `HARVESTABLES`, detail `PLANTS` (`harvest` in `signatures.json`;
+  scmdb Harvestables clusters 2-10). A multiple of 2,000 gives debris first and harvest
+  second when both fit.
+- `MiningData.lookup(value)` returns every candidate: exact matches first,
+  then fuzzy ones, closest first. Before, fuzzy matches were dropped whenever
+  an exact one existed. Order of exact matches (user decision): ship ore first;
+  up to 30,000 (`SALVAGE_FIRST_MAX`, the largest scrap field) salvage next, so
+  8,000 in space stays DEBRIS ×4 with ROC ×2 on the second line; above it
+  ground first, so 76,000 → ROC ×19 (exact), DEBRIS ×38 (exact).
+- Reader limits: `max_value` default 100,000 and `min_value` 2,000 (was
+  2,500, which dropped a single salvage piece or plant) in `app/config.py`
+  DEFAULTS and in `SignatureOCR`. Defaults only; existing settings files are
+  not rewritten (unreleased program).
+- Agricium stays at scmdb's 3,885 (grimhex says 3,895); the unmatched recorder
+  will settle it.
+
+### Feedback on every read
+
+- The signature line is two labels. Left, `SCANNED SIGNATURE <n>`
+  (`MiningPanel.set_scanned`): the number from every read, `—` when a read
+  found no number (left unchanged when the read reports no plate or tracking
+  is searching). Before, an unreadable crop was
+  dropped silently in `_on_result` and a first unconfirmed read only showed
+  "reading". Right, `MATCHED SIGNATURE <n>`, the signature of the shown
+  result, or `MATCHED SIGNATURE —` with no match.
+- `NN% MATCH` moves under the matched signature as `READ NN%` (OCR
+  confidence), keeping its colours.
+- A second exact match of another kind is shown on its own line,
+  `or DEBRIS ×38` (76,000) / `or HARVESTABLES ×5` (10,000).
+- Result border (`MiningPanel.set_result`): about `theme.px(3)`, green
+  (`theme.GOOD`) for a confirmed exact match, yellow (`theme.AMBER`) for a
+  confirmed reading with no exact match (a `~` guess counts as none), red
+  (`theme.BAD`) for no read. The panel is 172 px high (was 158) for the extra
+  rows. No colour (today's thin cyan edge) while a first
+  read waits for confirmation and when the card goes lost (2 s after the last
+  good read). Text, numbers and chips keep their colours.
+- Red only while tracking reports the plate on screen (track state `locked`)
+  and no number could be read for about 1 s in a row (`NOREAD_SECONDS` in
+  `app/main.py`, `time.monotonic`), timed rather than
+  counted in frames. Tracking off or no plate: never red. During red the
+  matched side and ore name keep the last good result.
+
+### Recorder for unmatched readings
+
+- `app/unmatched.py`, `UnmatchedLog`: every confirmed reading without an exact
+  match is saved under `%APPDATA%\SC Assistant\unmatched\` as a PNG of the
+  crop plus an entry (`value`, `kind`, `time`, `image`) in `index.json`,
+  written through `app.safe_store`. `kind` is `"unknown"` for now. The same
+  value within 60 s is recorded
+  once; the newest 200 entries are kept and older pictures deleted. An
+  `index.json` that cannot be read is never saved over.
+- Settings → *Unmatched readings*: `None saved` / `N saved`, the newest three
+  rows (value, time), **OPEN FOLDER**, and **CLEAR** (two clicks; the first
+  shows `CLEAR?` for 3 s). CLEAR deletes the pictures and `index.json`; the
+  folder stays.
+- Review: when the user comes back with missing scans, the folder
+  (`index.json` and the pictures) is read together and the missing
+  signatures are decided.
+
+### Reset settings
+
+- Settings → **RESET SETTINGS** (red, two clicks like QUIT; the first click
+  shows `CLICK AGAIN TO RESET` for 3 s), in a new last section *Reset*.
+- `config.reset_to_defaults()` copies the whole settings folder to a sibling
+  `SC Assistant backup <YYYY-MM-DD HHMMSS>` (a ` (2)` suffix if it exists),
+  then removes `config.json`/`config.tmp`, `anchor.png`, the caches
+  (`hauling_*.json`, `routes_cache.json`, `where_to_mine.json`,
+  `signatures_scmdb.json`), their `.bak` copies and the `unmatched` folder.
+  Kept: `notes.txt`, `inventory.json`, `unlocked_blueprints.json`,
+  `refinery_jobs.json`, `active_run.json`, `workflow_wallet.json`,
+  `error.log`, their `.bak` files and anything unknown. The lists are the
+  module constants `RESET_REMOVE` / `RESET_KEEP` (shell patterns). Removal is
+  all or nothing: everything is first renamed into a staging folder, and a
+  failed rename puts it back and raises.
+- The app stops the scanner, swaps in a default config and stops saving it on
+  quit (so restarting cannot write the old settings back), then restarts. If
+  the reset fails nothing is removed, the scanner resumes and Settings shows
+  `Reset failed, nothing was removed: <reason>`.
 
 ### Rename to SC Assistant, version 1.0.0
 
@@ -173,6 +272,17 @@ New, each printing PASS/FAIL lines with the number of failures as exit code:
   workflows; with `RELEASE_CHECK=1` (the release workflow sets it) it fails
   when `app/version.py` names a version without a notes file. The build
   workflow runs it on every push.
+
+- `tools/nextdata_selftest.py`: scan limits against scmdb's
+  `clusteringPresets` (fixture `tools/fixtures/scmdb_clusters_4.10.2-live.json`;
+  `--live` fetches the newest data), harvestables, the 100,000 reader limit,
+  the unmatched recorder and `reset_to_defaults`.
+- `tools/panel_selftest.py`: SCANNED / MATCHED SIGNATURE, `READ NN%`, the
+  second line and the result border, and the card layout at UI scale 1.0 and
+  1.5.
+- `tools/settings_extra_selftest.py`: RESET SETTINGS and UNMATCHED READINGS
+  with real clicks (two-click buttons, error note, list, layout at 1.0 and
+  1.5).
 
 Extended: `tools/update_selftest.py` (digest check, "What's new", the
 hand-off command run against a fake Setup, the TRACKING slider),

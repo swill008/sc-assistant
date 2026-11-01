@@ -34,7 +34,10 @@ on a secondary monitor, or the primary if there is only one, then:
    learns the pin from the first exact read.
 8. Pins: a pinned panel stays visible after hide-all, an unpinned one hides
    (both shown at opacity 0).
-9. First run (plan J-i): with no box the nav ⚙ and DRAW REGION ask for
+9. Result border (plan L): SCANNED SIGNATURE shows the read and the border
+   is green on the confirmed exact read; never red with the plate gone or
+   with TRACKING 0; back to None once the card is lost.
+10. First run (plan J-i): with no box the nav ⚙ and DRAW REGION ask for
    attention; both stop once a box exists.
 
 Exit code = number of failed checks.
@@ -367,6 +370,13 @@ def part_app(screen, shown: dict) -> int:
         _pump(0.1)
     failures += _check(f"running scanner reads {EXPECTED:,}", overlay._last_value == EXPECTED,
                        f"(last value {overlay._last_value})")
+    panel = overlay.panel
+    failures += _check(f"SCANNED SIGNATURE shows {EXPECTED:,}",
+                       f"{EXPECTED:,}" in getattr(panel, "scanned_text", ""),
+                       f"({getattr(panel, 'scanned_text', '<missing>')!r})")
+    failures += _check("confirmed exact read: green result border",
+                       getattr(panel, "result", "<missing>") == "match",
+                       f"(panel.result {getattr(panel, 'result', '<missing>')!r})")
     failures += _check("scanner thread runs at low priority",
                        overlay.scan.priority() == overlay.scan.Priority.LowPriority,
                        f"(priority {overlay.scan.priority()})")
@@ -554,6 +564,18 @@ def part_tracking(overlay, shown: dict, seen: dict) -> int:
                 f"label {getattr(outline, 'label', '<missing>')!r}, marks {marks()}, "
                 f"window {outline_now()}, chip {chip()!r}, last emitted {last_state()!r})")
 
+    # Every border change main.py asks of the panel, with its time.
+    borders: list = []
+    panel_set_result = getattr(overlay.panel, "set_result", None)
+    if panel_set_result is not None:
+        def set_result(result, _real=panel_set_result):
+            borders.append((time.monotonic(), result))
+            _real(result)
+        overlay.panel.set_result = set_result
+
+    def borders_since(t0):
+        return [r for t, r in borders if t >= t0]
+
     # 1. DRAW REGION through the app with the plate on the drawn box: the app grabs
     #    the screen around it and saves the pin anchor. The pin learned at start
     #    (plan B) is removed first so this save is DRAW REGION's own.
@@ -653,6 +675,11 @@ def part_tracking(overlay, shown: dict, seen: dict) -> int:
     failures += _check("plate gone: SHOW BOX outline.state searching",
                        outline.isVisible() and getattr(outline, "state", None) == "searching", describe())
     failures += _check("plate gone: chip SEARCHING", chip() == "searching", describe())
+    failures += _check("plate gone: never a red border", "noread" not in borders_since(t_gone),
+                       f"(borders {borders_since(t_gone)})")
+    failures += _check("plate gone > 2 s: card lost, border back to None",
+                       getattr(overlay.panel, "result", "<missing>") is None,
+                       f"(panel.result {getattr(overlay.panel, 'result', '<missing>')!r})")
 
     fixture.show()
     _move(fixture, moved_rect)
@@ -680,6 +707,8 @@ def part_tracking(overlay, shown: dict, seen: dict) -> int:
     t_off = time.monotonic()
     _pump(2.5)
     off = values_since(t_off)
+    failures += _check("TRACKING 0 (tracking off): never a red border",
+                       "noread" not in borders_since(t_off), f"(borders {borders_since(t_off)})")
     failures += _check("TRACKING 0: the moved plate is not read",
                        EXPECTED not in off and overlay._last_value != EXPECTED and len(off) > 0,
                        f"({len(off)} results, values {sorted(set(map(str, off)))})")

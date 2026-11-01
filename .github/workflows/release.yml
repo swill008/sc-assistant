@@ -84,6 +84,7 @@ jobs:
           python -m tools.combat_selftest
           python -m tools.blueprint_selftest
           python -m tools.signature_selftest
+          python -m tools.nextdata_selftest
 
       # RELEASE_CHECK=1 also fails when app/version.py's VERSION has no
       # release-notes/<version>.md.

@@ -35,8 +35,9 @@
     { "name": "Ice",         "short": "ICE",  "base": 4300, "value": null,   "rarity": 1, "secondary": null }
   ],
   "ground": {
-    "note": "Ground deposits: signature only tells you the size. Hand mining (FPS, 3,000) and ROC (4,000) each have their own minerals; which one depends on the location.",
-    "max_cluster": 8,
+    "note": "Ground deposits: signature only tells you the size (ROC 1-25 deposits, hand mining 1-21; scmdb MiningCluster presets). Hand mining (FPS, 3,000) and ROC (4,000) each have their own minerals; which one depends on the location.",
+    "roc_max_cluster": 25,
+    "fps_max_cluster": 21,
     "roc_base": 4000,
     "fps_base": 3000,
     "fps_minerals": ["Aphorite", "Carinite", "Dolivine", "Hadanite", "Jaclium", "Janalite", "Sadaryx", "Saldynium"],
@@ -48,5 +49,12 @@
     "max_cluster": 50,
     "name": "Debris",
     "detail": "HULL PANELS / SCRAP METAL"
+  },
+  "harvest": {
+    "note": "Harvestables: plant clusters read 2,000 per plant like salvage (scmdb Harvestables Cluster presets: 2-10 plants). A 2,000 multiple shows Debris first and Harvestables second.",
+    "base": 2000,
+    "max_cluster": 10,
+    "name": "Harvestables",
+    "detail": "PLANTS"
   }
 }

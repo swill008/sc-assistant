@@ -198,7 +198,9 @@ def main() -> int:
           len(roc) == 1 and len(roc[0].minerals) == 22
           and "Aphorite" not in roc[0].minerals and "Beradom" in roc[0].minerals
           and "Quantanium" in roc[0].minerals, str(roc))
-    check("lookup(4000): salvage stays the headline", m4[0].kind == "debris", str(m4[0]))
+    check("lookup(4000): salvage range: debris x2, harvestables x2, then ROC x1",
+          [(m.kind, m.count) for m in m4 if m.exact][:3]
+          == [("debris", 2), ("harvest", 2), ("roc", 1)], str(m4))
     m9 = data.lookup(9000)
     check("lookup(9000): FPS x3 with the FPS list",
           m9 and m9[0].kind == "fps" and m9[0].count == 3 and list(m9[0].minerals) == FPS)

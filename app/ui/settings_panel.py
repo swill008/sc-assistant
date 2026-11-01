@@ -1,6 +1,8 @@
 """Settings window: capture region, scanning controls, hotkeys and updates."""
 from __future__ import annotations
 
+import time
+
 from PySide6.QtCore import QRectF, Qt, QThread, QTimer, QUrl, Signal
 from PySide6.QtGui import (QColor, QDesktopServices, QFont, QGuiApplication,
                            QImage, QKeyEvent, QPen, QPixmap)
@@ -269,6 +271,18 @@ class SettingsPanel(QWidget):
                                       # once per change (on slider release)
     hotkeys_changed = Signal(dict)    # {"toggle_nav": vk, "panic": vk, "tools": {id: vk}}
     pin_toggled = Signal(bool)        # the header pin, user clicks only
+    reset_requested = Signal()        # RESET SETTINGS, second click
+    open_unmatched_folder = Signal()  # UNMATCHED READINGS -> OPEN FOLDER
+    clear_unmatched = Signal()        # UNMATCHED READINGS -> CLEAR, second click
+
+    # Two-click buttons (like QUIT on the nav bar): the first click arms,
+    # a second within ARM_MS acts; otherwise the button reverts.
+    ARM_MS = 3000
+    RESET_TEXT = "RESET SETTINGS"
+    RESET_ARMED_TEXT = "CLICK AGAIN TO RESET"
+    CLEAR_TEXT = "CLEAR"
+    CLEAR_ARMED_TEXT = "CLEAR?"         # like QUIT? on the nav bar
+    UNMATCHED_ROWS = 3                # newest rows listed
 
     def __init__(self, parent=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint
@@ -290,6 +304,7 @@ class SettingsPanel(QWidget):
         self._attention_timer = QTimer(self)
         self._attention_timer.setInterval(600)
         self._attention_timer.timeout.connect(self._pulse_region_btn)
+        self._unmatched: list[dict] = []
         self._build()
         self.adjustSize()
 
@@ -689,6 +704,66 @@ class SettingsPanel(QWidget):
         root.addLayout(data_row)
         root.addSpacing(theme.px(8))
 
+        # Unmatched readings ------------------------------------------
+        # Readings no signature matched, saved by the app (number, time and
+        # a picture of the box) so missing scans can be added later.
+        root.addWidget(_section("Unmatched readings"))
+        unmatched_row = QHBoxLayout()
+        unmatched_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
+        unmatched_row.setSpacing(theme.px(8))
+        self.unmatched_label = QLabel("None saved")
+        self.unmatched_label.setFont(theme.font(9))
+        self.unmatched_label.setStyleSheet(theme.qss(
+            "color: rgba(150,166,182,0.95); background: transparent;"))
+        self.unmatched_open_btn = _button("OPEN FOLDER")
+        self.unmatched_open_btn.setToolTip(
+            "Open the folder with the saved readings (index.json and pictures)")
+        self.unmatched_open_btn.clicked.connect(self.open_unmatched_folder.emit)
+        self.unmatched_clear_btn = _button(self.CLEAR_TEXT)
+        self.unmatched_clear_btn.setToolTip("Delete the saved readings (click twice)")
+        self.unmatched_clear_btn.setProperty("armed", False)
+        self.unmatched_clear_btn.setEnabled(False)
+        self.unmatched_clear_btn.clicked.connect(self._on_clear_unmatched_clicked)
+        self._clear_timer = QTimer(self)
+        self._clear_timer.setSingleShot(True)
+        self._clear_timer.setInterval(self.ARM_MS)
+        self._clear_timer.timeout.connect(self._disarm_clear)
+        # Room for the armed text, so arming does not shift the row.
+        self.unmatched_clear_btn.setText(self.CLEAR_ARMED_TEXT)
+        self.unmatched_clear_btn.setMinimumWidth(self.unmatched_clear_btn.sizeHint().width())
+        self.unmatched_clear_btn.setText(self.CLEAR_TEXT)
+        unmatched_row.addWidget(self.unmatched_label, 1)
+        unmatched_row.addWidget(self.unmatched_open_btn)
+        unmatched_row.addWidget(self.unmatched_clear_btn)
+        root.addLayout(unmatched_row)
+
+        # Newest rows: value left, time right; hidden while the list is empty.
+        self._unmatched_rows = QVBoxLayout()
+        self._unmatched_rows.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
+        self._unmatched_rows.setSpacing(theme.px(2))
+        self._unmatched_row_labels: list[tuple[QLabel, QLabel]] = []
+        for _ in range(self.UNMATCHED_ROWS):
+            row = QHBoxLayout()
+            row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
+            row.setSpacing(theme.px(8))
+            value = QLabel()
+            value.setFont(theme.font(8))
+            value.setStyleSheet(theme.qss(
+                "color: rgba(200,214,228,0.95); background: transparent;"))
+            when = QLabel()
+            when.setFont(theme.font(7))
+            when.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+            when.setStyleSheet(theme.qss(
+                "color: rgba(130,148,166,0.9); background: transparent;"))
+            value.hide()
+            when.hide()
+            row.addWidget(value, 1)
+            row.addWidget(when)
+            self._unmatched_rows.addLayout(row)
+            self._unmatched_row_labels.append((value, when))
+        root.addLayout(self._unmatched_rows)
+        root.addSpacing(theme.px(8))
+
         # Update ------------------------------------------------------
         # Last on purpose: it is a maintenance action, not something adjusted
         # mid-session, so it sits below the scan and voice controls.
@@ -720,6 +795,44 @@ class SettingsPanel(QWidget):
             "border: 1px solid rgba(79,209,224,0.14); border-radius: 6px; padding: 6px;"))
         self.whats_new_label.hide()
         root.addWidget(self.whats_new_label)
+        root.addSpacing(theme.px(8))
+
+        # Reset -------------------------------------------------------
+        root.addWidget(_section("Reset"))
+        reset_row = QHBoxLayout()
+        reset_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
+        reset_row.setSpacing(theme.px(8))
+        self.reset_hint = QLabel("Settings and downloads; notes, inventory and blueprints are kept")
+        self.reset_hint.setWordWrap(True)
+        self.reset_hint.setFont(theme.font(7))
+        self.reset_hint.setStyleSheet(theme.qss(
+            "color: rgba(130,148,166,0.9); background: transparent;"))
+        self.reset_btn = _button(self.RESET_TEXT)
+        self.reset_btn.setToolTip(
+            "Back to the default settings (click twice). A dated backup of the "
+            "settings folder is kept next to it; the app restarts.")
+        self.reset_btn.setProperty("armed", False)
+        self._style_red_btn(self.reset_btn, False)
+        self.reset_btn.clicked.connect(self._on_reset_clicked)
+        self._reset_timer = QTimer(self)
+        self._reset_timer.setSingleShot(True)
+        self._reset_timer.setInterval(self.ARM_MS)
+        self._reset_timer.timeout.connect(self._disarm_reset)
+        # Room for the armed text, so arming does not shift the row.
+        self.reset_btn.setText(self.RESET_ARMED_TEXT)
+        self.reset_btn.setMinimumWidth(self.reset_btn.sizeHint().width())
+        self.reset_btn.setText(self.RESET_TEXT)
+        reset_row.addWidget(self.reset_hint, 1)
+        reset_row.addWidget(self.reset_btn)
+        root.addLayout(reset_row)
+
+        self.reset_note = QLabel()
+        self.reset_note.setWordWrap(True)
+        self.reset_note.setFont(theme.font(7))
+        self.reset_note.setStyleSheet(theme.qss(
+            "color: rgba(232,106,106,0.95); background: transparent;"))
+        self.reset_note.hide()
+        root.addWidget(self.reset_note)
 
     # ------------------------------------------------------------------
     def _on_pause(self, checked: bool) -> None:
@@ -1060,6 +1173,125 @@ class SettingsPanel(QWidget):
     def draw_region_attention(self) -> bool:
         return self._attention
 
+    # -- two-click buttons: RESET SETTINGS, CLEAR -------------------------
+    def _style_red_btn(self, button: QPushButton, armed: bool) -> None:
+        """Red like QUIT; brighter while armed."""
+        fill = "rgba(232,106,106,0.40)" if armed else "rgba(232,106,106,0.22)"
+        border = "rgba(232,106,106,0.85)" if armed else "rgba(232,106,106,0.70)"
+        color = "#ffffff" if armed else "#ffd9d9"
+        button.setStyleSheet(theme.qss(f"""
+            QPushButton {{
+                color: {color}; background: {fill};
+                border: 1px solid {border}; border-radius: 7px;
+                font-size: 8px; font-weight: 600;
+                letter-spacing: 1.0px; padding: 0 10px;
+            }}
+            QPushButton:hover {{ background: rgba(232,106,106,0.40); color: #ffffff; }}
+            QPushButton:disabled {{
+                color: rgba(130,148,166,0.55); background: rgba(232,106,106,0.05);
+                border-color: rgba(232,106,106,0.20);
+            }}
+        """))
+
+    def _on_reset_clicked(self) -> None:
+        if self.reset_armed:
+            self._disarm_reset()
+            self.set_reset_error("")
+            self.reset_requested.emit()
+            return
+        self._set_reset_armed(True)
+        self._reset_timer.start()
+
+    def _disarm_reset(self) -> None:
+        self._reset_timer.stop()
+        self._set_reset_armed(False)
+
+    def _set_reset_armed(self, armed: bool) -> None:
+        self.reset_btn.setProperty("armed", armed)
+        self.reset_btn.setText(self.RESET_ARMED_TEXT if armed else self.RESET_TEXT)
+        self._style_red_btn(self.reset_btn, armed)
+
+    @property
+    def reset_armed(self) -> bool:
+        return bool(self.reset_btn.property("armed"))
+
+    def set_reset_error(self, message: str) -> None:
+        """Say why the reset did not happen ("" hides the note)."""
+        message = str(message or "")
+        self.reset_note.setText(
+            f"Reset failed, nothing was removed: {message}" if message else "")
+        self.reset_note.setVisible(bool(message))
+        self.adjustSize()
+
+    def _on_clear_unmatched_clicked(self) -> None:
+        if self.clear_armed:
+            self._disarm_clear()
+            self.clear_unmatched.emit()
+            return
+        self._set_clear_armed(True)
+        self._clear_timer.start()
+
+    def _disarm_clear(self) -> None:
+        self._clear_timer.stop()
+        self._set_clear_armed(False)
+
+    def _set_clear_armed(self, armed: bool) -> None:
+        button = self.unmatched_clear_btn
+        button.setProperty("armed", armed)
+        button.setText(self.CLEAR_ARMED_TEXT if armed else self.CLEAR_TEXT)
+        if armed:
+            self._style_red_btn(button, True)
+        else:
+            button.setStyleSheet(_button_qss())
+
+    @property
+    def clear_armed(self) -> bool:
+        return bool(self.unmatched_clear_btn.property("armed"))
+
+    # -- unmatched readings ------------------------------------------------
+    @staticmethod
+    def _unmatched_when(value) -> str:
+        """Entry time as "01 Nov 14:32" (epoch seconds; a string is shown as is)."""
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            try:
+                return time.strftime("%d %b %H:%M", time.localtime(float(value)))
+            except (OverflowError, OSError, ValueError):
+                return ""
+        return str(value or "")
+
+    def set_unmatched(self, entries) -> None:
+        """Show the saved unmatched readings (UnmatchedLog.entries(), newest first)."""
+        self._unmatched = [dict(e) for e in (entries or []) if isinstance(e, dict)]
+        count = len(self._unmatched)
+        self.unmatched_label.setText("None saved" if count == 0 else f"{count} saved")
+        for i, (value_label, when_label) in enumerate(self._unmatched_row_labels):
+            entry = self._unmatched[i] if i < count else None
+            if entry is None:
+                value_label.hide()
+                when_label.hide()
+                continue
+            try:
+                value_text = f"{int(entry.get('value')):,}"
+            except (TypeError, ValueError):
+                value_text = str(entry.get("value", "?"))
+            value_label.setText(value_text)
+            when_label.setText(self._unmatched_when(entry.get("time")))
+            value_label.show()
+            when_label.show()
+        if count == 0:
+            self._disarm_clear()
+        self.unmatched_clear_btn.setEnabled(count > 0)
+        self.adjustSize()
+
+    @property
+    def unmatched_text(self) -> str:
+        """Count line, then each listed row as "value  time" (for tests)."""
+        lines = [self.unmatched_label.text()]
+        for value_label, when_label in self._unmatched_row_labels:
+            if not value_label.isHidden():
+                lines.append(f"{value_label.text()}  {when_label.text()}")
+        return "\n".join(lines)
+
     # -- pin ---------------------------------------------------------------
     def set_pinned(self, pinned: bool) -> None:
         """Start-up state of the header pin; emits nothing."""
@@ -1229,6 +1461,17 @@ class SettingsPanel(QWidget):
         self.move(x, y)
 
     # ------------------------------------------------------------------
+    def adjustSize(self) -> None:  # noqa: N802
+        """Also fit wrapped text: Qt sizes the window for the layout's wider
+        natural width, so at the fixed width the wrapped hints need more
+        height and the rows above them were squeezed into each other."""
+        super().adjustSize()
+        layout = self.layout()
+        if layout is not None and layout.hasHeightForWidth():
+            needed = layout.totalHeightForWidth(self.width())
+            if needed > self.height():
+                self.resize(self.width(), needed)
+
     def hideEvent(self, event):  # noqa: N802
         for button in self._key_buttons.values():
             button.cancel_capture()

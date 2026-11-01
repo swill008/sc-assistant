@@ -11,6 +11,12 @@ and a cache for "signature_channel" exists, else app/data/signatures.json.
 Fields scmdb lacks (short, value, secondary, salvage) come from the bundled
 file, merged by name.
 Salvage:       exterior hull panels / wreck scrap read as multiples of 2000.
+Harvestables:  plant clusters also read 2,000 per plant (1-10 plants).
+
+Deposit limits per kind (lower limit 1) come from scmdb's clusteringPresets
+(tools/nextdata_selftest.py compares them with the game data): ship rocks up
+to 6 (limit 10), ROC 10-25, hand mining 10-21, salvage scrap up to 15 (limit
+50 for large wrecks), harvestables 2-10.
 """
 from __future__ import annotations
 
@@ -22,18 +28,28 @@ from . import sigsource
 
 DATA_PATH = Path(__file__).with_name("data") / "signatures.json"
 
-MAX_CLUSTER = 10
-MAX_GROUND_CLUSTER = 8
+MAX_CLUSTER = 10           # ship rocks
+MAX_ROC_CLUSTER = 25       # ROC ("MiningCluster Med Lrg": 10-25)
+MAX_FPS_CLUSTER = 21       # hand mining ("MiningCluster Sml Med": 10-21)
 # Debris is not a rock cluster: each hull panel contributes 2,000 to the
 # signature, so a large wreck can read far beyond a 10-rock cluster. Capping
 # this at MAX_CLUSTER made 22,000 (11 panels) fall through to a fuzzy
 # Quantanium match instead of being recognised as salvage.
 MAX_DEBRIS_CLUSTER = 50
+MAX_HARVEST_CLUSTER = 10   # "Harvestables Cluster Large": 5-10
+
+# Order of exact matches when one number fits several kinds. Up to
+# SALVAGE_FIRST_MAX salvage comes first (8,000 in space is DEBRIS x4, not
+# ROC x2); above it a ground cluster is far more likely (76,000 is ROC x19,
+# then DEBRIS x38). The other kind is still listed. User decision 2026-11-01.
+KIND_ORDER = ("ship", "roc", "fps", "debris", "harvest")
+KIND_ORDER_SALVAGE = ("ship", "debris", "harvest", "roc", "fps")
+SALVAGE_FIRST_MAX = 30000  # scrap fields reach 15 pieces ("SalvageScrap": 3-15)
 
 
 @dataclass(frozen=True)
 class Match:
-    kind: str            # "ship" | "roc" | "fps"
+    kind: str            # "ship" | "roc" | "fps" | "debris" | "harvest"
     name: str
     count: int
     target: int
@@ -55,6 +71,8 @@ class Match:
             return self.name
         if self.kind == "debris":
             return "Debris"
+        if self.kind == "harvest":
+            return "Harvestables"
         return "ROC deposit" if self.kind == "roc" else "FPS deposit"
 
     @property
@@ -79,17 +97,27 @@ class MiningData:
         self.fallback_reason = ""
         self.ores: list[dict] = []
         self.max_cluster = MAX_CLUSTER
-        self.ground_max_cluster = MAX_GROUND_CLUSTER
+        self.roc_max_cluster = MAX_ROC_CLUSTER
+        self.fps_max_cluster = MAX_FPS_CLUSTER
         self.roc_base = 4000
         self.fps_base = 3000
         self.fps_minerals: list[str] = []
         self.roc_minerals: list[str] = []
         self.ground_minerals: list[str] = []
         self.debris_base = 2000
-        self.debris_max_cluster = MAX_CLUSTER
+        self.debris_max_cluster = MAX_DEBRIS_CLUSTER
         self.debris_name = "Debris"
         self.debris_detail = "HULL PANELS / SCRAP METAL"
+        self.harvest_base = 2000
+        self.harvest_max_cluster = MAX_HARVEST_CLUSTER
+        self.harvest_name = "Harvestables"
+        self.harvest_detail = "PLANTS"
         self.reload()
+
+    @property
+    def ground_max_cluster(self) -> int:
+        """Largest ground cluster (ROC or hand mining)."""
+        return max(self.roc_max_cluster, self.fps_max_cluster)
 
     def _settings(self) -> tuple[str, str]:
         source, channel = self._source_setting, self._channel_setting
@@ -134,8 +162,10 @@ class MiningData:
             self.ores = sorted(raw.get("ship_ores", []), key=lambda o: o["base"])
             ground = bundled_ground
         self.max_cluster = int(raw.get("max_cluster", MAX_CLUSTER))
-        self.ground_max_cluster = int(
-            bundled_ground.get("max_cluster", MAX_GROUND_CLUSTER))
+        self.roc_max_cluster = int(
+            bundled_ground.get("roc_max_cluster", MAX_ROC_CLUSTER))
+        self.fps_max_cluster = int(
+            bundled_ground.get("fps_max_cluster", MAX_FPS_CLUSTER))
         self.roc_base = int(bundled_ground.get("roc_base", 4000))
         self.fps_base = int(bundled_ground.get("fps_base", 3000))
         self.fps_minerals = list(ground.get("fps_minerals", []))
@@ -146,6 +176,11 @@ class MiningData:
         self.debris_max_cluster = int(debris.get("max_cluster", MAX_DEBRIS_CLUSTER))
         self.debris_name = debris.get("name", "Debris")
         self.debris_detail = debris.get("detail", "HULL PANELS / SCRAP METAL")
+        harvest = raw.get("harvest", {})
+        self.harvest_base = int(harvest.get("base", 2000))
+        self.harvest_max_cluster = int(harvest.get("max_cluster", MAX_HARVEST_CLUSTER))
+        self.harvest_name = harvest.get("name", "Harvestables")
+        self.harvest_detail = harvest.get("detail", "PLANTS")
 
     def refresh_in_background(self, on_done=None, force: bool = False):
         """Refresh the scmdb cache off the GUI thread (at most once a day).
@@ -183,10 +218,11 @@ class MiningData:
                         secondary=ore.get("secondary"),
                     ))
 
-        for kind, base, minerals in (("roc", self.roc_base, self.roc_minerals),
-                                     ("fps", self.fps_base, self.fps_minerals)):
+        for kind, base, minerals, limit in (
+                ("roc", self.roc_base, self.roc_minerals, self.roc_max_cluster),
+                ("fps", self.fps_base, self.fps_minerals, self.fps_max_cluster)):
             count = round(value / base)
-            if count < 1 or count > self.ground_max_cluster:
+            if count < 1 or count > limit:
                 continue
             target = base * count
             delta = abs(value - target)
@@ -203,35 +239,30 @@ class MiningData:
                     minerals=tuple(minerals),
                 ))
 
-        # Salvage: exterior hull panels and wreck scrap read as clean
-        # multiples of 2,000. In space that is far more likely than a ground
-        # deposit, so an exact multiple takes the headline and the ground
-        # reading (when one exists) is kept as an alternative in the detail.
-        if self.debris_base > 0 and value % self.debris_base == 0:
-            count = value // self.debris_base
-            if 1 <= count <= self.debris_max_cluster:
-                detail = self.debris_detail
-                alt = next((m for m in matches if m.is_ground and m.exact), None)
-                if alt is not None:
-                    detail = f"{detail}  ·  OR {alt.label.upper()} ×{alt.count}"
+        # Salvage (hull panels, wreck scrap) and harvestables (plants) read as
+        # clean multiples of 2,000. Only exact multiples count: a near miss is
+        # an OCR misread of something else.
+        for kind, base, limit, name, detail in (
+                ("debris", self.debris_base, self.debris_max_cluster,
+                 self.debris_name, self.debris_detail),
+                ("harvest", self.harvest_base, self.harvest_max_cluster,
+                 self.harvest_name, self.harvest_detail)):
+            if base <= 0 or value % base:
+                continue
+            count = value // base
+            if 1 <= count <= limit:
                 matches.append(Match(
-                    kind="debris",
-                    name=self.debris_name,
-                    count=count,
-                    target=value,
-                    delta=0,
-                    rarity=1,
-                    value=None,
-                    secondary=detail,
+                    kind=kind, name=name, count=count, target=value, delta=0,
+                    rarity=1, value=None, secondary=detail,
                 ))
 
-        matches.sort(key=lambda m: (not m.exact, m.delta, m.is_ground, -m.rarity))
-        # In-game signatures are exact multiples of the base value, so an
-        # exact hit is authoritative. Only fall back to fuzzy matches when
-        # nothing lands exactly (usually an OCR misread).
-        exact = [m for m in matches if m.exact]
-        if exact:
-            return exact
+        # In-game signatures are exact multiples of the base value, so exact
+        # hits come first, in kind order; fuzzy ones (usually an OCR misread)
+        # follow, closest first.
+        order = KIND_ORDER_SALVAGE if value <= SALVAGE_FIRST_MAX else KIND_ORDER
+        matches.sort(key=lambda m: (not m.exact,
+                                    order.index(m.kind) if m.exact else 0,
+                                    m.delta, m.is_ground, -m.rarity))
         return matches
 
     def nearest(self, value: int, limit: int = 3) -> list[Match]:

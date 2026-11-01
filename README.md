@@ -437,32 +437,45 @@ reads still require two identical results before they are shown.
 ## Reading the scanner
 
 ```
-● MINING SCANNER     TRACKING  LOCKED
-SIGNATURE  10,710             73% MATCH
-BORASE                            ×3
-EPIC · Gold / Bexalite 5-10%
+● MINING SCANNER                  TRACKING  LOCKED
+SCANNED SIGNATURE                MATCHED SIGNATURE
+76,000                                      76,000
+                                          READ 98%
+ROC DEPOSIT                                   ×19
+ROC · Agricium / Aluminum / ...
+or DEBRIS ×38
 ```
 
 - **TRACKING** — the HUD-tracking chip (`TRACKING`, `SEARCHING` or
   `FIXED BOX`; see *Calibrating the scanner*).
-- **BORASE ×3** — the mineral and how many deposits are in the rock
-  (10,710 = 3 × 3,570).
+- **SCANNED SIGNATURE** (left, number under the caption) — the number from the latest read, updated on
+  every read, also one that is not confirmed yet or matches nothing. `—`
+  means the last read found no number (with tracking on: the plate is on
+  screen but its number could not be read). Nothing changes while tracking
+  sees no plate.
+- **MATCHED SIGNATURE** (right) — the signature of the result shown below it.
+  `—` under it means the number matched nothing in the table.
+- **READ 98%** — how sure the text reader (OCR) is of the digits, not how sure
+  the match is. It used to say `NN% MATCH`.
+- **ROC DEPOSIT ×19** — what was matched and how many: here 19 ROC deposits
+  (76,000 = 19 × 4,000; this one was a Feynmaline field). A ship rock names
+  its ore: 10,710 = 3 × 3,570 is `BORASE ×3`.
 - Ground deposits only tell you their size, so the detail line lists the
   minerals that can give that reading: `HAND MINING · Aphorite / Carinite / …`
   for 3,000-type readings and `ROC · Agricium / Aluminum / …` for 4,000-type
   readings. The line is cut to the panel width; the tooltip lists them all.
   Which one it is depends on where you are.
 - **DEBRIS ×2** — salvage: exterior hull panels and scrap metal from wrecks
-  read as clean multiples of 2,000 (2,000, 4,000, 6,000, 8,000 …). A large
-  wreck goes well past a 10-rock cluster, so `22,000` is `DEBRIS ×11` rather
-  than an ore. When the same number could also be a ground deposit (4,000,
-  6,000, 8,000 …), the detail line says so, e.g.
-  `HULL PANELS / SCRAP METAL · OR ROC DEPOSIT ×1`.
+  read as clean multiples of 2,000 (2,000, 4,000, 6,000, 8,000 …), up to 50
+  pieces. A large wreck goes well past a 10-rock cluster, so `22,000` is
+  `DEBRIS ×11` rather than an ore.
+- **Second line** — when a number is an exact match for two kinds, the second
+  one gets its own line under the detail line: `or DEBRIS ×38` under a 76,000
+  ROC reading, `or HARVESTABLES ×5` under a 10,000 `DEBRIS ×5` reading.
+  Harvestable plants also read as multiples of 2,000 (1-10 plants).
 - A leading `~` (`~QUANTANIUM`) means the number is *near* that ore's signature
   but not an exact multiple of it — a hint from OCR jitter, never a lock, and
   never spoken.
-- **73% MATCH** — OCR confidence, not mineral certainty. The signature itself
-  is matched exactly against the table whenever possible.
 - A number already on screen is only replaced after two identical reads, so OCR
   alternating between two readings (for example `8,000` and a stray leading
   digit giving `28,000`) cannot make the panel flip back and forth. The first
@@ -474,6 +487,60 @@ EPIC · Gold / Bexalite 5-10%
   table entry, so a single misread digit is obvious instead of misleading.
 
 When the number leaves the screen the last reading stays visible but dims.
+
+### Result border
+
+Text, numbers and chips keep their usual colours (ore names use their rarity
+colour). The result is shown by the card's border instead, about 3 px thick at
+100% scale:
+
+| Border | Means |
+| --- | --- |
+| Green | A confirmed reading with an exact match. |
+| Yellow | A confirmed reading with no exact match (a `~` near-guess counts as no match). |
+| Red | The scan plate is on screen, but its number could not be read for about a second in a row. |
+| Thin cyan (the usual edge) | Nothing to judge: a first read waiting for confirmation, or the card has dimmed (2 s after the last good read). |
+
+Red only shows while tracking has found the plate on screen. With tracking off
+(`FIXED BOX`) or no plate on screen the border is never red, and a single
+dropped frame does not turn it red. While it is red the left side reads
+`SCANNED SIGNATURE —`, and the matched side and the ore name keep the last good
+result. A number above 100,000 counts as unreadable.
+
+### Scan limits
+
+Each kind of scan is matched up to its largest real group, taken from the game
+data (scmdb.net 4.10.2 live clustering presets, and the Star Citizen Wiki):
+
+| Kind | Signature per item | Items |
+| --- | --- | --- |
+| Ship mining rock | the ore's base, e.g. Borase 3,570 | 1-10 |
+| ROC (ground vehicle) deposit | 4,000 | 1-25 |
+| Hand mining (FPS) deposit | 3,000 | 1-21 |
+| Salvage debris | 2,000 | 1-50 |
+| Harvestables (plants) | 2,000 | 1-10 |
+
+Why: a Feynmaline ROC field of 19 deposits reads 76,000. Before this the
+reader dropped every number over 60,000 and the matcher stopped at 8 ground
+deposits, so that scan showed nothing. The reader now accepts up to 100,000
+(the largest real reading), and the limits above cover every group size the
+game data lists (ROC fields 10-25 deposits, hand mining 10-21, ship rocks up
+to 6, salvage scrap up to 15, harvestables 2-10). A test compares the limits
+with scmdb's data.
+
+### Unmatched readings
+
+Every confirmed reading with no exact match is saved, so missing signatures
+can be added later: the number, the time, the kind of scan (`unknown` for
+now: the app cannot yet tell ship, ground or salvage scans apart) and a small
+picture of the box, in `%APPDATA%\SC Assistant\unmatched\` (`index.json` plus one PNG
+per reading). The same number within 60 seconds is saved once, and the newest
+200 are kept. `⚙` → *Unmatched readings* lists them (see *Settings window*).
+
+To review them: press **OPEN FOLDER**, compare each picture with its number in
+`index.json` (a misread digit shows in the picture), and report the real ones
+as an issue with the number and where you scanned it. **CLEAR** (click twice)
+empties the list.
 
 Leaving the pilot seat closes the scanner. The overlay reads the same
 `Game.log` notification the hauling workflow uses (`Exited pilot seat`), so the
@@ -1026,7 +1093,12 @@ application shortcuts while you type.
   `Signatures: scmdb 4.10.2 live · 26 ores`, or `bundled 4.10.2` with the
   reason scmdb was not used; **RELOAD** re-reads it without restarting (see
   *Signature data*).
-- **UPDATE** — last section in the window: the installed build and a **CHECK**
+- **UNMATCHED READINGS** — how many readings matched nothing (`None saved`
+  or `N saved`) and the newest three (number and time). **OPEN FOLDER** opens
+  `%APPDATA%\SC Assistant\unmatched\`; **CLEAR** deletes the list and its
+  pictures after a second click (the first changes it to `CLEAR?` for about
+  3 seconds). See *Unmatched readings* under *Reading the scanner*.
+- **UPDATE** — the installed build and a **CHECK** the installed build and a **CHECK**
   button. When something newer exists the button becomes **UPDATE**, and
   "What's new in vX" from that release's notes is shown under it (plain text
   only). What UPDATE does depends on the install:
@@ -1047,6 +1119,26 @@ application shortcuts while you type.
 
   Settings, notes and logs live in `%APPDATA%\SC Assistant` and are never
   touched. Quitting during a download cancels it.
+- **RESET** — last section: the red **RESET SETTINGS** button puts the
+  settings back to their defaults. Click it twice, like QUIT: the first click
+  changes it to `CLICK AGAIN TO RESET` for about 3 seconds. Then:
+  1. the whole `%APPDATA%\SC Assistant` folder is copied to a backup folder
+     next to it, `SC Assistant backup <YYYY-MM-DD HHMMSS>`;
+  2. removed: `config.json` (the box, pin, monitor, READS / S, TRACKING,
+     SHOW BOX, hotkeys, panel positions and pinned windows), the saved pin
+     picture `anchor.png`, the downloaded caches (`signatures_scmdb.json`,
+     `where_to_mine.json`, `routes_cache.json`, `hauling_*.json`), their
+     `.bak` copies, and the `unmatched` folder;
+  3. kept: `notes.txt`, `inventory.json`, the blueprint registry
+     (`unlocked_blueprints.json`), the refinery timers (`refinery_jobs.json`),
+     the hauling run and wallet (`active_run.json`, `workflow_wallet.json`),
+     `error.log`, their `.bak` files, and any file the app does not know;
+  4. the app restarts with default settings; draw the scan box again.
+
+  If the files cannot be removed (for example one is open in another
+  program), nothing is removed and the note says `Reset failed, nothing was
+  removed: …`. To undo a reset, quit the app and copy the files back from the
+  backup folder.
 
 The settings window has a push-pin too, like every panel.
 
@@ -1173,11 +1265,20 @@ Each ship-ore entry is a base signature:
 ```
 
 The loader expands each base into `base × count` for the 1-10 rock cluster
-sizes shown by the SCMINER scanner. `max_cluster` in the JSON controls that
-range, so adding an ore is a one-line edit. ROC (4,000) and hand-mining (FPS,
-3,000) deposits use their own base values and a separate 1-8 range
-(`ground.max_cluster`), and each has its own mineral list:
-`ground.fps_minerals` (8) and `ground.roc_minerals` (22).
+sizes shown by the SCMINER scanner, so adding an ore is a one-line edit. ROC
+(4,000, 1-25 deposits), hand-mining (FPS, 3,000, 1-21), salvage debris (2,000,
+1-50) and harvestables (2,000, 1-10) use their own base values and limits
+(see *Scan limits*), and the two ground kinds each have their own mineral
+list: `ground.fps_minerals` (8) and `ground.roc_minerals` (22).
+
+A number can match more than one kind; every exact match is kept. Ship ore
+always comes first. Up to 30,000, the most a scrap field reaches in the game
+data (15 pieces), salvage comes next (debris, harvestables, then ROC and hand
+mining), so 8,000 in space still reads DEBRIS ×4. Above 30,000 a ground
+cluster is far more likely, so ROC and hand mining come first: 76,000 reads
+ROC ×19, then DEBRIS ×38. The near (`~`) guesses follow. The panel shows the
+first and, when there is one, a second exact match of another kind on its own
+line. The reader accepts 2,000 to 100,000 (`min_value` / `max_value`).
 
 ## Anti-cheat
 
@@ -1275,6 +1376,9 @@ to it.
 | COMBAT does nothing and no panel appears | Usually an older build without the on-screen clamp. Check the build stamp before changing anything else. |
 | UEX opens the wrong page | The box should contain only the search term, then press **OPEN**. The footer shows the exact URL that was opened. |
 | Scanner shows `UNKNOWN` | The number is not in the table, or OCR dropped a digit. Check the raw value shown. |
+| Yellow border and `MATCHED SIGNATURE —` | The number was read but matches nothing in the table. It is saved under `⚙` → *Unmatched readings*; open the folder, check the picture, and report it if the number is right (see *Unmatched readings*). |
+| Red border | The scan plate is on screen but its number has not been readable for about a second: something covers the digits, or the box is off. Check with **SHOW PREVIEW**, then **DRAW REGION** again if needed. A number over 100,000 also shows red. |
+| Settings are in a bad state, or you want a clean start | `⚙` → **RESET SETTINGS** (click twice). Notes, inventory and blueprints are kept, the old settings are copied to `SC Assistant backup <date time>` next to `%APPDATA%\SC Assistant`, and the app restarts. Draw the scan box again afterwards. |
 | Nothing appears in screenshots | Open `⚙` and set the screenshots button to **VISIBLE**. If it already says VISIBLE, your build predates the toggle: run with `--capture-visible`. |
 | Scanner stops reading after making screenshots visible | A panel now overlaps the calibrated scan box, so the scanner captures the overlay instead of the HUD. Move that panel away from the box, or set the screenshots button back to **HIDDEN** while mining. |
 | UI scale slider seems to do nothing | It needs a restart: press **RESTART** next to the slider (or quit and start again). The hint turns amber while the chosen scale is not active yet. |

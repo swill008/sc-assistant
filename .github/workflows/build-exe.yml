@@ -47,6 +47,7 @@ jobs:
           python -m tools.combat_selftest
           python -m tools.blueprint_selftest
           python -m tools.signature_selftest
+          python -m tools.nextdata_selftest
 
       # Release notes tooling and the release workflow's notes step. The check
       # that app/version.py has a notes file runs only in the release workflow.

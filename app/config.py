@@ -10,12 +10,14 @@ before 1.0.0 were called Citizen Assistant; that folder is moved over once.
 """
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import os
 import shutil
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 from .version import APP_NAME, OLD_APP_NAME
@@ -128,8 +130,8 @@ DEFAULTS: dict = {
     # Close the mining scanner when Game.log reports leaving the pilot seat.
     "close_scanner_on_seat_exit": True,
     "scan_tuning_version": 2,           # migration marker for the poll_ms defaults
-    "min_value": 2500,
-    "max_value": 60000,
+    "min_value": 2000,
+    "max_value": 100000,              # largest real reading: 76,000 (ROC x19)
     "tolerance": 0.08,
     # Physical-pixel rectangle of the in-game signature readout.
     "region": None,
@@ -196,6 +198,80 @@ def open_folder(path) -> None:
         subprocess.Popen(["open", target])
     else:
         subprocess.Popen(["xdg-open", target])
+
+
+
+# Settings → RESET SETTINGS. Names in the settings folder (shell patterns; a
+# pattern also covers its ".bak" copy). RESET_REMOVE: the settings, the pin
+# picture, downloaded caches and the unmatched recorder. RESET_KEEP: the
+# user's own data; anything on neither list is kept too.
+RESET_REMOVE: tuple[str, ...] = (
+    "config.json", "config.tmp",            # settings (Config.save)
+    "anchor.png",                           # pin picture (tracking.Anchor)
+    "hauling_*.json",                       # UEX caches (hauling, planner seed)
+    "routes_cache.json",                    # planner routes (UEX)
+    "where_to_mine.json",                   # ore finder (scminer)
+    "signatures_scmdb.json",                # signature data (scmdb)
+    "unmatched",                            # unmatched readings (folder)
+)
+RESET_KEEP: tuple[str, ...] = (
+    "notes.txt",                            # notes
+    "inventory.json",                       # inventory
+    "unlocked_blueprints.json",             # blueprint registry
+    "refinery_jobs.json",                   # refinery timers
+    "active_run.json", "workflow_wallet.json",   # workflow run and wallet
+    "error.log",
+)
+
+
+def _listed(name: str, patterns: tuple[str, ...]) -> bool:
+    base = name[:-4] if name.endswith(".bak") else name
+    return any(fnmatch.fnmatch(base.lower(), p.lower()) for p in patterns)
+
+
+def reset_to_defaults(folder: Path | None = None) -> Path:
+    """Back up the settings folder, then remove what RESET_REMOVE lists.
+
+    The whole folder is first copied to a sibling "<name> backup <date time>"
+    (returned). Removal is all or nothing: every item is first renamed into a
+    staging folder, and a failed rename puts the moved ones back and raises
+    OSError. The caller replaces its Config with a fresh default one so the
+    old settings are not saved back.
+    """
+    folder = Path(folder) if folder is not None else config_dir()
+    stamp = time.strftime("%Y-%m-%d %H%M%S")
+    backup = folder.with_name(f"{folder.name} backup {stamp}")
+    n = 2
+    while backup.exists():
+        backup = folder.with_name(f"{folder.name} backup {stamp} ({n})")
+        n += 1
+    shutil.copytree(folder, backup)
+
+    doomed = [p for p in folder.iterdir()
+              if _listed(p.name, RESET_REMOVE) and not _listed(p.name, RESET_KEEP)]
+    staging = folder / f".reset-{stamp.replace(' ', '-')}"
+    staging.mkdir()
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for path in doomed:
+            target = staging / path.name
+            os.replace(path, target)
+            moved.append((target, path))
+    except OSError:
+        for target, path in reversed(moved):
+            try:
+                os.replace(target, path)
+            except OSError as exc:
+                log.warning("reset: could not put back %s (%s; copy in %s)",
+                            path, exc, backup)
+        try:
+            staging.rmdir()
+        except OSError:
+            pass
+        raise
+    shutil.rmtree(staging, ignore_errors=True)
+    log.info("Settings reset; backup in %s", backup)
+    return backup
 
 
 class Config:
