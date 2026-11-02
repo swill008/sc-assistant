@@ -141,5 +141,24 @@ def install() -> None:
     for name in ("show", "showNormal", "showMaximized", "showFullScreen", "showMinimized"):
         setattr(QtWidgets.QWidget, name, _quiet(getattr(QtWidgets.QWidget, name)))
     QtWidgets.QApplication = GuardedApplication
+    _use_root_arg()
     _fake_hotkeys()
     atexit.register(_report)
+
+
+def _use_root_arg() -> None:
+    """A test run with ``--root DIR`` (old-code proofs) must import ``app``
+    from DIR. The guard imports app.hotkeys first, so put DIR on the path
+    before that; otherwise the checkout's app would be tested instead."""
+    args = sys.argv[1:]
+    root = None
+    for i, arg in enumerate(args):
+        if arg == "--root" and i + 1 < len(args):
+            root = args[i + 1]
+        elif arg.startswith("--root="):
+            root = arg.split("=", 1)[1]
+    if root:
+        path = os.path.abspath(root)
+        if path in sys.path:
+            sys.path.remove(path)
+        sys.path.insert(0, path)

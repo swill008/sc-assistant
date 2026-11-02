@@ -80,6 +80,8 @@ DIGITS = {"left": 76, "top": 38, "width": 56, "height": 28}   # inside the fixtu
 EXPECTED = 42000
 SWAY = (150, 100)        # physical px the HUD moves the plate (right, down)
 NEAR = 3                 # px a tracked rect may be off the true digits
+# The white ink of "42,000" in the fixture, measured from its pixels (x, y, w, h).
+DIGITS_INK = (77, 47, 47, 16)
 CONFIRM_TEXT = "PIN FOUND — TRACKING ON"
 LOCKED_TEXT = f"TRACKING ✓  {EXPECTED:,}"
 CONFIRM_SECONDS = 3.0
@@ -795,12 +797,16 @@ def part_whole_window(overlay, shown: dict, seen: dict) -> int:
     if view is not None:
         shape, vpin, vdigits = view
         want_pin = (pin["left"] - frect["left"], pin["top"] - frect["top"])
-        want_digits = (region["left"] - frect["left"], region["top"] - frect["top"])
+        # the green box hugs "42,000" as the reader trims it: centred on the
+        # number (its centre within NEAR of the digits' own centre)
+        want_digits = (DIGITS_INK[0] + DIGITS_INK[2] / 2, DIGITS_INK[1] + DIGITS_INK[3] / 2)
+        vcentre = (vdigits[0] + vdigits[2] / 2, vdigits[1] + vdigits[3] / 2) if vdigits else (-99, -99)
+        want_pin = want_pin
         failures += _check("whole window: preview is the whole window, pin and digits in place",
                            shape == (frect["height"], frect["width"])
                            and all(abs(a - b) <= NEAR for a, b in zip(vpin[:2], want_pin))
-                           and all(abs(a - b) <= NEAR for a, b in zip(vdigits[:2], want_digits)),
-                           f"(crop {shape}, pin {vpin} want ~{want_pin}, digits {vdigits} want ~{want_digits})")
+                           and all(abs(a - b) <= NEAR for a, b in zip(vcentre, want_digits)),
+                           f"(crop {shape}, pin {vpin} want ~{want_pin}, digits {vdigits} centre {vcentre} want ~{want_digits})")
     _wait(lambda: not outline.isVisible(), 3.5)
     overlay.settings.set_preview = real_preview
     return failures

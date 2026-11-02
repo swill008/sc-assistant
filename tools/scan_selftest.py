@@ -1125,6 +1125,8 @@ def check_plate_preview() -> int:
         frame = np.zeros((h, w, 3), np.uint8)
         frame[:, :, 0] = (np.arange(w) % 251)[None, :]
         frame[:, :, 1] = (np.arange(h) % 241)[:, None]
+        if h > 84 and w > 200:
+            frame[66:84, 150:200] = 255      # white "digits" inside the read area
         return frame
 
     real_locate = tracking.locate
@@ -1151,8 +1153,10 @@ def check_plate_preview() -> int:
             m = tracking.PIN_MARGIN
             failures += _check("plate view: the window cut at the pin + plate offset",
                                np.array_equal(crop, frame[40:120, 90:290]), f"(crop {crop.shape})")
-            failures += _check("plate view: pin and digits rects relative to the crop",
-                               pin == (10 + m, 20 + m, 28 - 2 * m, 32 - 2 * m) and digits == (45, 22, 90, 28),
+            # the green box hugs the digits the reader finds (white block at
+            # frame 150..200 x 66..84, crop origin 90, 40), with the reader's padding
+            failures += _check("plate view: pin rect relative to the crop, green box on the digits found",
+                               pin == (10 + m, 20 + m, 28 - 2 * m, 32 - 2 * m) and digits == (58, 24, 54, 22),
                                f"(pin {pin}, digits {digits})")
         failures += _check("locked with a plate: OCR still reads only the digits",
                            ocr.calls == [(28, 90, 3)], f"(ocr {ocr.calls})")
@@ -1168,7 +1172,8 @@ def check_plate_preview() -> int:
         thread.scan_once(grab, ocr, region)
         view = next((v for k, v in order if k == "view"), None)
         failures += _check("plate view clipped to the grabbed area",
-                           view is not None and view[0].shape[:2] == (80, 193) and view[2][0] == 38,
+                           # the white digits block is outside this read area: no green box
+                           view is not None and view[0].shape[:2] == (80, 193) and view[2] is None,
                            f"(view {None if view is None else (view[0].shape, view[1], view[2])})")
 
         # The overlay: plate view -> set_preview(crop, pin, digits); a new

@@ -470,8 +470,23 @@ def plate_view(frame, match, anchor, plate, digits) -> tuple | None:
     th, tw = anchor.template.shape[:2]
     pin = (match.x + PIN_MARGIN - x0, match.y + PIN_MARGIN - y0,
            tw - 2 * PIN_MARGIN, th - 2 * PIN_MARGIN)
+    # The green box is the part the reader actually reads (the bright digits
+    # inside the read area), so it sits on the number, not on the wider area
+    # worked out from the pin. None when no digits stand out.
+    import cv2
+
+    from .ocr import SignatureOCR
+
     dx, dy, dw, dh = digits
-    return frame[y0:y1, x0:x1].copy(), pin, (dx - x0, dy - y0, dw, dh)
+    ax0, ay0 = max(0, dx), max(0, dy)
+    area = frame[ay0:min(fh, dy + dh), ax0:min(fw, dx + dw)]
+    found = None
+    if area.size:
+        box = SignatureOCR.digit_box(cv2.cvtColor(area, cv2.COLOR_BGR2GRAY))
+        if box is not None:
+            bx, by, bw, bh = box
+            found = (ax0 + bx - x0, ay0 + by - y0, bw, bh)
+    return frame[y0:y1, x0:x1].copy(), pin, found
 
 
 def parse_plate(value) -> tuple[int, int, int, int] | None:

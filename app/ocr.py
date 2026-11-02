@@ -99,23 +99,34 @@ class SignatureOCR:
         return int(max(70, min(235, mean + 1.1 * std)))
 
     @classmethod
-    def _tight(cls, gray: np.ndarray) -> np.ndarray:
-        """Trim empty border so the recogniser sees the number, not the HUD."""
+    def digit_box(cls, gray: np.ndarray) -> tuple[int, int, int, int] | None:
+        """(x, y, w, h) of the bright digits in ``gray`` with a little padding,
+        or None when nothing stands out. The recogniser reads exactly this
+        part, and the Settings preview outlines it."""
         thr = cls._bright_threshold(gray)
         mask = gray > thr
         if mask.sum() < max(12, gray.size * 0.01):
-            return gray
+            return None
         cols = np.where(mask.any(axis=0))[0]
         rows = np.where(mask.any(axis=1))[0]
         if not len(cols) or not len(rows):
-            return gray
+            return None
         pad_x = max(2, int((cols[-1] - cols[0]) * 0.06))
         pad_y = max(2, int((rows[-1] - rows[0]) * 0.10))
         x0 = max(0, int(cols[0]) - pad_x)
         x1 = min(gray.shape[1], int(cols[-1]) + pad_x + 1)
         y0 = max(0, int(rows[0]) - pad_y)
         y1 = min(gray.shape[0], int(rows[-1]) + pad_y + 1)
-        return gray[y0:y1, x0:x1]
+        return x0, y0, x1 - x0, y1 - y0
+
+    @classmethod
+    def _tight(cls, gray: np.ndarray) -> np.ndarray:
+        """Trim empty border so the recogniser sees the number, not the HUD."""
+        box = cls.digit_box(gray)
+        if box is None:
+            return gray
+        x, y, w, h = box
+        return gray[y:y + h, x:x + w]
 
     @classmethod
     def _normalise(cls, gray: np.ndarray, binary: bool = False) -> np.ndarray | None:

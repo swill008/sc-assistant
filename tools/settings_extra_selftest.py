@@ -537,6 +537,7 @@ def check_section_layouts() -> None:
 FIXTURE = ROOT / "tools" / "fixtures" / "signal_42000_5k2k.png"
 PIN = (43, 39, 25, 28)          # the pin in the fixture (x, y, w, h)
 DIGITS = (76, 38, 56, 28)       # "42,000" in the fixture
+READ_AREA = (74, 40, 86, 29)    # the read area the pin gives on the fixture (tracking)
 
 
 def _near(c, ref, tol: int = 40) -> bool:
@@ -609,6 +610,60 @@ def check_preview() -> None:
                 check(f"UI {scale}: pin not drawn green, digits not cyan",
                       _edge_hits(img, pin_r, theme.GOOD) < 0.2
                       and _edge_hits(img, dig_r, theme.ACCENT) < 0.2)
+            # What the user sees: the green box from the reader's own trim of
+            # the read area, then the rendered preview grabbed as on screen.
+            from app.ocr import SignatureOCR
+
+            ax, ay, aw, ah = READ_AREA
+            gx, gy, gw, gh = SignatureOCR.digit_box(
+                cv2.cvtColor(crop[ay:ay + ah, ax:ax + aw], cv2.COLOR_BGR2GRAY))
+            panel.set_preview(crop, PIN, (ax + gx, ay + gy, gw, gh))
+            QApplication.processEvents()
+            shot = box.grab().toImage()
+            dpr = shot.devicePixelRatio() or 1.0
+            # The drawn green box, in the grabbed (device) pixels.
+            pix = box.pixmap()
+            pr = pix.devicePixelRatio() or 1.0
+            pw, ph = pix.width() / pr, pix.height() / pr
+            left, top = (box.width() - pw) / 2, (box.height() - ph) / 2
+            r = panel.preview_rects.get("digits")
+            green_pts = []
+            if r is not None:
+                gx0, gy0 = int(round((left + r.x()) * dpr)), int(round((top + r.y()) * dpr))
+                gx1 = int(round((left + r.x() + r.width()) * dpr)) - 1
+                gy1 = int(round((top + r.y() + r.height()) * dpr)) - 1
+                green_pts = [(gx0, gy0)]
+                # The digits as drawn: the brightest pixels inside the box
+                # (luminance at least 80 % of the brightest), outline excluded.
+                inset = int(3 * dpr)
+                lum = {}
+                for y in range(gy0 + inset, gy1 - inset + 1):
+                    for x in range(gx0 + inset, gx1 - inset + 1):
+                        c = shot.pixelColor(x, y)
+                        lum[x, y] = 0.299 * c.red() + 0.587 * c.green() + 0.114 * c.blue()
+                peak = max(lum.values()) if lum else 0
+                ink = [xy for xy, v in lum.items() if v >= 0.8 * peak]
+                ix = (min(p[0] for p in ink) + max(p[0] for p in ink)) / 2
+                iy = (min(p[1] for p in ink) + max(p[1] for p in ink)) / 2
+                bx, by = (gx0 + gx1) / 2, (gy0 + gy1) / 2
+                tol = 2.5 * dpr
+                check(f"UI {scale}: in the preview the digits sit centred in the green box",
+                      abs(ix - bx) <= tol and abs(iy - by) <= tol,
+                      f"(ink centre {ix:.1f},{iy:.1f}; box centre {bx:.1f},{by:.1f})")
+                check(f"UI {scale}: the green outline is drawn there",
+                      _edge_hits(box.pixmap().toImage(), r, theme.GOOD) >= 0.9)
+            else:
+                check(f"UI {scale}: in the preview the digits sit centred in the green box", False,
+                      "(no digits rect drawn)")
+            # The picture is centred in the preview box: the green box lands
+            # where a centred picture puts it.
+            want_x = (left + (ax + gx) * pw / cw) * dpr
+            want_y = (top + (ay + gy) * ph / ch) * dpr
+            check(f"UI {scale}: the window picture is centred in the preview box",
+                  bool(green_pts) and abs(gx0 - want_x) <= 2 * dpr and abs(gy0 - want_y) <= 2 * dpr,
+                  f"(green box at {gx0 if green_pts else None},{gy0 if green_pts else None}; "
+                  f"centred picture puts it at {want_x:.1f},{want_y:.1f})")
+
             overlaps, outside = _overlaps(panel)
             check(f"UI {scale}: Scanner open with the preview: no overlap, nothing outside",
                   not overlaps and not outside, f"({overlaps[:3]}, {outside[:3]})")
