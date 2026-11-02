@@ -42,6 +42,25 @@ for package in ("rapidocr_onnxruntime", "onnxruntime"):
 # (module_collection_mode below) so a user can replace it, with its licence.
 # Piper and Kokoro (GPL-3.0) are never bundled: they are downloaded add-ons.
 datas += copy_metadata("edge-tts")
+
+# Standard-library modules the voice add-ons (Piper, Kokoro: downloaded, not
+# bundled) import but the app itself never does, so PyInstaller would leave
+# them out. 1.0.4: Piper failed with "No module named 'wave'". Checked with
+# SCAssistant.exe --voice-check FOLDER on the built EXE.
+hiddenimports += [
+    "wave", "mmap", "array", "unicodedata", "csv", "uuid", "pickle", "copyreg",
+    "multiprocessing", "multiprocessing.pool", "multiprocessing.shared_memory",
+    "concurrent.futures", "concurrent.futures.process", "concurrent.futures.thread",
+    "dataclasses", "importlib.metadata", "importlib.resources", "ctypes.util",
+    "difflib", "textwrap", "string", "locale", "platform", "shutil", "tempfile",
+    "subprocess", "queue", "inspect", "typing", "contextlib", "linecache",
+    "faulthandler", "zipfile", "json", "decimal", "fractions", "numbers",
+    "fnmatch", "glob", "hashlib", "hmac", "secrets", "base64", "binascii",
+    "codecs", "encodings.idna", "html", "html.parser", "xml.etree.ElementTree",
+    "urllib.parse", "urllib.request", "http.client", "email", "email.utils",
+    "argparse", "pprint", "heapq", "bisect", "statistics", "random", "copy",
+    "weakref", "gc", "signal", "selectors", "socket", "ssl",
+]
 hiddenimports += collect_submodules("edge_tts")
 
 a = Analysis(

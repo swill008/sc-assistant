@@ -617,6 +617,48 @@ def _test_cfg(**values):
     return cfg
 
 
+def check_topmost_spares_dropdowns() -> int:
+    """The 2-second stay-on-top round skips while a drop-down is open:
+    re-asserting topmost on Settings put Settings above its own open drop-down
+    (user, 2026-11-01: the VOICE ENGINE list vanished after 1-3 s)."""
+    from types import SimpleNamespace
+
+    from app import main as main_mod
+
+    print("-" * 78)
+    raised: list = []
+
+    class _Win:
+        def __init__(self, name):
+            self.name = name
+
+        def isVisible(self):  # noqa: N802
+            return True
+
+    class _Outline:
+        def keep_on_top(self):
+            raised.append("outline")
+
+    names = ("nav", "panel", "orefinder", "hauling", "settings", "inventory", "uex",
+             "notes", "combat_panel")
+    o = SimpleNamespace(**{n: _Win(n) for n in names}, outline=_Outline(), _log_viewer=None)
+    real_top, real_popup = main_mod.win32.keep_on_top, main_mod.QApplication.activePopupWidget
+    try:
+        main_mod.win32.keep_on_top = lambda w: raised.append(w.name)
+        main_mod.QApplication.activePopupWidget = staticmethod(lambda: object())
+        main_mod.OverlayApp._assert_topmost(o)
+        failures = _check("drop-down open: no window is re-raised over it", raised == [],
+                          f"(raised {raised})")
+        main_mod.QApplication.activePopupWidget = staticmethod(lambda: None)
+        main_mod.OverlayApp._assert_topmost(o)
+        failures += _check("no drop-down: every visible window and the outline stay on top",
+                           raised == list(names) + ["outline"], f"(raised {raised})")
+    finally:
+        main_mod.win32.keep_on_top = real_top
+        main_mod.QApplication.activePopupWidget = real_popup
+    return failures
+
+
 def _bare_overlay(cfg):
     """OverlayApp without its windows, threads or tray: fakes instead."""
     from collections import deque
@@ -2056,6 +2098,7 @@ def main() -> int:
     failures += check_anchor_load()
     failures += check_tracking_range_parse()
     failures += check_hotkeys_wiring()
+    failures += check_topmost_spares_dropdowns()
     failures += check_pins_and_hide_all()
     failures += check_first_run_attention()
     failures += check_settings_sections_wiring()

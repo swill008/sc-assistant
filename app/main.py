@@ -1037,6 +1037,7 @@ class OverlayApp(QObject):
         self.settings.open_log.connect(self._open_log)
         self.settings.view_log.connect(self._view_log)
         self.settings.export_diagnostics.connect(self._export_diagnostics)
+        self.settings.take_focus_toggled.connect(self._on_take_focus)
         for panel_id, widget in self._panels().items():
             widget.pin_toggled.connect(
                 lambda pinned, pid=panel_id: self._on_pin(pid, pinned))
@@ -1128,6 +1129,7 @@ class OverlayApp(QObject):
         self.settings.set_region(self.cfg["region"] if has_region else None)
         self._show_data_version()
         self.settings.set_debug(bool(self.cfg["show_debug_preview"]))
+        self.settings.set_take_focus(bool(self.cfg["settings_take_focus"]))
         self.settings.set_outline(bool(self.cfg["show_region_outline"]))
         self._update_outline()
         self.voice.set_enabled(bool(self.cfg["voice_enabled"]))
@@ -1255,6 +1257,12 @@ class OverlayApp(QObject):
         self._apply_capture_visibility()
 
     def _assert_topmost(self) -> None:
+        # Skip a round while a drop-down (or any popup) is open: re-asserting
+        # topmost on its window puts that window above its own popup, which
+        # then looks as if it closed (user, 2026-11-01: the VOICE ENGINE list
+        # vanished after 1-3 s; measured with the window z-order).
+        if QApplication.activePopupWidget() is not None:
+            return
         widgets = [self.nav, self.panel, self.orefinder, self.hauling,
                    self.settings, self.inventory, self.uex, self.notes,
                    self.combat_panel]
@@ -2413,6 +2421,11 @@ class OverlayApp(QObject):
         app_config.open_folder(self._bad_reads_folder)
 
     # -- Settings → DEBUG → Logs ------------------------------------------
+    def _on_take_focus(self, on: bool) -> None:
+        """FOCUS tick box next to the Settings pin."""
+        self.cfg["settings_take_focus"] = bool(on)
+        self.cfg.save()
+
     def _on_detailed_log(self, enabled: bool) -> None:
         """DETAILED LOG: saved, and the log level switches at once."""
         self.cfg["debug_detailed_log"] = bool(enabled)
@@ -2836,6 +2849,55 @@ class OverlayApp(QObject):
 
 
 # ---------------------------------------------------------------------------
+def voice_check(folder: Path) -> int:
+    """--voice-check: synthesise the test phrase with every engine that is
+    ready (add-ons already downloaded, the online voices when reachable) into
+    files in ``folder`` and write voice-check.json. No window, no playback.
+    Exit code 0 when every ready engine produced audio."""
+    import json as _json
+
+    from .tts import ENGINE_IDS, create_engine, phrases
+
+    folder.mkdir(parents=True, exist_ok=True)
+    text = phrases.test_phrase("with_signature")
+    report: dict = {"version": version_label(), "phrase": text, "engines": {}}
+    ok = True
+    for engine_id in ENGINE_IDS:
+        entry: dict = {}
+        report["engines"][engine_id] = entry
+        try:
+            engine = create_engine(engine_id)
+            if engine is None:
+                entry["result"] = "not loaded"
+                ok = False
+                continue
+            if engine_id == "windows":
+                entry["result"] = "available" if engine.available() else "unavailable"
+                entry["voices"] = len(engine.voices())
+                ok = ok and engine.available()
+                continue
+            voice = engine.default_voice()
+            ready = [v.id for v in engine.voices() if engine.needs_download(v.id) == 0]
+            if engine_id in ("piper", "kokoro"):
+                if not ready:
+                    entry["result"] = "skipped: nothing downloaded"
+                    continue
+                voice = ready[0]
+            audio = engine.synth(text, voice, 1.0)
+            if audio is None or not audio.data:
+                entry["result"] = "no audio"
+                ok = False
+                continue
+            name = f"{engine_id}.{'mp3' if audio.is_mp3 else 'pcm'}"
+            (folder / name).write_bytes(bytes(audio.data))
+            entry.update(result="ok", voice=voice, file=name, bytes=len(audio.data))
+        except Exception as exc:          # report every failure, keep going
+            entry["result"] = f"failed: {type(exc).__name__}: {exc}"
+            ok = False
+    (folder / "voice-check.json").write_text(_json.dumps(report, indent=2), encoding="utf-8")
+    return 0 if ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     _install_crash_log()
     parser = argparse.ArgumentParser(prog="sc-assistant", description="Star Citizen overlay")
@@ -2851,7 +2913,14 @@ def main(argv: list[str] | None = None) -> int:
                         help=argparse.SUPPRESS)
     parser.add_argument("--version", action="version",
                         version=f"{APP_NAME} {version_label()}")
+    parser.add_argument("--voice-check", metavar="FOLDER",
+                        help="say the test phrase with every downloaded voice engine into "
+                             "WAV/MP3 files in FOLDER, write voice-check.json there and exit "
+                             "(no window; checks the add-ons work in this build)")
     args = parser.parse_args(argv)
+
+    if args.voice_check:
+        return voice_check(Path(args.voice_check))
 
     if not _acquire_single_instance(replacing=args.restart):
         _already_running_notice()

@@ -935,11 +935,65 @@ def check_voice_layout() -> None:
             theme.set_scale(1.0)
 
 
+def check_dropdown_and_focus() -> None:
+    """Updates are held back while a drop-down is open and applied when it
+    closes; FOCUS (next to the pin) makes a click activate Settings, off by
+    default; showing Settings never takes focus."""
+    from PySide6.QtCore import QEvent, QPointF
+    from PySide6.QtGui import QMouseEvent
+
+    print("DROP-DOWN AND FOCUS")
+    panel = _panel()
+    calls: list[str] = []
+    panel.activateWindow = lambda: calls.append("activate")    # the guard no-ops the real one
+
+    def press(widget):
+        ev = QMouseEvent(QEvent.Type.MouseButtonPress, QPointF(5, 5), QPointF(5, 5),
+                         Qt.MouseButton.LeftButton, Qt.MouseButton.LeftButton,
+                         Qt.KeyboardModifier.NoModifier)
+        QApplication.sendEvent(widget, ev)
+        QApplication.processEvents()
+        panel.engine_box.hidePopup()
+
+    panel.set_open_sections(["voice"])
+    QApplication.processEvents()
+    check("FOCUS is off by default; showing Settings takes no focus",
+          not panel.take_focus and not panel.focus_btn.isChecked() and calls == [])
+    press(panel.engine_box)
+    check("FOCUS off: a click does not activate Settings", calls == [], f"({calls})")
+    emitted: list = []
+    panel.take_focus_toggled.connect(emitted.append)
+    panel.set_take_focus(True)
+    check("set_take_focus shows the choice without emitting", panel.focus_btn.isChecked() and emitted == [])
+    press(panel.engine_box)
+    check("FOCUS on: a click on the ENGINE drop-down activates Settings first",
+          calls[:1] == ["activate"], f"({calls})")
+    panel.focus_btn.click()
+    check("clicking FOCUS emits take_focus_toggled(False)", emitted == [False] and not panel.take_focus)
+
+    # Hold back while a drop-down is open (the open state is forced here:
+    # under the test guard a popup cannot stay open).
+    note_before = panel._voice_status
+    panel._dropdown_open = lambda: True
+    panel.set_voice_note("held line one\nheld line two")
+    held_ok = "set_voice_note" in panel._held
+    check("an update that changes a line is held while a drop-down is open",
+          held_ok and panel._voice_status == note_before,
+          f"(held {list(panel._held)})")
+    panel._dropdown_open = lambda: False
+    panel._flush_held()
+    check("held updates are applied when the drop-down closes",
+          panel._held == {} and "held line one" in panel._voice_status,
+          f"({panel._voice_status!r})")
+    panel.close()
+
+
 def main() -> int:
     global _APP
     _APP = QApplication.instance() or QApplication(sys.argv)
     for test in (check_reset, check_unmatched, check_layout, check_sections,
-                 check_section_layouts, check_preview, check_voice, check_voice_layout):
+                 check_section_layouts, check_preview, check_voice, check_voice_layout,
+                 check_dropdown_and_focus):
         try:
             test()
         except Exception:

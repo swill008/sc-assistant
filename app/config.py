@@ -195,6 +195,7 @@ DEFAULTS: dict = {
     # "mining", "orefinder", "hauling", "inventory", "uex", "notes",
     # "combat", "settings".
     "pinned_windows": [],
+    "settings_take_focus": False,     # FOCUS next to the Settings pin: clicking Settings activates it
     "hauling_cargo": 32,              # SCU used for trip-profit maths
     "hauling_commodity": 0,           # 0 = all commodities / top routes
     "hauling_selection_version": 2,   # migration marker for the new default

@@ -2,13 +2,16 @@
 sound, voice, update & reset, debug)."""
 from __future__ import annotations
 
+import logging
 import time
 
-from PySide6.QtCore import QPoint, QRectF, Qt, QThread, QTimer, QUrl, Signal
+from PySide6.QtCore import (QEvent, QObject, QPoint, QRectF, Qt, QThread, QTimer,
+                            QUrl, Signal)
 from PySide6.QtGui import (QColor, QDesktopServices, QFont, QGuiApplication,
                            QImage, QKeyEvent, QPainter, QPen, QPixmap)
-from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QPushButton,
-                               QSizePolicy, QSlider, QVBoxLayout, QWidget)
+from PySide6.QtWidgets import (QApplication, QComboBox, QHBoxLayout, QLabel,
+                               QPushButton, QSizePolicy, QSlider, QVBoxLayout,
+                               QWidget)
 
 from .. import tts, updater
 from ..tts import phrases
@@ -36,12 +39,94 @@ SECTION_HEADINGS = (
 SECTION_IDS = tuple(section_id for section_id, _ in SECTION_HEADINGS)
 
 
+log = logging.getLogger(__name__)
+
 def _section(text: str) -> QLabel:
     """Small sub-heading inside a group."""
     label = QLabel(text.upper())
     label.setFont(theme.font(8, QFont.Weight.Bold, spacing=1.4))
     label.setStyleSheet(theme.qss("color: rgba(136,152,170,0.98); background: transparent;"))
     return label
+
+
+class _ClickFocus(QObject):
+    """App-wide filter for the Settings window.
+
+    - With "take focus" on (the tick box next to the pin; off by default), a
+      mouse press on Settings or any of its controls activates the window
+      before the control handles the press.
+    - When one of its drop-downs closes, updates held back while it was open
+      are applied (see _held_while_dropdown).
+    """
+
+    # Traced while a drop-down is open (DETAILED LOG): what happens to
+    # Settings between a drop-down opening and closing.
+    _TRACED = (QEvent.Type.Move, QEvent.Type.Resize, QEvent.Type.WindowActivate,
+               QEvent.Type.WindowDeactivate, QEvent.Type.LayoutRequest)
+
+    def __init__(self, panel: QWidget) -> None:
+        super().__init__(panel)
+        self._panel = panel
+        self.enabled = False
+        self._opened_at: float | None = None
+
+    def eventFilter(self, obj, event):  # noqa: N802
+        kind = event.type()
+        if (kind == QEvent.Type.MouseButtonPress and self.enabled
+                and isinstance(obj, QWidget) and obj.window() is self._panel):
+            self._panel.activateWindow()
+            self._panel.raise_()
+        elif kind in (QEvent.Type.Show, QEvent.Type.Hide) and isinstance(obj, QWidget) \
+                and obj in self._panel._dropdown_popups():
+            now = time.monotonic()
+            if kind == QEvent.Type.Show:
+                self._opened_at = now
+                log.debug("settings drop-down opened (settings active: %s, app state: %s)",
+                          self._panel.isActiveWindow(),
+                          QApplication.instance().applicationState().name)
+            else:
+                open_for = now - self._opened_at if self._opened_at else -1.0
+                self._opened_at = None
+                log.debug("settings drop-down closed after %.2f s (settings active: %s, app state: %s)",
+                          open_for, self._panel.isActiveWindow(),
+                          QApplication.instance().applicationState().name)
+                if self._panel._held:
+                    QTimer.singleShot(0, self._panel._flush_held)
+        elif (self._opened_at is not None and kind in self._TRACED
+                and (obj is self._panel or kind == QEvent.Type.ApplicationStateChange)):
+            log.debug("  while open: %s on Settings", kind.name)
+        elif (self._opened_at is not None and isinstance(obj, QWidget) and obj.isWindow()
+                and obj is not self._panel and obj not in self._panel._dropdown_popups()
+                and kind in (QEvent.Type.Show, QEvent.Type.Hide, QEvent.Type.WindowActivate,
+                             QEvent.Type.WindowDeactivate, QEvent.Type.Close)):
+            log.debug("  while open: %s on another window %s (%r)", kind.name,
+                      type(obj).__name__, obj.windowTitle() or obj.objectName())
+        elif self._opened_at is not None and kind == QEvent.Type.ApplicationStateChange:
+            log.debug("  while open: app state -> %s",
+                      QApplication.instance().applicationState().name)
+        return False
+
+
+def _held_while_dropdown(method):
+    """Hold back a Settings update while one of its drop-downs is open.
+
+    A line that changes height moves the controls below it, and Qt closes an
+    open drop-down whose box moves (measured 2026-11-01: a label growing one
+    line closed it; focus and the stay-on-top timer did not). The newest call
+    per setter is kept and applied when the drop-down closes.
+    """
+    name = method.__name__
+
+    def wrapper(self, *args, **kwargs):
+        if self._dropdown_open():
+            self._held[name] = (args, kwargs)
+            return None
+        return method(self, *args, **kwargs)
+
+    wrapper.__name__ = name
+    wrapper.__doc__ = method.__doc__
+    wrapper.__wrapped__ = method
+    return wrapper
 
 
 class _SectionHeader(QWidget):
@@ -469,6 +554,7 @@ class SettingsPanel(QWidget):
                                       # once per change (on slider release)
     hotkeys_changed = Signal(dict)    # {"toggle_nav": vk, "panic": vk, "tools": {id: vk}}
     pin_toggled = Signal(bool)        # the header pin, user clicks only
+    take_focus_toggled = Signal(bool)   # the FOCUS tick box next to the pin, user clicks only
     reset_requested = Signal()        # RESET SETTINGS, second click
     open_unmatched_folder = Signal()  # UNMATCHED READINGS -> OPEN FOLDER
     clear_unmatched = Signal()        # UNMATCHED READINGS -> CLEAR, second click
@@ -509,6 +595,14 @@ class SettingsPanel(QWidget):
         self.setAttribute(Qt.WidgetAttribute.WA_ShowWithoutActivating, True)
         self.setFocusPolicy(Qt.FocusPolicy.NoFocus)
         self.setFixedWidth(theme.px(WIDTH))
+        # Optional: Settings takes focus when clicked (tick box next to the
+        # pin, off by default; never when shown). Also applies updates held
+        # back while a drop-down was open.
+        self._held: dict = {}
+        self._click_focus = _ClickFocus(self)
+        app = QApplication.instance()
+        if app is not None:
+            app.installEventFilter(self._click_focus)
 
         self._drag_from = None
         self._pending_version = ""
@@ -574,6 +668,13 @@ class SettingsPanel(QWidget):
             QPushButton:hover { color: #ffd9d9; }
         """))
         close.clicked.connect(self.close_requested.emit)
+        self.focus_btn = _button("FOCUS", checkable=True)
+        self.focus_btn.setFixedWidth(theme.px(52))
+        self.focus_btn.setToolTip(
+            "On: clicking Settings makes it the active window (it takes the keyboard "
+            "until you click the game). Off: Settings never takes focus.")
+        self.focus_btn.toggled.connect(self._on_take_focus)
+        head.addWidget(self.focus_btn)
         self.pin_btn = PinButton(self)
         self.pin_btn.pin_toggled.connect(self.pin_toggled.emit)
         head.addWidget(self.pin_btn)
@@ -592,6 +693,36 @@ class SettingsPanel(QWidget):
             builders[section_id](self._add_group(root, section_id, heading))
         self._update_summaries()
         self._apply_sections(fit=False)
+
+    # -- focus tick box and drop-down protection -------------------------
+    def _on_take_focus(self, on: bool) -> None:
+        self._click_focus.enabled = bool(on)
+        self.take_focus_toggled.emit(bool(on))
+
+    def set_take_focus(self, on: bool) -> None:
+        """Show the saved FOCUS choice without emitting take_focus_toggled."""
+        self.focus_btn.blockSignals(True)
+        self.focus_btn.setChecked(bool(on))
+        self.focus_btn.blockSignals(False)
+        self._click_focus.enabled = bool(on)
+
+    @property
+    def take_focus(self) -> bool:
+        return self._click_focus.enabled
+
+    def _dropdown_popups(self) -> list:
+        return [box.view().window() for box in self.findChildren(QComboBox)]
+
+    def _dropdown_open(self) -> bool:
+        return any(box.view().isVisible() for box in self.findChildren(QComboBox))
+
+    def _flush_held(self) -> None:
+        """Apply the updates held back while a drop-down was open."""
+        if self._dropdown_open():
+            return
+        held, self._held = self._held, {}
+        for name, (args, kwargs) in held.items():
+            getattr(type(self), name).__wrapped__(self, *args, **kwargs)
 
     def _build_scanner(self, root: QVBoxLayout) -> None:
         """Signature capture region and Scanning (with the preview)."""
@@ -1238,6 +1369,7 @@ class SettingsPanel(QWidget):
         self._set_switch(self.detailed_log_btn, bool(enabled))
         self._update_summaries()
 
+    @_held_while_dropdown
     def set_log_note(self, text: str) -> None:
         """The grey line under the Logs buttons ("" hides it)."""
         self.log_note.setText(str(text or ""))
@@ -1522,6 +1654,7 @@ class SettingsPanel(QWidget):
     def voice_downloading(self) -> bool:
         return self._voice_downloading is not None
 
+    @_held_while_dropdown
     def set_voice_engines(self, engines) -> None:
         """ENGINE entries as (id, label, note) from the engines themselves;
         ids not given keep their built-in label and note. Emits nothing."""
@@ -1543,6 +1676,7 @@ class SettingsPanel(QWidget):
         self._refresh_voice_note()
         self._update_summaries()
 
+    @_held_while_dropdown
     def set_voice_choices(self, voices, current: str = "") -> None:
         """Fill VOICE with the engine's voices (objects with id, name, detail,
         or (id, name, detail) tuples) and show ``current`` (else the first);
@@ -1569,6 +1703,7 @@ class SettingsPanel(QWidget):
         self.voice_box.blockSignals(False)
         self._update_summaries()
 
+    @_held_while_dropdown
     def set_voice_download(self, size: int) -> None:
         """Bytes the chosen voice still needs: >0 shows DOWNLOAD with the size,
         0 hides the row. Ends a download in progress; emits nothing."""
@@ -1576,6 +1711,7 @@ class SettingsPanel(QWidget):
         self._voice_need = max(0, int(size or 0))
         self._refresh_voice_download()
 
+    @_held_while_dropdown
     def set_voice_progress(self, got: int, total: int) -> None:
         """While downloading: 'NN% · got of total MB' and CANCEL."""
         self._voice_downloading = (max(0, int(got)), max(0, int(total)))
@@ -1599,6 +1735,7 @@ class SettingsPanel(QWidget):
         index = self.style_box.findData(str(style_id))
         self.style_box.setCurrentIndex(index if index >= 0 else 0)
 
+    @_held_while_dropdown
     def set_voice_note(self, text: str) -> None:
         """Status under the licence note (an error, "Downloaded"); "" clears."""
         self._voice_status = (text or "").strip()
@@ -1976,6 +2113,7 @@ class SettingsPanel(QWidget):
     def reset_armed(self) -> bool:
         return bool(self.reset_btn.property("armed"))
 
+    @_held_while_dropdown
     def set_reset_error(self, message: str) -> None:
         """Say why the reset did not happen ("" hides the note)."""
         message = str(message or "")
@@ -2020,6 +2158,7 @@ class SettingsPanel(QWidget):
                 return ""
         return str(value or "")
 
+    @_held_while_dropdown
     def set_unmatched(self, entries) -> None:
         """Show the saved unmatched readings (UnmatchedLog.entries(), newest first)."""
         self._unmatched = [dict(e) for e in (entries or []) if isinstance(e, dict)]
@@ -2076,11 +2215,13 @@ class SettingsPanel(QWidget):
             self.region_btn.setText("DRAW REGION")
         self._update_summaries()
 
+    @_held_while_dropdown
     def set_region_note(self, text: str) -> None:
         self.region_note.setText(text)
         self.region_note.setVisible(bool(text))
         self.adjustSize()
 
+    @_held_while_dropdown
     def set_monitors(self, choices: list[tuple[str, str]], current: str | None) -> None:
         """Fill the monitor list with (screen name, label) pairs."""
         self.monitor_box.blockSignals(True)
@@ -2194,6 +2335,7 @@ class SettingsPanel(QWidget):
             self._ore_count = None
         self._update_summaries()
 
+    @_held_while_dropdown
     def set_preview(self, crop, pin=None, digits=None) -> None:
         """Show a scanner crop scaled to fit the preview box (aspect kept).
 
