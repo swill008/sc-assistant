@@ -988,12 +988,59 @@ def check_dropdown_and_focus() -> None:
     panel.close()
 
 
+def check_progress_bars() -> None:
+    """A thin cyan bar under the update download line and under the voice
+    DOWNLOAD line: follows got/total, hidden when the size is unknown and when
+    the download ends; nothing overlaps at UI 1.0 and 1.5."""
+    from app.ui import theme
+
+    print("PROGRESS BARS")
+    for scale in (1.0, 1.5):
+        theme.set_scale(scale)
+        try:
+            panel = _panel()
+            panel.set_open_sections(["voice", "update"])
+            QApplication.processEvents()
+            check(f"UI {scale}: both bars hidden at rest",
+                  not panel.update_bar.isVisible() and not panel.voice_download_bar.isVisible())
+            panel._pending_version = "9.9.9"
+            panel._on_update_progress(42 * 1048576, 100 * 1048576)
+            QApplication.processEvents()
+            check(f"UI {scale}: update bar shows 42 %",
+                  panel.update_bar.isVisible() and abs(panel.update_bar.fraction - 0.42) < 1e-6,
+                  f"({panel.update_bar.isVisible()}, {panel.update_bar.fraction})")
+            check(f"UI {scale}: update bar is thin and full width",
+                  panel.update_bar.height() == theme.px(3)
+                  and panel.update_bar.width() >= panel.update_hint.width(),
+                  f"({panel.update_bar.width()}x{panel.update_bar.height()})")
+            panel.set_voice_download(100 * 1048576)
+            panel.set_voice_progress(30 * 1048576, 100 * 1048576)
+            panel.adjustSize()
+            QApplication.processEvents()
+            check(f"UI {scale}: voice bar shows 30 %",
+                  panel.voice_download_bar.isVisible()
+                  and abs(panel.voice_download_bar.fraction - 0.30) < 1e-6)
+            overlaps, outside = _overlaps(panel)
+            check(f"UI {scale}: with both bars showing, no overlap, nothing outside",
+                  not overlaps and not outside, f"({overlaps[:3]}, {outside[:3]})")
+            panel.set_voice_progress(5, 0)
+            check(f"UI {scale}: unknown size hides the voice bar", not panel.voice_download_bar.isVisible())
+            panel.set_voice_download(0)
+            panel._end_download()
+            QApplication.processEvents()
+            check(f"UI {scale}: both bars hidden when the downloads end",
+                  not panel.update_bar.isVisible() and not panel.voice_download_bar.isVisible())
+            panel.close()
+        finally:
+            theme.set_scale(1.0)
+
+
 def main() -> int:
     global _APP
     _APP = QApplication.instance() or QApplication(sys.argv)
     for test in (check_reset, check_unmatched, check_layout, check_sections,
                  check_section_layouts, check_preview, check_voice, check_voice_layout,
-                 check_dropdown_and_focus):
+                 check_dropdown_and_focus, check_progress_bars):
         try:
             test()
         except Exception:

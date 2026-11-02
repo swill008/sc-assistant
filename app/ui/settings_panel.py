@@ -129,6 +129,46 @@ def _held_while_dropdown(method):
     return wrapper
 
 
+class _ProgressBar(QWidget):
+    """Thin download bar under a progress line (user, 2026-11-01): full width,
+    cyan fill on a dim track, the style of the scanner card's READ bar."""
+
+    HEIGHT = 3          # design px
+
+    def __init__(self, parent=None) -> None:
+        super().__init__(parent)
+        self._fraction = 0.0
+        self.setFixedHeight(theme.px(self.HEIGHT))
+        self.hide()
+
+    @property
+    def fraction(self) -> float:
+        return self._fraction
+
+    def set_progress(self, got: int, total: int) -> None:
+        """Show got/total (0..1); hidden when the total is unknown."""
+        if total and total > 0:
+            self._fraction = max(0.0, min(1.0, float(got) / float(total)))
+            self.show()
+            self.update()
+        else:
+            self.hide()
+
+    def paintEvent(self, event):  # noqa: N802
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        p.setPen(Qt.PenStyle.NoPen)
+        r = self.rect()
+        radius = r.height() / 2
+        p.setBrush(QColor(255, 255, 255, 18))
+        p.drawRoundedRect(QRectF(r), radius, radius)
+        if self._fraction > 0:
+            p.setBrush(theme.ACCENT)
+            p.drawRoundedRect(QRectF(0, 0, max(r.height(), r.width() * self._fraction), r.height()),
+                              radius, radius)
+        p.end()
+
+
 class _SectionHeader(QWidget):
     """Clickable group heading: "▸ NAME" closed, "▾ NAME" open, and a grey
     summary on the right while closed."""
@@ -1166,6 +1206,8 @@ class SettingsPanel(QWidget):
         dl_row.addWidget(self.voice_download_btn)
         self.voice_download_row.hide()
         root.addWidget(self.voice_download_row)
+        self.voice_download_bar = _ProgressBar(self)
+        root.addWidget(self.voice_download_bar)
 
         speed_row = self._row()
         self.speed_slider = _slider()
@@ -1233,6 +1275,8 @@ class SettingsPanel(QWidget):
         update_row.addWidget(self.update_hint, 1)
         update_row.addWidget(self.update_btn)
         root.addLayout(update_row)
+        self.update_bar = _ProgressBar(self)
+        root.addWidget(self.update_bar)
 
         # "What's new in vX" from the release notes, plain text only.
         self.whats_new_label = QLabel()
@@ -1619,6 +1663,7 @@ class SettingsPanel(QWidget):
             self.voice_download_label.setText(voice_download_text(got, total))
             self.voice_download_btn.setText(self.VOICE_CANCEL_TEXT)
             self.voice_download_row.show()
+            self.voice_download_bar.set_progress(got, total)
         elif self._voice_need > 0:
             self.voice_download_label.setText(
                 f"Needs a {_size_mb(self._voice_need)} MB download")
@@ -1627,6 +1672,8 @@ class SettingsPanel(QWidget):
             self.voice_download_row.show()
         else:
             self.voice_download_row.hide()
+        if self._voice_downloading is None:
+            self.voice_download_bar.hide()
         self.voice_test_btn.setEnabled(
             self._voice_downloading is None and self._voice_need <= 0)
         self._update_summaries()
@@ -1810,6 +1857,7 @@ class SettingsPanel(QWidget):
             return
         self._download = (max(0, int(got)), max(0, int(total)))
         self.update_hint.setText(download_text(self._pending_version, got, total))
+        self.update_bar.set_progress(got, total)
         self._update_summaries()
 
     def _download_summary(self) -> str:
@@ -1819,6 +1867,7 @@ class SettingsPanel(QWidget):
         return f"downloading {_mb(got)} MB"
 
     def _end_download(self) -> None:
+        self.update_bar.hide()
         if self._download is not None:
             self._download = None
             self._update_summaries()

@@ -1,5 +1,51 @@
 # Changes
 
+## v1.0.5 — 2026-11-01
+
+Fixes the 1.0.4 voice engines and the vanishing Settings drop-downs; adds
+download progress bars.
+
+### Voice engines missing from the 1.0.4 build
+
+**What happened.** The 1.0.4 EXE built on GitHub lacked the modules loaded by
+name at run time: the four voice engines and the add-on downloader
+(`app.tts.windows`, `piper`, `kokoro`, `edge`, `addons`), plus
+`app.refinery*`. No voice engine loaded and the refinery work-order tracker
+could not start. Local builds of the same recipe had them. Piper add-ons also
+failed in the app with "No module named 'wave'": standard modules the add-ons
+import but the app never does were left out.
+
+**Change.** `sc-assistant.spec` lists every module under `app/` from the files
+themselves and bundles the standard modules the add-ons need.
+`tools/check_bundle.py` compares `app/` with the built EXE and both workflows
+run it after the build, so a release with a missing module fails. New
+`SCAssistant.exe --voice-check FOLDER` makes the built EXE say the test phrase
+with every ready engine and writes `voice-check.json`: Windows, Piper, Kokoro
+and the Microsoft online voices all produced audio.
+
+### Settings drop-downs vanished after 1-3 seconds
+
+**What happened.** The 2-second stay-on-top round re-raised Settings above its
+own open drop-down (e.g. VOICE → ENGINE), which then looked closed. Found with
+drop-down tracing in DETAILED LOG and the window z-order; focus and layout
+changes were ruled out.
+
+**Change.** The round skips while any drop-down is open. Settings also holds
+back updates that could move an open drop-down until it closes, and DETAILED
+LOG records drop-downs opening and closing. New **FOCUS** tick box next to the
+Settings pin (off by default): when on, clicking Settings makes it the active
+window.
+
+### Download progress bars
+
+A thin cyan bar under the update download line and under the VOICE DOWNLOAD
+line, filling with the download; hidden when the size is unknown.
+
+### Build
+
+Setup compresses on every core (`LZMANumBlockThreads` = `NUMBER_OF_PROCESSORS`):
+19 s instead of about 70 s on the 8-core build PC.
+
 ## v1.0.4 — 2026-11-01
 
 A VOICE group with four speech engines, a DEBUG group with scan history,

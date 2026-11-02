@@ -1225,8 +1225,8 @@ you like:
   voice's licence and its size, or `downloaded`.
 - **DOWNLOAD** — shown only when the chosen voice still needs files (the
   add-on, the model or the voice): `Needs a <N> MB download` and
-  **DOWNLOAD**; while it downloads, `NN% · <got> of <total> MB` and
-  **CANCEL**. Nothing is downloaded until you press it, and **TEST** waits
+  **DOWNLOAD**; while it downloads, `NN% · <got> of <total> MB` with a thin
+  cyan progress bar under it, and **CANCEL**. Nothing is downloaded until you press it, and **TEST** waits
   until the download is done.
 - **SPEED** — 0.5× to 2.0× in steps of 0.1 (saved as `voice_speed`,
   default 1.0).
@@ -1266,7 +1266,8 @@ phrase is spoken with a Windows voice and the reason is written to `app.log`.
     and names the version it actually downloaded (it can be newer than the one
     CHECK saw). While it downloads, the line under the button counts up
     every megabyte: `Downloading v<x> · NN% · <got> of <total> MB`, or
-    `Downloading v<x> · <got> MB` when GitHub gives no size. SC Assistant then closes, Setup installs silently and
+    `Downloading v<x> · <got> MB` when GitHub gives no size, with a thin cyan
+    progress bar under it. SC Assistant then closes, Setup installs silently and
     starts the new version. The hand-off waits for the old copy to exit with
     no time limit; if Setup stops without installing (exit code 1 or 2), the
     old version is started again.
@@ -1351,7 +1352,10 @@ default; leave them off unless you are looking into a problem.
   holds your notes, inventory, blueprints, refinery timers or hauling run.
   Attach it when you report a problem.
 
-The settings window has a push-pin too, like every panel.
+The settings window has a push-pin too, like every panel. Next to it,
+**FOCUS** (off by default): when on, clicking Settings makes it the active
+window, so it takes the keyboard until you click the game; when off it never
+takes focus, like the other panels.
 
 ### Window positions
 
@@ -1648,6 +1652,8 @@ C:\scov\Scripts\python.exe -m tools.dataage_selftest REM data age and window pin
 C:\scov\Scripts\python.exe -m tools.update_selftest REM UPDATE: release lookup, sha256 check, What's new, installer hand-off, TRACKING slider (one live read-only request)
 C:\scov\Scripts\python.exe -m tools.debug_selftest REM DEBUG: SCAN HISTORY, SAVE BAD READS, the Logs buttons, reset
 C:\scov\Scripts\python.exe -m tools.applog_selftest REM app.log, DETAILED LOG, unhandled errors, EXPORT DIAGNOSTICS contents
+C:\scov\Scripts\python.exe tools\check_bundle.py dist\SCAssistant\SCAssistant.exe REM every app module is in the built EXE (the release workflow runs it)
+dist\SCAssistant\SCAssistant.exe --voice-check %TEMP%\vc REM the built EXE says the test phrase with every ready voice engine; see voice-check.json
 C:\scov\Scripts\python.exe -m tools.logviewer_selftest REM VIEW LOG window: follow, filters, pause, COPY (invisible, secondary monitor)
 C:\scov\Scripts\python.exe -m tools.tts_selftest REM VOICE: phrases, engine choice and fall-back, worker, Windows voices, player (always silent)
 C:\scov\Scripts\python.exe -m tools.neural_selftest REM Piper and Kokoro add-ons: download, SHA-256 pins, tampered files, cancel (offline; --live checks the pins)
