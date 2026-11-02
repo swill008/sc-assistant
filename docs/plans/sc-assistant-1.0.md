@@ -230,6 +230,14 @@ every scannable item; visible feedback for every read (no silent discards).
   user's own pin as today; try up to 5 frames over ~0.5 s; save the window
   as `plate` beside the digits box.
 
+## After 1.0.4 (planning, 2026-11-01) — not started
+- S. Update download progress bar (user): a progress bar under the UPDATE
+  line while an update downloads, next to the existing
+  "Downloading v<x> · NN% · got of total MB" text. Decided 1a: a thin
+  full-width cyan bar in the style of the scanner card's READ bar, the text
+  stays above it. Decided 2a: the VOICE add-on downloads (Piper, Kokoro) get
+  the same bar.
+
 ## Parked (2026-11-01): SuperCargo button
 A CARGO nav-bar button that shows/hides SuperCargo and its overlay. Planned
 method: `--show` / `--hide` / `--toggle` switches added to the user's

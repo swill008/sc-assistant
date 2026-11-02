@@ -59,6 +59,9 @@ jobs:
       - name: Build
         run: pyinstaller --noconfirm --clean sc-assistant.spec
 
+      - name: Check every app module is in the EXE
+        run: python tools/check_bundle.py dist/SCAssistant/SCAssistant.exe
+
       - name: Package standalone zip
         run: Compress-Archive -Path dist/SCAssistant/* -DestinationPath SCAssistant-windows-x64.zip
 

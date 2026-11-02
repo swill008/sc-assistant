@@ -15,6 +15,22 @@ datas = [
 ]
 binaries = []
 hiddenimports = collect_submodules("app")
+# Every module under app/, listed from the files themselves. Engines that are
+# loaded by name at run time (app.tts.windows, .piper, .kokoro, .edge,
+# .addons) were missing from the 1.0.4 build made on GitHub although
+# collect_submodules found them locally; listing the files does not depend on
+# importing anything. tools/check_bundle.py fails a release if one is missing.
+import os as _os
+
+for _dir, _subdirs, _files in _os.walk("app"):
+    _subdirs[:] = [d for d in _subdirs if d != "__pycache__"]
+    for _name in _files:
+        if _name.endswith(".py"):
+            _mod = _os.path.join(_dir, _name[:-3]).replace(_os.sep, ".").replace("/", ".")
+            if _mod.endswith(".__init__"):
+                _mod = _mod[: -len(".__init__")]
+            if _mod not in hiddenimports:
+                hiddenimports.append(_mod)
 
 for package in ("rapidocr_onnxruntime", "onnxruntime"):
     package_datas, package_binaries, package_hiddenimports = collect_all(package)

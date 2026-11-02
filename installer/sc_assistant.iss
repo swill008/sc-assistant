@@ -85,6 +85,12 @@ UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}
 Compression=lzma2
 SolidCompression=yes
+; Compress on every core of the build machine (NUMBER_OF_PROCESSORS; 8 here,
+; 4 on GitHub's runner). Each block thread needs its own memory, which a
+; build machine has to spare.
+#define BuildCores Int(GetEnv("NUMBER_OF_PROCESSORS"), 2)
+LZMAUseSeparateProcess=yes
+LZMANumBlockThreads={#BuildCores}
 WizardStyle=modern
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
