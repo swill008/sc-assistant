@@ -29,6 +29,7 @@ from __future__ import annotations
 import hashlib
 import io
 import json
+import logging
 import os
 import re
 import shutil
@@ -43,6 +44,8 @@ from typing import Callable, NamedTuple
 
 from . import version as _names
 from .version import VERSION
+
+_log = logging.getLogger(__name__)
 
 # This fork; the names live in app/version.py. Upstream
 # (fishtaco7/citizen-assistant) does not have its fixes, so updating from
@@ -189,12 +192,17 @@ def check(timeout: float = 15.0) -> tuple[str, str]:
     source install only gets them when that release is the version on main.
     """
     if is_frozen():
+        _log.debug("check: EXE build, reading the latest release")
         release = latest_release(timeout)
+        _log.debug("check: latest release %s (installed %s)", release.version, VERSION)
         return release.version, release.body
+    _log.debug("check: source install, reading version.py on %s", BRANCH)
     published = published_version(timeout)
+    _log.debug("check: published %s (installed %s)", published, VERSION)
     try:
         release = latest_release(timeout)
-    except Exception:            # notes are a nicety; the version is what counts
+    except Exception as exc:     # notes are a nicety; the version is what counts
+        _log.debug("check: no release notes (%s)", exc)
         return published, ""
     return published, (release.body if release.version == published else "")
 
@@ -298,6 +306,8 @@ def download_setup(timeout: float = 300.0,
     partial = target.with_suffix(".part")
     algo, _, want = release.digest.partition(":")
     hasher = hashlib.sha256() if algo.strip().lower() == "sha256" and want else None
+    _log.debug("download: %s (%d bytes, sha256 %s) to %s", release.url, release.size,
+               "checked" if hasher is not None else "not given", target)
     try:
         request = urllib.request.Request(release.url, headers={"User-Agent": USER_AGENT})
         with urllib.request.urlopen(request, timeout=timeout) as response, \
@@ -326,9 +336,11 @@ def download_setup(timeout: float = 300.0,
         if hasher is not None and hasher.hexdigest().lower() != want.strip().lower():
             raise RuntimeError("the installer download is damaged (sha256 does not match)")
         partial.replace(target)
-    except BaseException:
+    except BaseException as exc:
+        _log.debug("download: failed, partial file removed (%s)", exc)
         partial.unlink(missing_ok=True)
         raise
+    _log.debug("download: done, %d bytes, version %s", got, release.version)
     return Downloaded(target, release.version)
 
 
@@ -382,13 +394,17 @@ def run_installer(setup: Path, wait_for_pid: int | None = None,
     # runs us in a job object cannot kill the helper when we quit; jobs that
     # refuse breakaway get the plain retry.
     attempts = [0x08000000 | 0x01000000, 0x08000000] if sys.platform == "win32" else [0]
+    _log.debug("hand-off: Setup %s after pid %d exits, relaunch %s", setup, pid,
+               sys.executable if relaunch is None else relaunch)
     for i, flags in enumerate(attempts):
         try:
+            _log.debug("hand-off: starting PowerShell (creation flags 0x%x)", flags)
             subprocess.Popen(args, creationflags=flags, close_fds=True,
                              stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL)
             return
-        except OSError:
+        except OSError as exc:
+            _log.debug("hand-off: start failed (%s)", exc)
             if i == len(attempts) - 1:
                 raise
 
@@ -454,9 +470,11 @@ def apply(timeout: float = 90.0) -> str:
     if is_frozen():
         raise RuntimeError("the EXE build has to be replaced by hand")
 
+    _log.debug("apply: downloading %s", ARCHIVE)
     request = urllib.request.Request(ARCHIVE, headers={"User-Agent": USER_AGENT})
     with urllib.request.urlopen(request, timeout=timeout) as response:
         blob = response.read()
+    _log.debug("apply: archive %d bytes", len(blob))
     if not blob:
         raise RuntimeError("GitHub sent an empty archive")
 
@@ -466,5 +484,6 @@ def apply(timeout: float = 90.0) -> str:
             bundle.extractall(tmp)
         source = archive_top(Path(tmp))
         version = _version_in(source)
+        _log.debug("apply: copying version %s over %s", version, root)
         _copy_tree(source, root)
     return version

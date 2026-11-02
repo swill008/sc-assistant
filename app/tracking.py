@@ -11,11 +11,14 @@ so the coarse map ignores most of the frame.
 """
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import cv2
 import numpy as np
+
+_log = logging.getLogger(__name__)
 
 PIN_MARGIN = 2          # px kept around the pin in the template
 
@@ -239,8 +242,10 @@ def find_anchor_in_box(image: np.ndarray, box: tuple[int, int, int, int],
     x0, y0 = max(0, bx), max(0, by)
     x1, y1 = min(iw, bx + bw), min(ih, by + bh)
     if x1 - x0 < 4 or y1 - y0 < 4:
+        _log.debug("find_anchor_in_box: box %s too small after clipping", box)
         return None
     anchor = None
+    method = "reference"
     ref = reference_anchor(screen_height)
     if ref is not None:
         m = locate(image[y0:y1, x0:x1], ref)
@@ -257,11 +262,17 @@ def find_anchor_in_box(image: np.ndarray, box: tuple[int, int, int, int],
             tx1, ty1 = px + pw + PIN_MARGIN, py + ph + PIN_MARGIN
             if tx >= 0 and ty >= 0 and tx1 <= iw and ty1 <= ih:
                 anchor = Anchor(image[ty:ty1, tx:tx1].copy(), _digits_for(tx1 - tx, ph))
+                method = "blob"
     if anchor is None:
         found = _find_anchor_at(image, (bx, by, bw, bh))
         if found is None:
+            _log.debug("find_anchor_in_box: box %s, no pin found (reference, blob, strip)",
+                       box)
             return None
         anchor, tx, ty = found
+        method = "strip"
+    _log.debug("find_anchor_in_box: box %s, pin found by %s at (%d, %d)",
+               box, method, tx, ty)
     return anchor, (bx - tx, by - ty, bw, bh)
 
 

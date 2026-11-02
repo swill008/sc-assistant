@@ -404,6 +404,10 @@ class SettingsPanel(QWidget):
     bad_reads_toggled = Signal(bool)  # DEBUG -> SAVE BAD READS switch, user clicks only
     open_history = Signal()           # DEBUG -> OPEN HISTORY
     open_bad_reads = Signal()         # DEBUG -> OPEN FOLDER
+    detailed_log_toggled = Signal(bool)  # DEBUG -> DETAILED LOG switch, user clicks only
+    open_log = Signal()               # DEBUG -> OPEN LOG
+    view_log = Signal()               # DEBUG -> VIEW LOG
+    export_diagnostics = Signal()     # DEBUG -> EXPORT DIAGNOSTICS
 
     # Two-click buttons (like QUIT on the nav bar): the first click arms,
     # a second within ARM_MS acts; otherwise the button reverts.
@@ -961,7 +965,8 @@ class SettingsPanel(QWidget):
         root.addWidget(self.reset_note)
 
     def _build_debug(self, root: QVBoxLayout) -> None:
-        """SCAN HISTORY and SAVE BAD READS: switch and open button each."""
+        """SCAN HISTORY and SAVE BAD READS: switch and open button each;
+        Logs: DETAILED LOG, OPEN LOG, VIEW LOG and EXPORT DIAGNOSTICS."""
         root.addWidget(_section("Scan debugging"))
         self.history_btn, self.history_open_btn = self._debug_row(
             root, "SCAN HISTORY", "OPEN HISTORY",
@@ -976,6 +981,36 @@ class SettingsPanel(QWidget):
             "Open the bad_reads folder")
         self.bad_reads_btn.toggled.connect(self._on_bad_reads)
         self.bad_reads_open_btn.clicked.connect(self.open_bad_reads.emit)
+
+        root.addWidget(_section("Logs"))
+        self.detailed_log_btn, self.log_open_btn = self._debug_row(
+            root, "DETAILED LOG", "OPEN LOG",
+            "Also write the step-by-step trace to app.log (warnings and "
+            "errors are always written)",
+            "Open app.log")
+        self.detailed_log_btn.toggled.connect(self._on_detailed_log)
+        self.log_open_btn.clicked.connect(self.open_log.emit)
+        row = QHBoxLayout()
+        row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
+        row.setSpacing(theme.px(6))
+        self.log_view_btn = _button("VIEW LOG")
+        self.log_view_btn.setToolTip("Show app.log in a window that follows new lines")
+        self.log_view_btn.clicked.connect(self.view_log.emit)
+        self.log_export_btn = _button("EXPORT DIAGNOSTICS")
+        self.log_export_btn.setToolTip(
+            "Save the logs, settings and debug pictures in one zip on the Desktop "
+            "(notes, inventory and blueprints are left out)")
+        self.log_export_btn.clicked.connect(self.export_diagnostics.emit)
+        row.addWidget(self.log_view_btn, 1)
+        row.addWidget(self.log_export_btn, 1)
+        root.addLayout(row)
+        self.log_note = QLabel()
+        self.log_note.setWordWrap(True)
+        self.log_note.setFont(theme.font(7))
+        self.log_note.setStyleSheet(theme.qss(
+            "color: rgba(130,148,166,0.85); background: transparent;"))
+        self.log_note.hide()
+        root.addWidget(self.log_note)
 
     def _debug_row(self, root: QVBoxLayout, name: str, open_text: str,
                    tip: str, open_tip: str) -> tuple[QPushButton, QPushButton]:
@@ -1004,6 +1039,22 @@ class SettingsPanel(QWidget):
         self.history_btn.setText("ON" if checked else "OFF")
         self._update_summaries()
         self.history_toggled.emit(checked)
+
+    def _on_detailed_log(self, checked: bool) -> None:
+        self.detailed_log_btn.setText("ON" if checked else "OFF")
+        self._update_summaries()
+        self.detailed_log_toggled.emit(checked)
+
+    def set_detailed_log(self, enabled: bool) -> None:
+        """Show the DETAILED LOG switch; emits nothing."""
+        self._set_switch(self.detailed_log_btn, bool(enabled))
+        self._update_summaries()
+
+    def set_log_note(self, text: str) -> None:
+        """The grey line under the Logs buttons ("" hides it)."""
+        self.log_note.setText(str(text or ""))
+        self.log_note.setVisible(bool(text))
+        self._fit()
 
     def _on_bad_reads(self, checked: bool) -> None:
         self.bad_reads_btn.setText("ON" if checked else "OFF")
@@ -1129,7 +1180,8 @@ class SettingsPanel(QWidget):
                        else f"v{self._pending_version} available" if self._pending_version
                        else f"v{VERSION} installed"),
             "debug": (f"history {'on' if self.history_btn.isChecked() else 'off'} · "
-                      f"saver {'on' if self.bad_reads_btn.isChecked() else 'off'}"),
+                      f"saver {'on' if self.bad_reads_btn.isChecked() else 'off'}"
+                      + (" · log detailed" if self.detailed_log_btn.isChecked() else "")),
         }
         for section_id, text in summaries.items():
             self._groups[section_id][0].set_summary(text)

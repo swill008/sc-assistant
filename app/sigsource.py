@@ -17,6 +17,7 @@ or the bundled file and leaves the reason in last_error.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import threading
@@ -47,6 +48,8 @@ _VERSION_RE = re.compile(r"^(\d+(?:\.\d+)*)-([a-z]+)\.(\d+)$", re.I)
 _FILE_RE = re.compile(r"^[\w.\-]+\.json$")
 
 Fetcher = Callable[[str, float], bytes]
+
+_log = logging.getLogger(__name__)
 
 
 def clean_name(raw: str) -> str:
@@ -140,6 +143,7 @@ def http_get(url: str, timeout: float = TIMEOUT) -> bytes:
 def fetch(channel: str = "live", fetcher: Fetcher = http_get,
           timeout: float = TIMEOUT) -> dict:
     """Download and convert the newest data for the channel (raises on failure)."""
+    _log.debug("fetch: %s (%s)", VERSIONS_URL, channel)
     versions = json.loads(fetcher(VERSIONS_URL, timeout))
     entry = pick_version(versions, channel)
     if entry is None:
@@ -148,6 +152,8 @@ def fetch(channel: str = "live", fetcher: Fetcher = http_get,
                         entry["version"])
     if not valid(converted):
         raise ValueError(f"scmdb {entry['version']}: no ship ores")
+    _log.debug("fetch: scmdb %s, %d ship ores", entry["version"],
+               len(converted.get("ship_ores", [])))
     return converted
 
 
@@ -170,8 +176,14 @@ def read_cache(path: Path) -> dict | None:
 
 def cached_data(path: Path, channel: str) -> dict | None:
     cache = read_cache(path)
-    if cache is None or cache.get("channel") != channel:
+    if cache is None:
+        _log.debug("cache: none usable at %s, using the bundled data", path)
         return None
+    if cache.get("channel") != channel:
+        _log.debug("cache: holds %s, not %s, using the bundled data",
+                   cache.get("channel"), channel)
+        return None
+    _log.debug("cache: using %s data from %s", channel, path)
     return cache["data"]
 
 
@@ -223,13 +235,16 @@ class SignatureSource:
             return False
         try:
             if not force and not needs_refresh(read_cache(self.cache_path), channel, now):
+                _log.debug("refresh: %s cache is fresh, not fetching", channel)
                 return False
             data = fetch(channel, self.fetcher)
             write_cache(self.cache_path, channel, data, now)
+            _log.debug("refresh: %s cache written to %s", channel, self.cache_path)
             self.last_error = ""
             return True
         except Exception as exc:          # network, JSON, disk: keep what we have
             self.last_error = f"{type(exc).__name__}: {exc}"
+            _log.debug("refresh: failed, keeping the cache (%s)", self.last_error)
             return False
         finally:
             self.last_checked = time.time() if now is None else now

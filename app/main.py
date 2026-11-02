@@ -11,12 +11,14 @@ from collections import deque
 from datetime import datetime
 from pathlib import Path
 
-from PySide6.QtCore import QEvent, QObject, Qt, QThread, QTimer, Signal
+from PySide6.QtCore import (QEvent, QObject, QStandardPaths, Qt, QThread,
+                            QTimer, Signal)
 from PySide6.QtGui import (QAction, QColor, QFont, QGuiApplication, QIcon,
                            QKeySequence, QPainter, QPainterPath, QPixmap,
                            QShortcut)
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
+from . import applog
 from . import config as app_config
 from . import display, win32
 from .blueprints import BlueprintTracker
@@ -30,6 +32,7 @@ from .orefinder import LiveData
 from .ui.combat_panel import CombatPanel
 from .ui.hauling_panel import HaulingPanel
 from .ui.inventory_panel import InventoryPanel
+from .ui.log_viewer import LogViewer
 from .ui.mining_panel import MiningPanel
 from .ui.navbar import NavBar
 from .ui.notes_panel import NotesPanel
@@ -100,7 +103,10 @@ class ScanHistory:
         """Carry on from the lines already in the file."""
         try:
             text = self.path.read_text(encoding="utf-8")
-        except OSError:
+        except FileNotFoundError:
+            return
+        except OSError as exc:
+            log.warning("scan history: could not read %s (%s)", self.path, exc)
             return
         self.lines.extend(line for line in text.splitlines() if line.strip())
 
@@ -700,6 +706,69 @@ def fit_on_screen(widget) -> None:
     widget.move(widget.x() + x - frame.left(), widget.y() + y - frame.top())
 
 
+# Errors already logged by _warn_once (key), so a timer that fails every
+# tick (topmost every 2 s) writes one line, not one a tick.
+_WARNED: set = set()
+
+
+def _warn_once(key, message: str, *args) -> None:
+    if key in _WARNED:
+        return
+    _WARNED.add(key)
+    log.warning(message, *args)
+
+
+def _desktop_dir() -> Path | None:
+    """The user's Desktop folder, or None when there is none."""
+    found = QStandardPaths.writableLocation(
+        QStandardPaths.StandardLocation.DesktopLocation)
+    path = Path(found) if found else Path.home() / "Desktop"
+    return path if path.is_dir() else None
+
+
+def diagnostics_target() -> tuple[Path, str]:
+    """EXPORT DIAGNOSTICS: (zip path, where in words): the Desktop when it
+    exists, else the settings folder."""
+    stamp = datetime.now().strftime("%Y-%m-%d %H%M%S")
+    name = f"{APP_NAME} diagnostics {stamp}.zip"
+    desktop = _desktop_dir()
+    if desktop is not None:
+        return desktop / name, "the Desktop"
+    return config_dir() / name, "the settings folder"
+
+
+def _monitor_lines() -> list[str]:
+    lines = []
+    primary = QGuiApplication.primaryScreen()
+    for screen in QGuiApplication.screens():
+        g = screen.geometry()
+        lines.append(f"{screen.name()}: {g.width()}x{g.height()} at {g.x()},{g.y()}, "
+                     f"scale {screen.devicePixelRatio():g}"
+                     + (" (primary)" if screen is primary else ""))
+    return lines
+
+
+def start_logging(folder: Path | None = None, detailed: bool = False) -> Path | None:
+    """app.log in the settings folder (app/applog.py); None if it cannot
+    be opened (the app runs on without it)."""
+    try:
+        return applog.setup(folder if folder is not None else config_dir(), detailed)
+    except OSError as exc:
+        print(f"app.log unavailable: {exc}", file=sys.stderr)
+        return None
+
+
+def _startup_config() -> Config:
+    """main(): app.log first, so anything that warns from here on (reading
+    the settings included) is on disk, then the settings, then the DETAILED
+    LOG choice from them."""
+    start_logging(config_dir())
+    cfg = Config.load()
+    applog.set_detailed(bool(cfg.get("debug_detailed_log")))
+    log.debug("starting %s %s", APP_NAME, version_label())
+    return cfg
+
+
 class _WindowWatcher(QObject):
     """Event filter on the tool windows and Settings: any move, show or hide
     restarts a short timer, so a position is saved once the window stops."""
@@ -897,6 +966,10 @@ class OverlayApp(QObject):
         self.settings.bad_reads_toggled.connect(self._on_bad_reads_switch)
         self.settings.open_history.connect(self._open_history)
         self.settings.open_bad_reads.connect(self._open_bad_reads)
+        self.settings.detailed_log_toggled.connect(self._on_detailed_log)
+        self.settings.open_log.connect(self._open_log)
+        self.settings.view_log.connect(self._view_log)
+        self.settings.export_diagnostics.connect(self._export_diagnostics)
         for panel_id, widget in self._panels().items():
             widget.pin_toggled.connect(
                 lambda pinned, pid=panel_id: self._on_pin(pid, pinned))
@@ -1003,6 +1076,7 @@ class OverlayApp(QObject):
         self._show_unmatched()
         self.settings.set_history(bool(self.cfg.get("debug_scan_history")))
         self.settings.set_bad_reads(bool(self.cfg.get("debug_save_bad_reads")))
+        self.settings.set_detailed_log(bool(self.cfg.get("debug_detailed_log")))
         self._apply_debug()
 
         self.panel.show()
@@ -1069,15 +1143,15 @@ class OverlayApp(QObject):
                        self.combat_panel):
             try:
                 win32.make_overlay_window(widget)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("window style for %s failed (%s)", type(widget).__name__, exc)
         # HAULING, INVENTORY, UEX and NOTES have text controls, so they must be
         # able to take keyboard focus.
         for widget in (self.hauling, self.inventory, self.uex, self.notes):
             try:
                 win32.make_focusable_window(widget)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("window style for %s failed (%s)", type(widget).__name__, exc)
         self._apply_capture_visibility()
         self._assert_topmost()
 
@@ -1088,16 +1162,20 @@ class OverlayApp(QObject):
 
     def _apply_capture_visibility(self) -> None:
         show = self._capture_visible()
-        for widget in (self.nav, self.panel, self.settings, self.orefinder,
-                       self.hauling, self.inventory, self.uex, self.notes,
-                       self.combat_panel):
+        widgets = [self.nav, self.panel, self.settings, self.orefinder,
+                   self.hauling, self.inventory, self.uex, self.notes,
+                   self.combat_panel]
+        if getattr(self, "_log_viewer", None) is not None:
+            widgets.append(self._log_viewer)
+        for widget in widgets:
             try:
                 if show:
                     win32.allow_capture(widget)
                 else:
                     win32.exclude_from_capture(widget)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("capture visibility for %s failed (%s)",
+                            type(widget).__name__, exc)
 
     def _on_capture_visible(self, visible: bool) -> None:
         # --capture-visible is a development override: keep the toggle honest.
@@ -1109,19 +1187,23 @@ class OverlayApp(QObject):
         self._apply_capture_visibility()
 
     def _assert_topmost(self) -> None:
-        for widget in (self.nav, self.panel, self.orefinder, self.hauling,
-                       self.settings, self.inventory, self.uex, self.notes,
-                       self.combat_panel):
+        widgets = [self.nav, self.panel, self.orefinder, self.hauling,
+                   self.settings, self.inventory, self.uex, self.notes,
+                   self.combat_panel]
+        if getattr(self, "_log_viewer", None) is not None:
+            widgets.append(self._log_viewer)
+        for widget in widgets:
             if not widget.isVisible():
                 continue
             try:
                 win32.keep_on_top(widget)
-            except Exception:
-                pass
+            except Exception as exc:
+                _warn_once(("topmost", type(widget).__name__),
+                           "keep on top for %s failed (%s)", type(widget).__name__, exc)
         try:
             self.outline.keep_on_top()
-        except Exception:
-            pass
+        except Exception as exc:
+            _warn_once(("topmost", "outline"), "keep on top for the outline failed (%s)", exc)
 
     # ------------------------------------------------------------------
     def _on_hotkey(self, hotkey_id: int) -> None:
@@ -1501,8 +1583,8 @@ class OverlayApp(QObject):
                        self.inventory, self.combat_panel):
             try:
                 widget.setWindowOpacity(level)
-            except Exception:
-                pass
+            except Exception as exc:
+                log.warning("opacity for %s failed (%s)", type(widget).__name__, exc)
 
     # -- scanner settings: reads per second, game monitor, outline -------
     def _reads_per_second(self) -> int:
@@ -1649,6 +1731,10 @@ class OverlayApp(QObject):
 
     def _on_track_state(self, info) -> None:
         """ScanThread.track_state: the chip always, SHOW BOX when it is on."""
+        if info.get("state") != self._track_info.get("state"):
+            log.debug("tracking: %s -> %s (digits %s, pin %s)",
+                      self._track_info.get("state"), info.get("state"),
+                      info.get("digits"), info.get("pin"))
         self._track_info = dict(info)
         if info.get("state") != "locked":
             self._lock_value = None
@@ -1860,6 +1946,7 @@ class OverlayApp(QObject):
 
     def _on_sections_changed(self, ids: list) -> None:
         self.cfg["settings_open"] = [i for i in SECTION_IDS if i in ids]
+        log.debug("settings sections open: %s", self.cfg["settings_open"])
         self.cfg.save()
 
     # ------------------------------------------------------------------
@@ -1925,6 +2012,8 @@ class OverlayApp(QObject):
             found = self._find_plate(region, grab)
         except Exception as exc:
             found, error = None, f"{type(exc).__name__}: {exc}"
+        log.debug("DRAW REGION: frame %d of %d: %s", DRAW_FRAMES - left + 1, DRAW_FRAMES,
+                  "pin found" if found is not None else (error or "no pin"))
         if found is None and left > 1:
             QTimer.singleShot(DRAW_FRAME_MS, self, lambda: self._draw_attempt(
                 region, grab, grabber, left - 1, token))
@@ -1971,6 +2060,10 @@ class OverlayApp(QObject):
                 self.cfg["anchor"] = anchor.save(config_dir())
             except OSError as exc:
                 found, error = None, f"{type(exc).__name__}: {exc}"
+        if error:
+            log.warning("DRAW REGION: pin search failed (%s)", error)
+        log.debug("DRAW REGION result for %s: %s", region,
+                  "tracking on" if found is not None else "fixed box")
         if found is None:
             self.cfg["anchor"] = None
             self.cfg["plate"] = None
@@ -2084,6 +2177,8 @@ class OverlayApp(QObject):
         self._bad_reads_folder = folder / BAD_READS_FOLDER
         self._bad_read_at: float | None = None       # monotonic time of the last picture
         self._bad_read_seq = 0
+        self._log_viewer: LogViewer | None = None     # VIEW LOG, built on first use
+        self._last_scan_error: str | None = None
 
     def _apply_debug(self) -> None:
         """Start or stop SCAN HISTORY from the settings."""
@@ -2118,9 +2213,76 @@ class OverlayApp(QObject):
     def _open_bad_reads(self) -> None:
         try:
             self._bad_reads_folder.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
+        except OSError as exc:
+            log.warning("bad reads: could not create %s (%s)", self._bad_reads_folder, exc)
         app_config.open_folder(self._bad_reads_folder)
+
+    # -- Settings → DEBUG → Logs ------------------------------------------
+    def _on_detailed_log(self, enabled: bool) -> None:
+        """DETAILED LOG: saved, and the log level switches at once."""
+        self.cfg["debug_detailed_log"] = bool(enabled)
+        self.cfg.save()
+        applog.set_detailed(bool(enabled))
+        log.debug("detailed log on")
+
+    def _open_log(self) -> None:
+        """OPEN LOG: app.log in its default program (Notepad), else its folder."""
+        path = applog.log_path()
+        self._open_log_file(path if path.is_file() else path.parent)
+
+    def _view_log(self) -> None:
+        """VIEW LOG: the one log window, on app.log, where it was last."""
+        viewer = self._log_viewer
+        if viewer is None:
+            viewer = self._log_viewer = LogViewer(applog.log_path())
+            viewer.close_requested.connect(viewer.hide)
+            viewer.open_file.connect(self._open_log_file)
+            try:
+                win32.make_overlay_window(viewer)
+            except Exception as exc:
+                log.warning("window style for the log viewer failed (%s)", exc)
+            pos = _saved_pos(self.cfg.get("logviewer_pos"))
+            if pos is not None:
+                viewer.move(*pos)
+            else:
+                viewer.place_default(self.settings)
+            viewer.clamp_to_screen()
+            self._apply_capture_visibility()
+            watcher = getattr(self, "_window_watcher", None)
+            if watcher is not None:     # moves are saved like the other windows
+                viewer.installEventFilter(watcher)
+        elif viewer.path != applog.log_path():
+            viewer.set_path(applog.log_path())
+        viewer.show()
+        viewer.raise_()
+        self._assert_topmost()
+
+    def _open_log_file(self, path) -> None:
+        try:
+            app_config.open_folder(path)
+        except OSError as exc:
+            log.warning("could not open %s (%s)", path, exc)
+
+    def _close_log_viewer(self) -> None:
+        if getattr(self, "_log_viewer", None) is not None:
+            self._log_viewer.hide()
+
+    def _export_diagnostics(self) -> None:
+        """EXPORT DIAGNOSTICS: one zip on the Desktop (else the settings
+        folder), then its folder is opened and the name shown."""
+        target, where = diagnostics_target()
+        extra = {"monitors": _monitor_lines(),
+                 "game monitor": self.cfg.get("game_monitor"),
+                 "region": self.cfg.get("region")}
+        try:
+            path = applog.export_diagnostics(target, config_dir(), extra)
+        except Exception as exc:
+            log.warning("EXPORT DIAGNOSTICS failed (%s)", exc)
+            self.settings.set_log_note(f"Export failed: {exc}")
+            return
+        log.debug("diagnostics written to %s", path)
+        self.settings.set_log_note(f"Saved to {where}: {path.name}")
+        self._open_log_file(path.parent)
 
     def _debug_read(self, res, matches, confirmed: bool) -> None:
         """After each read (GUI thread): the history line and the bad-read
@@ -2180,39 +2342,42 @@ class OverlayApp(QObject):
         try:
             if self.unmatched.record(value, "unknown", crop):
                 self.settings.set_unmatched(self.unmatched.entries())
-        except Exception:
-            pass                    # a full disk must not stop the scanner
+        except Exception as exc:    # a full disk must not stop the scanner
+            log.warning("unmatched: could not record %s (%s)", value, exc)
 
     def _show_unmatched(self) -> None:
         try:
             entries = self.unmatched.entries()
-        except Exception:
+        except Exception as exc:
+            log.warning("unmatched: could not list the readings (%s)", exc)
             entries = []
         self.settings.set_unmatched(entries)
 
     def _open_unmatched_folder(self) -> None:
         try:
             self.unmatched.folder.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            pass
+        except OSError as exc:
+            log.warning("unmatched: could not create %s (%s)", self.unmatched.folder, exc)
         app_config.open_folder(self.unmatched.folder)
 
     def _clear_unmatched(self) -> None:
         try:
             self.unmatched.clear()
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("unmatched: could not clear (%s)", exc)
         self._unmatched_value = None
         self.settings.set_unmatched([])
 
     def _reset_settings(self) -> None:
         """RESET SETTINGS: back up and remove the settings, then restart."""
+        log.debug("RESET SETTINGS: starting")
         self.scan.stop()
         self.scan.wait(1500)
         try:
             app_config.reset_to_defaults()
         except Exception as exc:
             # Nothing was removed: keep working with the current settings.
+            log.warning("RESET SETTINGS failed, nothing removed (%s)", exc)
             self.settings.set_reset_error(str(exc))
             self.scan.resume()
             return
@@ -2220,6 +2385,11 @@ class OverlayApp(QObject):
         # state): a fresh default one replaces it and saving is turned off.
         self.cfg = Config()
         self._resetting = True
+        # DETAILED LOG goes back to off (the app.log files are kept: they
+        # are not settings) and the log window closes.
+        applog.set_detailed(False)
+        self._close_log_viewer()
+        log.debug("RESET SETTINGS: done, restarting")
         self.restart()
 
     def save_config(self) -> None:
@@ -2251,6 +2421,9 @@ class OverlayApp(QObject):
         self.voice.say(spoken_text(top.label, top.count))
 
     def _on_scan_error(self, message: str) -> None:
+        if message != self._last_scan_error:   # the loop repeats it every read
+            self._last_scan_error = message
+            log.warning("scanner: %s", message)
         self.panel.set_state("error")
         self.panel.set_scan_idle(f"Capture error: {message}")
 
@@ -2285,8 +2458,8 @@ class OverlayApp(QObject):
         on_done runs on the worker thread, so it only emits a signal."""
         try:
             self.data.refresh_in_background(self.data_refreshed.emit)
-        except Exception:
-            pass        # the bundled / cached data keeps working
+        except Exception as exc:    # the bundled / cached data keeps working
+            log.warning("signature data refresh could not start (%s)", exc)
 
     def _on_data_refreshed(self, changed: bool) -> None:
         if changed:
@@ -2308,6 +2481,7 @@ class OverlayApp(QObject):
             self.panel.reset_cache()
             self.panel.set_scan_idle(f"Signature data reloaded · {self.data.version}")
         except Exception as exc:
+            log.warning("signature data reload failed (%s)", exc)
             self.panel.set_state("error")
             self.panel.set_scan_idle(f"Reload failed: {exc}")
 
@@ -2326,6 +2500,9 @@ class OverlayApp(QObject):
             self.cfg["notes_pos"] = [self.notes.x(), self.notes.y()]
             if self._settings_placed:
                 self.cfg["settings_pos"] = [self.settings.x(), self.settings.y()]
+            viewer = getattr(self, "_log_viewer", None)
+            if viewer is not None:
+                self.cfg["logviewer_pos"] = [viewer.x(), viewer.y()]
             self.cfg["open_tools"] = [
                 tool_id for tool_id, widget in (
                     ("mining", self.panel),
@@ -2340,9 +2517,11 @@ class OverlayApp(QObject):
             self.cfg["hauling_cargo"] = self.hauling.capacity()
             self.cfg["hauling_commodity"] = self.hauling.current_commodity()
             self.cfg["nav_visible"] = self.nav.shown
+            log.debug("window positions saved: %s",
+                      {k: v for k, v in self.cfg.data.items() if k.endswith("_pos")})
             self.cfg.save()
-        except Exception:
-            pass
+        except Exception as exc:
+            log.warning("could not save the window positions (%s)", exc)
 
     def restart(self) -> None:
         """Relaunch the overlay, e.g. to apply a new UI scale.
@@ -2382,8 +2561,10 @@ class OverlayApp(QObject):
                 subprocess.Popen(args, **kwargs)
                 started = True
                 break
-            except OSError:
+            except OSError as exc:
+                log.warning("restart with flags %#x failed (%s)", flags, exc)
                 continue
+        log.debug("restart: %s", "new copy started" if started else "failed")
         if not started:
             self.panel.set_state("error")
             self.panel.set_scan_idle("Restart failed - quit and start again")
@@ -2399,11 +2580,14 @@ class OverlayApp(QObject):
         """
         from . import updater
 
+        log.debug("update: handing off to %s", setup_path)
         try:
             updater.run_installer(Path(setup_path))
         except Exception as exc:          # never quit without a hand-off
+            log.warning("update hand-off failed (%s)", exc)
             self.settings.install_failed(f"Update failed: {exc}")
             return
+        log.debug("update: installer started, quitting")
         self.quit()
 
     def quit(self) -> None:
@@ -2420,6 +2604,7 @@ class OverlayApp(QObject):
         self.settings.shutdown()
         self.voice.stop()
         self.settings.hide()
+        self._close_log_viewer()
         self.tray.hide()
         self.app.quit()
 
@@ -2432,8 +2617,10 @@ class OverlayApp(QObject):
         intermittent access violation (0xC0000005) after a clean quit.
         """
         self._stop_saving()
-        widgets = (self.nav, self.panel, self.settings, self.orefinder,
-                   self.hauling, self.inventory, self.combat_panel)
+        widgets = [self.nav, self.panel, self.settings, self.orefinder,
+                   self.hauling, self.inventory, self.combat_panel]
+        if self._log_viewer is not None:
+            widgets.append(self._log_viewer)
         for widget in widgets:
             try:
                 widget.hide()
@@ -2472,7 +2659,7 @@ def main(argv: list[str] | None = None) -> int:
         _already_running_notice()
         return 0
 
-    cfg = Config.load()
+    cfg = _startup_config()
     # The overlay scales itself (see ui/theme.py) instead of relying on
     # QT_SCALE_FACTOR: Qt only applies that variable to widget geometry on
     # Windows/Linux, so on macOS the slider appeared to do nothing.

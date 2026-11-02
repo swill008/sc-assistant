@@ -10,11 +10,14 @@ every change; the second run, started from that file, must show each one in
 Settings and use it in the scanner. The open Settings sections (headings
 opened and closed in the first run) must come back the same, an unknown id in
 the file is dropped, and SCANNER is forced open only while no box is drawn. The DEBUG switches (SCAN HISTORY, SAVE
-BAD READS) are turned on by clicks and come back on. A third run uses UNMATCHED READINGS (OPEN
+BAD READS, DETAILED LOG) are turned on by clicks and come back on, and the
+VIEW LOG window opens where it was left. A third run uses UNMATCHED READINGS (OPEN
 FOLDER, CLEAR) and RESET SETTINGS: the restart is caught, the settings file
 must stay gone after the restart and quit (nothing old written back), a dated
-backup holds it, scan_history.txt and bad_reads/ are removed, and a fourth run
-starts on the defaults (both DEBUG switches off).
+backup holds it, scan_history.txt and bad_reads/ are removed, DETAILED LOG goes
+off, app.log is kept and the log window closes, and a fourth run starts on the
+defaults (the DEBUG switches off). Each run reads its settings the way main()
+does (main._startup_config: app.log first).
 """
 from __future__ import annotations
 
@@ -63,6 +66,26 @@ def _user_opens(s, ids: list) -> None:
     QApplication.processEvents()
 
 
+def _hide_log_viewer_windows() -> None:
+    """VIEW LOG windows in this test are see-through (the real LogViewer)."""
+    from app import main as main_mod
+    from app.ui.log_viewer import LogViewer
+
+    class _SeeThrough(LogViewer):
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self.setWindowOpacity(0.0)
+    main_mod.LogViewer = _SeeThrough
+
+
+def _startup():
+    """The settings as main() reads them: app.log first, then config.json,
+    then DETAILED LOG (main._startup_config)."""
+    from app import main as main_mod
+
+    return main_mod._startup_config()
+
+
 def _pump(seconds: float) -> None:
     end = time.monotonic() + seconds
     while time.monotonic() < end:
@@ -77,12 +100,12 @@ def _reset_run(app, saved: dict) -> int:
     the next start must use the defaults."""
     from app import config as app_config
     from app import main as main_mod
-    from app.config import CONFIG_PATH, DEFAULTS, Config, config_dir
+    from app.config import CONFIG_PATH, DEFAULTS, config_dir
     from app.main import OverlayApp
 
     failures = 0
     print("Third run: UNMATCHED READINGS, then RESET SETTINGS")
-    three = OverlayApp(app, Config.load())
+    three = OverlayApp(app, _startup())
     three.start()
     three.panel.hide()
     _pump(0.5)
@@ -119,6 +142,12 @@ def _reset_run(app, saved: dict) -> int:
                            (config_dir() / "scan_history.txt").is_file()
                            and any((config_dir() / "bad_reads").glob("*.png")))
 
+        from app import applog
+
+        s.log_view_btn.click()
+        viewer = three._log_viewer
+        failures += _check("before the reset: DETAILED LOG on, log window open",
+                           applog.detailed() and viewer is not None and viewer.isVisible())
         s.reset_btn.click()
         _pump(0.1)
         failures += _check("one RESET click keeps the settings", CONFIG_PATH.is_file() and not launched)
@@ -134,6 +163,12 @@ def _reset_run(app, saved: dict) -> int:
                        not CONFIG_PATH.is_file(),
                        f"({CONFIG_PATH.read_text(encoding='utf-8')[:80] if CONFIG_PATH.is_file() else ''})")
     failures += _check("pin removed", not (config_dir() / "anchor.png").is_file())
+    log_text = ((config_dir() / "app.log").read_text(encoding="utf-8")
+                if (config_dir() / "app.log").is_file() else "")
+    failures += _check("reset: DETAILED LOG off, log window closed, app.log kept",
+                       not applog.detailed() and not viewer.isVisible()
+                       and "RESET SETTINGS: starting" in log_text,
+                       f"({sorted(p.name for p in config_dir().iterdir())})")
     failures += _check("reset removed scan_history.txt and bad_reads/",
                        not (config_dir() / "scan_history.txt").exists()
                        and not (config_dir() / "bad_reads").exists(),
@@ -149,7 +184,7 @@ def _reset_run(app, saved: dict) -> int:
         w.hide()
 
     print("Fourth run: start after the reset")
-    four = OverlayApp(app, Config.load())
+    four = OverlayApp(app, _startup())
     four.start()
     four.panel.hide()
     _pump(0.5)
@@ -162,6 +197,8 @@ def _reset_run(app, saved: dict) -> int:
                        and four.cfg.get("debug_save_bad_reads") is False
                        and not four.settings.history_btn.isChecked()
                        and not four.settings.bad_reads_btn.isChecked()
+                       and four.cfg.get("debug_detailed_log") is False
+                       and not four.settings.detailed_log_btn.isChecked()
                        and getattr(four, "_history", "missing") is None)
     failures += _check("open Settings sections back to SCANNER only",
                        four.cfg["settings_open"] == ["scanner"] and four.settings.open_sections == ["scanner"],
@@ -176,8 +213,9 @@ def main() -> int:
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
     app = QApplication.instance() or QApplication(sys.argv)
+    _hide_log_viewer_windows()
 
-    from app import display
+    from app import applog, display
     from app.config import CONFIG_PATH, Config, config_dir
     from app.main import OverlayApp
     from app.ui.settings_panel import TRACKING_STEP
@@ -205,7 +243,7 @@ def main() -> int:
 
     # ---- first run: change everything through the UI, then QUIT ----------
     print("First run: change the settings, then QUIT")
-    one = OverlayApp(app, Config.load())
+    one = OverlayApp(app, _startup())
     one.start()
     one.panel.hide()                      # the scanner panel opens on the main screen
     _pump(0.5)
@@ -220,6 +258,21 @@ def main() -> int:
     if hasattr(s, "history_btn"):
         s.history_btn.click()
         s.bad_reads_btn.click()
+    # Logs: DETAILED LOG on (level switches at once); VIEW LOG opens one
+    # window, moved by the user, its place saved like the other windows.
+    s.detailed_log_btn.click()
+    failures += _check("DETAILED LOG click switches the log level at once", applog.detailed())
+    sg = start.availableGeometry()
+    one.cfg["logviewer_pos"] = [sg.left() + 40, sg.top() + 40]   # on the test monitor
+    s.log_view_btn.click()
+    viewer = one._log_viewer
+    s.log_view_btn.click()
+    failures += _check("VIEW LOG opens one log window on app.log",
+                       viewer is not None and one._log_viewer is viewer and viewer.isVisible()
+                       and viewer.path == applog.log_path())
+    viewer.move(sg.left() + 70, sg.top() + 55)
+    want_viewer = [viewer.x(), viewer.y()]
+    _pump(1.3)                            # the debounced window save
     want_open = ["scanner", "hotkeys", "look"]
     _user_opens(s, want_open)
     # DRAW REGION on the new box (the digits of the 5K2K image, which works on
@@ -267,6 +320,11 @@ def main() -> int:
                        f"({saved.get('debug_scan_history')}, {saved.get('debug_save_bad_reads')})")
     failures += _check("open Settings sections saved", saved.get("settings_open") == want_open,
                        f"({saved.get('settings_open')})")
+    failures += _check("DETAILED LOG and the log window place saved",
+                       saved.get("debug_detailed_log") is True
+                       and saved.get("logviewer_pos") == want_viewer,
+                       f"({saved.get('debug_detailed_log')}, {saved.get('logviewer_pos')} vs {want_viewer})")
+    failures += _check("QUIT closed the log window", not viewer.isVisible())
     # A hand-edited or older file may name a section that no longer exists.
     edited = dict(saved, settings_open=want_open + ["no_such_section"])
     CONFIG_PATH.write_text(json.dumps(edited, indent=2), encoding="utf-8")
@@ -276,7 +334,7 @@ def main() -> int:
 
     # ---- second run: started from the saved file ------------------------
     print("Second run: start from the saved file")
-    two = OverlayApp(app, Config.load())
+    two = OverlayApp(app, _startup())
     two.start()
     two.panel.hide()
     _pump(0.8)
@@ -300,8 +358,16 @@ def main() -> int:
     failures += _check("no amber note", not s.region_note.text(), f"({s.region_note.text()!r})")
     failures += _check("DEBUG switches show on and SCAN HISTORY records",
                        getattr(s, "history_btn", None) is not None and s.history_btn.isChecked()
-                       and s.bad_reads_btn.isChecked() and s.section_summary("debug") == "history on · saver on"
+                       and s.bad_reads_btn.isChecked()
+                       and s.section_summary("debug") == "history on · saver on · log detailed"
                        and getattr(two, "_history", None) is not None)
+    failures += _check("DETAILED LOG comes back on (switch and level)",
+                       s.detailed_log_btn.isChecked() and applog.detailed())
+    s.log_view_btn.click()
+    failures += _check("VIEW LOG opens where it was left",
+                       two._log_viewer is not None
+                       and [two._log_viewer.x(), two._log_viewer.y()] == want_viewer,
+                       f"({two._log_viewer.pos() if two._log_viewer else None} vs {want_viewer})")
     failures += _check("open Settings sections come back, unknown id dropped",
                        s.open_sections == want_open and two.cfg["settings_open"] == want_open,
                        f"(panel {s.open_sections}, cfg {two.cfg['settings_open']})")
@@ -316,7 +382,8 @@ def main() -> int:
     failures += _check("quitting again keeps every setting",
                        all(resaved.get(k) == saved.get(k) for k in
                            ("poll_ms", "tracking_range", "show_region_outline", "game_monitor", "region", "anchor", "plate",
-                            "settings_open", "debug_scan_history", "debug_save_bad_reads")))
+                            "settings_open", "debug_scan_history", "debug_save_bad_reads",
+                            "debug_detailed_log", "logviewer_pos")))
 
     # ---- RESET SETTINGS: defaults after the restart, nothing written back --
     failures += _reset_run(app, saved)
@@ -352,6 +419,8 @@ def main() -> int:
 
     print("-" * 78)
     print("ALL CHECKS PASSED" if failures == 0 else f"{failures} CHECK(S) FAILED")
+    import logging
+    logging.shutdown()                    # app.log closed: the temp folder can go
     return failures
 
 

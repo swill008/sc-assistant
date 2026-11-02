@@ -6,7 +6,9 @@ Drives the real SettingsPanel with real mouse clicks (QTest), off-screen:
 the two-click RESET SETTINGS button (arms, reverts, emits once), its error
 note, the UNMATCHED READINGS list (count, newest rows, OPEN FOLDER, two-click
 CLEAR), the six collapsible groups (no Support group or donation text; DEBUG last) (heading clicks, summaries, remembered and
-forced-open groups, the window fitting itself), and the layout at UI scale 1.0
+forced-open groups, the window fitting itself; DEBUG's Logs rows: DETAILED LOG
+switch and summary, OPEN LOG / VIEW LOG / EXPORT DIAGNOSTICS signals, the note),
+and the layout at UI scale 1.0
 and 1.5 in every open/closed combination checked (no widgets overlap, no text
 cut off, armed texts fit), and the scanner preview (whole signature window
 scaled to fit, pin outlined cyan, digits green; one-argument calls as before).
@@ -200,6 +202,9 @@ def check_layout() -> None:
             panel.set_open_sections(SECTION_IDS)      # every widget on show
             panel.set_unmatched(_entries(5, time.time()))
             panel.set_reset_error("could not copy the settings folder: access denied")
+            panel.set_detailed_log(True)
+            panel.set_log_note("Saved to the settings folder: "
+                               "SC Assistant diagnostics 2026-11-01 175002.zip")
             for armed in (False, True):
                 panel._set_reset_armed(armed)
                 panel._set_clear_armed(armed)
@@ -222,16 +227,23 @@ def check_layout() -> None:
                 cut = [w.text() for w in (panel.reset_btn, panel.unmatched_clear_btn,
                                           panel.unmatched_open_btn, panel.unmatched_label,
                                           panel.history_btn, panel.history_open_btn,
-                                          panel.bad_reads_btn, panel.bad_reads_open_btn)
+                                          panel.bad_reads_btn, panel.bad_reads_open_btn,
+                                          panel.detailed_log_btn, panel.log_open_btn,
+                                          panel.log_view_btn, panel.log_export_btn)
                        if w.width() < w.sizeHint().width()]
                 cut += [w.text() for w in panel.findChildren(QLabel)
-                        if w.text() in ("SCAN HISTORY", "SAVE BAD READS")
+                        if w.text() in ("SCAN HISTORY", "SAVE BAD READS", "DETAILED LOG")
                         and w.width() < w.sizeHint().width()]
                 cut += [v.text() for v, t in panel._unmatched_row_labels
                         if v.isVisible() and v.width() < v.sizeHint().width()]
                 cut += [t.text() for v, t in panel._unmatched_row_labels
                         if t.isVisible() and t.width() < t.sizeHint().width()]
                 check(f"UI {scale} {tag}: new buttons and rows not cut off", not cut, f"({cut})")
+                note = panel.log_note
+                check(f"UI {scale} {tag}: the Logs note fits (wrapped, not cut)",
+                      note.isVisible() and note.width() <= panel.width()
+                      and note.height() >= note.heightForWidth(note.width()),
+                      f"({note.width()}x{note.height()}, needs {note.heightForWidth(note.width())})")
             check(f"UI {scale}: window keeps its width", panel.width() == theme.px(384),
                   f"({panel.width()} vs {theme.px(384)})")
             panel.close()
@@ -389,6 +401,31 @@ def check_sections() -> None:
     panel.bad_reads_open_btn.click()
     check("OPEN HISTORY and OPEN FOLDER emit their signals",
           opens == ["history", "bad_reads"], f"({opens})")
+    # Logs: DETAILED LOG, OPEN LOG, VIEW LOG, EXPORT DIAGNOSTICS.
+    logs: list = []
+    panel.detailed_log_toggled.connect(lambda on: logs.append(("detailed", on)))
+    for name in ("open_log", "view_log", "export_diagnostics"):
+        getattr(panel, name).connect(lambda n=name: logs.append(n))
+    panel.set_detailed_log(True)
+    check("set_detailed_log: switch ON, summary adds log detailed, emits nothing",
+          panel.detailed_log_btn.isChecked() and panel.detailed_log_btn.text() == "ON"
+          and panel.section_summary("debug") == "history off · saver off · log detailed"
+          and logs == [], f"({panel.section_summary('debug')!r}, {logs})")
+    panel.detailed_log_btn.click()
+    check("DETAILED LOG click: OFF, emits False, summary back",
+          logs == [("detailed", False)] and panel.detailed_log_btn.text() == "OFF"
+          and panel.section_summary("debug") == "history off · saver off",
+          f"({logs}, {panel.section_summary('debug')!r})")
+    logs.clear()
+    for btn in (panel.log_open_btn, panel.log_view_btn, panel.log_export_btn):
+        btn.click()
+    check("OPEN LOG, VIEW LOG and EXPORT DIAGNOSTICS emit their signals",
+          logs == ["open_log", "view_log", "export_diagnostics"], f"({logs})")
+    panel.set_log_note("Saved to the Desktop: SC Assistant diagnostics 2026-11-01 175002.zip")
+    check("set_log_note shows the note; \"\" hides it",
+          not panel.log_note.isHidden() and "diagnostics" in panel.log_note.text())
+    panel.set_log_note("")
+    check("set_log_note(\"\") hides it", panel.log_note.isHidden())
     header = panel.section_header("scanner")
     panel.set_monitors([("X" * 120, "long")], "X" * 120)
     QApplication.processEvents()

@@ -43,8 +43,8 @@ def _migrate_legacy(base: Path, target: Path) -> None:
             if old.is_file() and not new.exists():
                 try:
                     shutil.copy2(old, new)
-                except OSError:
-                    pass
+                except OSError as exc:
+                    log.warning("Could not copy %s to %s (%s)", old, new, exc)
 
 
 def _is_empty_dir(path: Path) -> bool:
@@ -178,6 +178,8 @@ DEFAULTS: dict = {
     "combat_pos": None,
     # Settings window position; None places it under the scanner panel.
     "settings_pos": None,
+    # Settings → DEBUG → VIEW LOG window position; None places it by Settings.
+    "logviewer_pos": None,
     "open_tools": [],
     # Panels pinned with their header pin (ui/pin_button.py): they stay on
     # screen when the overlay is hidden (F4 / the nav bar's ✕). Panel ids:
@@ -199,6 +201,9 @@ DEFAULTS: dict = {
     # SAVE BAD READS keeps pictures of unreadable tracked plates in bad_reads/.
     "debug_scan_history": False,
     "debug_save_bad_reads": False,
+    # DETAILED LOG: app.log (app/applog.py) also keeps the debug trace lines;
+    # off, it keeps warnings and errors only.
+    "debug_detailed_log": False,
 }
 
 
@@ -236,6 +241,7 @@ RESET_KEEP: tuple[str, ...] = (
     "refinery_jobs.json",                   # refinery timers
     "active_run.json", "workflow_wallet.json",   # workflow run and wallet
     "error.log",
+    "app.log*",                             # DEBUG → logs (app/applog.py), not settings
 )
 
 
@@ -346,7 +352,10 @@ class Config:
                 data["capture_exclude"] = False
                 data["capture_visibility_version"] = 1
             return cls(data)
-        except (FileNotFoundError, json.JSONDecodeError, OSError):
+        except FileNotFoundError:
+            return cls()
+        except (json.JSONDecodeError, OSError) as exc:
+            log.warning("Could not read %s (%s); using the defaults", CONFIG_PATH, exc)
             return cls()
 
     def save(self) -> None:
@@ -355,8 +364,8 @@ class Config:
             with open(tmp, "w", encoding="utf-8") as fh:
                 json.dump(self.data, fh, indent=2)
             os.replace(tmp, CONFIG_PATH)
-        except OSError:
-            pass
+        except OSError as exc:
+            log.warning("Could not save %s (%s)", CONFIG_PATH, exc)
 
     def __getitem__(self, key):
         return self.data[key]
