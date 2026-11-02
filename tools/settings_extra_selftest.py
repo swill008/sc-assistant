@@ -5,13 +5,17 @@
 Drives the real SettingsPanel with real mouse clicks (QTest), off-screen:
 the two-click RESET SETTINGS button (arms, reverts, emits once), its error
 note, the UNMATCHED READINGS list (count, newest rows, OPEN FOLDER, two-click
-CLEAR), the six collapsible groups (no Support group or donation text; DEBUG last) (heading clicks, summaries, remembered and
+CLEAR), the seven collapsible groups (VOICE after LOOK & SOUND; no Support group or donation text; DEBUG last) (heading clicks, summaries, remembered and
 forced-open groups, the window fitting itself; DEBUG's Logs rows: DETAILED LOG
 switch and summary, OPEN LOG / VIEW LOG / EXPORT DIAGNOSTICS signals, the note),
 and the layout at UI scale 1.0
 and 1.5 in every open/closed combination checked (no widgets overlap, no text
 cut off, armed texts fit), and the scanner preview (whole signature window
 scaled to fit, pin outlined cyan, digits green; one-argument calls as before).
+VOICE: the four engines with their labels and notes, the voice list per
+engine, DOWNLOAD (size, "NN% · got of total MB", CANCEL), SPEED, SAYS and
+TEST signals, the summary, and the layout at UI 1.0 and 1.5 with VOICE open
+in every download state.
 """
 from __future__ import annotations
 
@@ -32,6 +36,7 @@ if str(ROOT) not in sys.path:
 
 _TMP = tempfile.TemporaryDirectory(prefix="ca-settings-extra-")
 os.environ["APPDATA"] = _TMP.name          # before app.config is imported
+os.environ["LOCALAPPDATA"] = _TMP.name     # voice add-ons (app.tts.addons)
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QRect, Qt  # noqa: E402
@@ -275,8 +280,9 @@ def check_sections() -> None:
     from app.version import VERSION
 
     print("COLLAPSIBLE GROUPS")
-    check("six group ids in order (no Support, DEBUG last)",
-          sp.SECTION_IDS == ("scanner", "scan_data", "hotkeys", "look", "update", "debug"),
+    check("seven group ids in order (VOICE after LOOK & SOUND, no Support, DEBUG last)",
+          sp.SECTION_IDS == ("scanner", "scan_data", "hotkeys", "look", "voice",
+                             "update", "debug"),
           f"({sp.SECTION_IDS})")
     panel = _panel()
     got: list[list] = []
@@ -284,10 +290,10 @@ def check_sections() -> None:
 
     tops = [panel.section_header(s).y() for s in sp.SECTION_IDS]
     check("headings top to bottom in SECTION_IDS order (DEBUG last)",
-          tops == sorted(tops) and len(set(tops)) == 6, f"({tops})")
+          tops == sorted(tops) and len(set(tops)) == 7, f"({tops})")
     titles = [panel.section_header(s).title.text()[2:] for s in sp.SECTION_IDS]
-    check("headings read SCANNER ... UPDATE & RESET, DEBUG",
-          titles == ["SCANNER", "SCAN DATA", "HOTKEYS", "LOOK & SOUND",
+    check("headings read SCANNER ... LOOK & SOUND, VOICE, UPDATE & RESET, DEBUG",
+          titles == ["SCANNER", "SCAN DATA", "HOTKEYS", "LOOK & SOUND", "VOICE",
                      "UPDATE & RESET", "DEBUG"], f"({titles})")
     words = [w.text() for w in panel.findChildren(QLabel) + panel.findChildren(QPushButton)]
     donation = [t for t in words if any(k in t.lower() for k in
@@ -315,7 +321,8 @@ def check_sections() -> None:
           and scan.title.text().startswith("▸") and not scan.summary.isHidden(),
           f"({hot.title.text()!r}, {scan.title.text()!r})")
     check("closed group's widgets hidden, open group's shown",
-          not panel.region_btn.isVisible() and panel.voice_btn.isVisible())
+          not panel.region_btn.isVisible() and panel.ui_scale_slider.isVisible()
+          and not panel.voice_btn.isVisible())
 
     panel.set_open_sections([])
     QApplication.processEvents()
@@ -359,8 +366,11 @@ def check_sections() -> None:
           f"({panel.section_summary('hotkeys')!r})")
     panel.set_ui_scale(125)
     panel.set_voice(False)
-    check("look summary", panel.section_summary("look") == "UI 125% · voice off",
+    check("look summary (the voice moved to VOICE)", panel.section_summary("look") == "UI 125%",
           f"({panel.section_summary('look')!r})")
+    check("voice summary: off · engine · voice · speed",
+          panel.section_summary("voice") == "off · Windows · default voice · 1.0×",
+          f"({panel.section_summary('voice')!r})")
     check("update summary: the installed version",
           panel.section_summary("update") == f"v{VERSION} installed",
           f"({panel.section_summary('update')!r})")
@@ -483,6 +493,7 @@ def check_section_layouts() -> None:
     print("GROUP LAYOUTS")
     combos = [[]] + [[s] for s in SECTION_IDS] + [
         ["scanner", "scan_data"], ["hotkeys", "look"], ["look", "update"],
+        ["look", "voice"], ["voice", "update"],
         ["scanner", "look", "update"], ["update", "debug"], list(SECTION_IDS)]
     for scale in (1.0, 1.5):
         theme.set_scale(scale)
@@ -698,11 +709,237 @@ def check_preview() -> None:
             theme.set_scale(1.0)
 
 
+VOICES = {
+    "windows": [("winrt:Zira", "Microsoft Zira", "winrt · en-US"),
+                ("sapi:David", "Microsoft David Desktop", "sapi · en-US")],
+    "piper": [("en_US-lessac-medium", "Lessac", "US · CC-BY 4.0 · 60 MB"),
+              ("en_GB-alan-low", "Alan", "UK · CC0 · 20 MB")],
+}
+
+
+def check_voice() -> None:
+    """The VOICE group on its own: engines, voices, DOWNLOAD, SPEED, SAYS,
+    TEST, the note and the summary (main is faked by the test)."""
+    from app import tts
+    from app.tts import phrases
+    from app.ui import settings_panel as sp
+
+    print("VOICE")
+    panel = _panel()
+    panel.set_open_sections(["voice"])
+    QApplication.processEvents()
+    seen: list = []
+    panel.voice_engine_changed.connect(lambda e: seen.append(("engine", e)))
+    panel.voice_choice_changed.connect(lambda v: seen.append(("voice", v)))
+    panel.voice_speed_changed.connect(lambda s: seen.append(("speed", s)))
+    panel.voice_style_changed.connect(lambda s: seen.append(("style", s)))
+    panel.voice_download_requested.connect(lambda: seen.append("download"))
+    panel.voice_download_cancelled.connect(lambda: seen.append("cancel"))
+    panel.voice_test_requested.connect(lambda: seen.append("test"))
+
+    box = panel.engine_box
+    engines = [(box.itemData(i), box.itemText(i)) for i in range(box.count())]
+    want = [("windows", "Windows voices (built in, offline)"),
+            ("piper", "Piper (offline, natural · add-on, GPL-3.0)"),
+            ("kokoro", "Kokoro (offline, most natural · add-on, GPL-3.0, uses more CPU)"),
+            ("edge", "Microsoft online voices (online: sends the phrase to Microsoft)")]
+    check("ENGINE lists the four engines with their labels, in order",
+          engines == want and list(tts.ENGINE_IDS) == [e for e, _ in want], f"({engines})")
+    check("the voice switch and VOLUME moved into VOICE",
+          panel.voice_btn.isVisible() and panel.volume_slider.isVisible())
+    panel.set_open_sections(["look"])
+    QApplication.processEvents()
+    check("LOOK & SOUND no longer holds the voice switch or VOLUME",
+          not panel.voice_btn.isVisible() and not panel.volume_slider.isVisible()
+          and panel.ui_scale_slider.isVisible())
+    panel.set_open_sections(["voice"])
+    QApplication.processEvents()
+
+    # Voices change with the engine (main answers the engine signal).
+    panel.voice_engine_changed.connect(
+        lambda e: panel.set_voice_choices(VOICES.get(e, []), ""))
+    panel.set_voice_choices(VOICES["windows"], "sapi:David")
+    check("set_voice_choices fills VOICE and shows the current one, emits nothing",
+          panel.voice_box.count() == 2 and panel.voice_id == "sapi:David" and seen == []
+          and panel.voice_box.currentText() == "Microsoft David Desktop · sapi · en-US",
+          f"({panel.voice_id!r}, {seen})")
+    box.setCurrentIndex(1)
+    box.activated.emit(1)
+    QApplication.processEvents()
+    piper_ids = [panel.voice_box.itemData(i) for i in range(panel.voice_box.count())]
+    check("choosing Piper emits its id and the VOICE list becomes Piper's voices",
+          seen == [("engine", "piper")] and piper_ids == ["en_US-lessac-medium", "en_GB-alan-low"]
+          and panel.voice_id == "en_US-lessac-medium", f"({seen}, {piper_ids})")
+    check("the note says GPL-3.0 add-on for Piper",
+          "GPL-3.0" in panel.voice_note.text() and panel.voice_note.isVisible(),
+          f"({panel.voice_note.text()!r})")
+    panel.voice_box.setCurrentIndex(1)
+    panel.voice_box.activated.emit(1)
+    check("choosing a voice emits its id", seen[-1] == ("voice", "en_GB-alan-low"), f"({seen})")
+    for engine_id, words in (("kokoro", "GPL-3.0"), ("edge", "Microsoft")):
+        panel.set_voice_engine(engine_id)
+        check(f"{engine_id} note: {words}", words in panel.voice_note.text(),
+              f"({panel.voice_note.text()!r})")
+    panel.set_voice_engines([("edge", "", "Engine's own note about Microsoft")])
+    check("set_voice_engines takes the engine's own note", panel.voice_note.text()
+          == "Engine's own note about Microsoft", f"({panel.voice_note.text()!r})")
+    panel.set_voice_engine("windows")
+    check("Windows: no licence note, the note line hidden", panel.voice_note.isHidden())
+    panel.set_voice_engine("no-such-engine")
+    check("an unknown engine id shows Windows", panel.voice_engine == "windows")
+    panel.set_voice_engine("piper")
+    panel.set_voice_choices(VOICES["piper"], "en_GB-alan-low")
+
+    # DOWNLOAD: size, progress, CANCEL.
+    seen.clear()
+    check("no download needed: no DOWNLOAD row", panel.voice_download_row.isHidden())
+    panel.set_voice_download(63 * (1 << 20))
+    QApplication.processEvents()
+    check("DOWNLOAD row shows the size", panel.voice_download_row.isVisible()
+          and panel.voice_download_label.text() == "Needs a 63 MB download"
+          and panel.voice_download_btn.text() == "DOWNLOAD" and seen == [],
+          f"({panel.voice_download_label.text()!r})")
+    check("TEST waits for the download", not panel.voice_test_btn.isEnabled())
+    _click(panel.voice_download_btn)
+    check("DOWNLOAD click emits once and turns into CANCEL at 0%",
+          seen == ["download"] and panel.voice_download_btn.text() == "CANCEL"
+          and panel.voice_download_label.text() == "0% · 0.0 of 63 MB",
+          f"({seen}, {panel.voice_download_label.text()!r})")
+    panel.set_voice_progress(26 * (1 << 20) + 5, 63 * (1 << 20))
+    check("progress reads 'NN% · got of total MB'",
+          panel.voice_download_label.text() == "41% · 26 of 63 MB",
+          f"({panel.voice_download_label.text()!r})")
+    check("summary says downloading NN%",
+          panel.section_summary("voice") == "Piper · Alan · 1.0× · downloading 41%",
+          f"({panel.section_summary('voice')!r})")
+    check("small files show one decimal",
+          sp.voice_download_text(300_000, 900_000) == "33% · 0.3 of 0.9 MB"
+          and sp.voice_download_text(5 << 20, 0) == "5.0 MB",
+          f"({sp.voice_download_text(300_000, 900_000)!r})")
+    _click(panel.voice_download_btn)
+    check("CANCEL click emits cancel once (button waits for main)",
+          seen == ["download", "cancel"] and not panel.voice_download_btn.isEnabled()
+          and panel.voice_download_label.text() == "Cancelling…", f"({seen})")
+    _click(panel.voice_download_btn)
+    check("a second CANCEL click while cancelling does nothing", seen == ["download", "cancel"])
+    panel.set_voice_download(63 * (1 << 20))
+    check("cancelled: DOWNLOAD back with the size",
+          panel.voice_download_btn.text() == "DOWNLOAD" and panel.voice_download_btn.isEnabled()
+          and not panel.voice_downloading)
+    panel.set_voice_download(0)
+    QApplication.processEvents()
+    check("done: the DOWNLOAD row hides and TEST is back",
+          panel.voice_download_row.isHidden() and panel.voice_test_btn.isEnabled())
+
+    # SPEED, SAYS, TEST.
+    seen.clear()
+    panel.speed_slider.setValue(13)
+    check("SPEED emits 1.3 and shows 1.3×",
+          seen == [("speed", 1.3)] and panel.speed_label.text() == "1.3×", f"({seen})")
+    check("SPEED range 0.5-2.0 in 0.1 steps",
+          (panel.speed_slider.minimum(), panel.speed_slider.maximum(),
+           panel.speed_slider.singleStep()) == (5, 20, 1))
+    panel.set_voice_speed(0.2)
+    panel.set_voice_speed(1.75)
+    check("set_voice_speed clamps and rounds, emits nothing",
+          panel.voice_speed == 1.8 and seen == [("speed", 1.3)], f"({panel.voice_speed})")
+    styles = [(panel.style_box.itemData(i), panel.style_box.itemText(i))
+              for i in range(panel.style_box.count())]
+    check("SAYS lists the three styles with examples",
+          styles == [(s, phrases.STYLE_LABELS[s]) for s in phrases.STYLES]
+          and [s for s, _ in styles] == ["count_after", "count_before", "with_signature"],
+          f"({styles})")
+    panel.style_box.setCurrentIndex(2)
+    panel.style_box.activated.emit(2)
+    check("SAYS emits the style id", seen[-1] == ("style", "with_signature"), f"({seen})")
+    panel.set_voice_style("count_before")
+    check("set_voice_style shows it", panel.voice_style == "count_before")
+    _click(panel.voice_test_btn)
+    check("TEST emits voice_test_requested", seen[-1] == "test", f"({seen})")
+    panel.set_voice_note("Microsoft voice failed: timeout; using a Windows voice")
+    check("set_voice_note adds the status under the licence note",
+          panel.voice_note.text().endswith("using a Windows voice")
+          and "GPL-3.0" in panel.voice_note.text())
+
+    # Summary.
+    panel.set_voice(True)
+    check("voice summary: engine · voice · speed",
+          panel.section_summary("voice") == "Piper · Alan · 1.8×",
+          f"({panel.section_summary('voice')!r})")
+    panel.set_voice_engine("edge")
+    panel.set_voice_choices([("en-US-AriaNeural", "Aria", "US, female")], "")
+    check("summary follows the engine and voice",
+          panel.section_summary("voice") == "Microsoft online · Aria · 1.8×",
+          f"({panel.section_summary('voice')!r})")
+    panel.close()
+    panel.deleteLater()
+
+
+def check_voice_layout() -> None:
+    """VOICE open at UI 1.0 and 1.5, with and without the download row, a
+    long note and the longest names: nothing overlaps, sticks out or is cut."""
+    from app.ui import theme
+
+    print("VOICE LAYOUT")
+    for scale in (1.0, 1.5):
+        theme.set_scale(scale)
+        try:
+            panel = _panel()
+            panel.set_open_sections(["look", "voice"])
+            panel.set_voice_engine("kokoro")
+            panel.set_voice_choices([("af_heart", "Heart, a very long voice name for the test",
+                                      "American English, female, grade A")], "af_heart")
+            panel.set_voice_note("Download failed: the connection to huggingface.co timed out "
+                                 "after 30 seconds")
+            bad = []
+            for state in ("none", "needed", "progress"):
+                if state == "none":
+                    panel.set_voice_download(0)
+                elif state == "needed":
+                    panel.set_voice_download(330 << 20)
+                else:
+                    panel.set_voice_progress(123 << 20, 330 << 20)
+                QApplication.processEvents()
+                panel.adjustSize()
+                QApplication.processEvents()
+                overlaps, outside = _overlaps(panel)
+                if overlaps or outside:
+                    bad.append((state, overlaps[:3], outside[:3]))
+                cut = [w.text() for w in (panel.voice_btn, panel.voice_test_btn,
+                                          panel.voice_download_btn, panel.voice_download_label)
+                       if w.isVisible() and w.width() < w.sizeHint().width()]
+                # Fixed-width names and values (like UI SCALE): the offscreen
+                # platform has no real fonts, so these are measured only on a
+                # real screen (QT_QPA_PLATFORM=windows).
+                if QApplication.platformName() != "offscreen":
+                    cut += [w.text() for w in panel.findChildren(QLabel)
+                            if w.text() in ("ENGINE", "VOICE", "SPEED", "SAYS")
+                            and w.width() < w.sizeHint().width()]
+                    cut += [w.text() for w in (panel.speed_label, panel.volume_label)
+                            if w.width() < w.sizeHint().width()]
+                note = panel.voice_note
+                if note.height() < note.heightForWidth(note.width()):
+                    cut.append("note")
+                if cut:
+                    bad.append((state, "cut", cut))
+            check(f"UI {scale}: VOICE open (no download, DOWNLOAD, progress): "
+                  "no overlap, nothing outside or cut", not bad, f"({bad[:3]})")
+            check(f"UI {scale}: VOICE keeps the window width", panel.width() == theme.px(384),
+                  f"({panel.width()})")
+            popup = panel.engine_box.view()
+            check(f"UI {scale}: the ENGINE list opens wide enough for whole labels",
+                  popup.minimumWidth() >= popup.sizeHintForColumn(0), f"({popup.minimumWidth()})")
+            panel.close()
+            panel.deleteLater()
+        finally:
+            theme.set_scale(1.0)
+
+
 def main() -> int:
     global _APP
     _APP = QApplication.instance() or QApplication(sys.argv)
     for test in (check_reset, check_unmatched, check_layout, check_sections,
-                 check_section_layouts, check_preview):
+                 check_section_layouts, check_preview, check_voice, check_voice_layout):
         try:
             test()
         except Exception:

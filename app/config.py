@@ -130,8 +130,8 @@ DEFAULTS: dict = {
     # Close the mining scanner when Game.log reports leaving the pilot seat.
     "close_scanner_on_seat_exit": True,
     "scan_tuning_version": 2,           # migration marker for the poll_ms defaults
-    "min_value": 2000,
-    "max_value": 100000,              # largest real reading: 76,000 (ROC x19)
+    # The reader range is fixed in app/ocr.py (READ_MIN / READ_MAX), not a
+    # setting; a min_value / max_value left in config.json is dropped on load.
     "tolerance": 0.08,
     # Physical-pixel rectangle of the in-game signature readout.
     "region": None,
@@ -163,6 +163,15 @@ DEFAULTS: dict = {
     "show_region_outline": False,
     "voice_enabled": True,             # speak the ore name when a scan locks
     "voice_volume": 0.8,               # 0.0 - 1.0
+    # Settings → VOICE (app/tts). Engine id: "windows" (built in), "piper",
+    # "kokoro" (add-ons, downloaded on demand) or "edge" (Microsoft online).
+    # Voice id within that engine; "" = the engine's default voice.
+    "voice_engine": "windows",
+    "voice_voice": "",
+    "voice_speed": 1.0,                # 0.5 - 2.0
+    # What is said (app/tts/phrases.STYLES): "count_after" "Borase, times 3",
+    # "count_before" "Three Borase", "with_signature" adds the reading.
+    "voice_style": "count_after",
     # Forget the last spoken rock after this many seconds without a scan.
     # Brief HUD flicker keeps the dedupe, so the same rock is not re-announced.
     "voice_idle_reset_seconds": 12.0,

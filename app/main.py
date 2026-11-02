@@ -45,7 +45,9 @@ from .ui import theme
 from .unmatched import UnmatchedLog
 from .version import APP_NAME, MUTEX_NAME, OLD_MUTEX_NAME
 from .version import label as version_label
-from .voice import Voice, spoken_text
+from .tts import engine_label, phrases
+from .tts.base import Cancelled
+from .voice import Voice
 
 APP_TITLE = APP_NAME
 ICON_PATH = Path(__file__).resolve().parents[1] / "app.ico"
@@ -215,8 +217,9 @@ class ScanThread(QThread):
         self._enabled = True
         self._stop = False
         self._interval = int(cfg["poll_ms"])
-        self._min_value = int(cfg["min_value"])
-        self._max_value = int(cfg["max_value"])
+        from .ocr import READ_MAX, READ_MIN
+        self._min_value = READ_MIN          # fixed reader range, not a setting
+        self._max_value = READ_MAX
         self._tolerance = float(cfg["tolerance"])
         self._ocr_threads = int(cfg.get("ocr_threads", 1))
         self._last_hash: int | None = None
@@ -338,9 +341,7 @@ class ScanThread(QThread):
                             grabber = ScreenGrabber()
                         if ocr is None:
                             from .ocr import SignatureOCR
-                            ocr = SignatureOCR(self._min_value,
-                                               self._max_value,
-                                               threads=self._ocr_threads)
+                            ocr = SignatureOCR(threads=self._ocr_threads)
                     except Exception as exc:
                         self.failed.emit(f"Scanner unavailable: {exc}")
                         return
@@ -784,6 +785,43 @@ def _startup_config() -> Config:
     return cfg
 
 
+def _float(value, default: float) -> float:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
+class _VoiceDownload(QThread):
+    """Settings → VOICE → DOWNLOAD: ``engine.download`` off the GUI thread.
+
+    ``progress`` is (bytes got, total); ``done`` carries "" on success,
+    "cancelled", or the error text."""
+
+    progress = Signal(int, int)
+    done = Signal(str)
+
+    def __init__(self, engine, voice_id: str, parent=None):
+        super().__init__(parent)
+        self._engine = engine
+        self._voice_id = voice_id
+        self._cancel = False
+
+    def cancel(self) -> None:
+        self._cancel = True
+
+    def run(self) -> None:  # noqa: D102
+        try:
+            self._engine.download(self._voice_id,
+                                  lambda got, total: self.progress.emit(int(got), int(total)),
+                                  lambda: self._cancel)
+            self.done.emit("cancelled" if self._cancel else "")
+        except Cancelled:
+            self.done.emit("cancelled")
+        except Exception as exc:        # noqa: BLE001 - shown in the menu, never fatal
+            self.done.emit("cancelled" if self._cancel else (str(exc) or type(exc).__name__))
+
+
 class _WindowWatcher(QObject):
     """Event filter on the tool windows and Settings: any move, show or hide
     restarts a short timer, so a position is saved once the window stops."""
@@ -821,7 +859,13 @@ class OverlayApp(QObject):
         self._launch_args = list(launch_args or [])
 
         self.data = MiningData()
-        self.voice = Voice()
+        self.voice = Voice(engine=str(cfg.get("voice_engine") or "windows"),
+                           voice=str(cfg.get("voice_voice") or ""),
+                           speed=_float(cfg.get("voice_speed"), 1.0),
+                           style=str(cfg.get("voice_style") or phrases.DEFAULT_STYLE),
+                           volume=_float(cfg.get("voice_volume"), 0.8),
+                           enabled=bool(cfg.get("voice_enabled", True)))
+        self._voice_download: _VoiceDownload | None = None
         self._spoken_key: tuple | None = None
         self._spoken_value: int | None = None
         self._selector: RegionSelector | None = None
@@ -961,6 +1005,14 @@ class OverlayApp(QObject):
         self.settings.debug_toggled.connect(self._on_debug)
         self.settings.voice_toggled.connect(self._on_voice)
         self.settings.volume_changed.connect(self._on_volume)
+        self.settings.voice_engine_changed.connect(self._on_voice_engine)
+        self.settings.voice_choice_changed.connect(self._on_voice_choice)
+        self.settings.voice_speed_changed.connect(self._on_voice_speed)
+        self.settings.voice_style_changed.connect(self._on_voice_style)
+        self.settings.voice_download_requested.connect(self._on_voice_download)
+        self.settings.voice_download_cancelled.connect(self._on_voice_download_cancel)
+        self.settings.voice_test_requested.connect(self._on_voice_test)
+        self.voice.notice.connect(self.settings.set_voice_note)
         self.settings.opacity_changed.connect(self._on_opacity)
         self.settings.capture_toggled.connect(self._on_capture_visible)
         self.settings.ui_scale_changed.connect(self._on_ui_scale)
@@ -1082,6 +1134,7 @@ class OverlayApp(QObject):
         self.voice.set_volume(float(self.cfg["voice_volume"]))
         self.settings.set_voice(bool(self.cfg["voice_enabled"]))
         self.settings.set_volume(round(float(self.cfg["voice_volume"]) * 100))
+        self._show_voice_menu()
         self.settings.set_opacity(round(self._opacity_level() * 100))
         self.settings.set_ui_scale(round(self._ui_scale_level() * 100))
         self.settings.set_capture_visible(self._capture_visible(),
@@ -1563,6 +1616,133 @@ class OverlayApp(QObject):
         level = max(0.0, min(1.0, int(percent) / 100.0))
         self.cfg["voice_volume"] = level
         self.voice.set_volume(level)
+
+    # -- Settings → VOICE ------------------------------------------------
+    def _show_voice_menu(self) -> None:
+        """ENGINE labels and notes, then the chosen engine's voices."""
+        engines = []
+        for engine_id, label in self.voice.engines():
+            eng = self.voice.engine(engine_id)
+            engines.append((engine_id, label, getattr(eng, "note", "") if eng else ""))
+        self.settings.set_voice_engines(engines)
+        self.settings.set_voice_engine(self.voice.engine_id)
+        self.settings.set_voice_speed(self.voice.speed)
+        self.settings.set_voice_style(self.voice.style)
+        self._show_voices()
+
+    def _show_voices(self) -> None:
+        """VOICE list and DOWNLOAD size for the chosen engine and voice. A saved
+        voice the engine no longer offers falls back to its default."""
+        engine_id = self.voice.engine_id
+        eng = self.voice.engine(engine_id)
+        voices = self.voice.voices(engine_id)
+        ids = [v.id for v in voices]
+        current = self.voice.voice_id
+        if current not in ids:
+            current = ""
+            if eng is not None:
+                try:
+                    current = eng.default_voice()
+                except Exception:       # noqa: BLE001
+                    current = ""
+            if current not in ids:
+                current = ids[0] if ids else ""
+        if current != self.voice.voice_id:
+            self.voice.set_voice(current)
+        self.cfg["voice_voice"] = current
+        self.settings.set_voice_engine(engine_id)
+        self.settings.set_voice_choices(voices, current)
+        self._show_voice_download()
+
+    def _show_voice_download(self) -> None:
+        """DOWNLOAD row (bytes the voice still needs) and the status note."""
+        if self._voice_download is not None:
+            return                      # the running download owns the row
+        eng = self.voice.engine()
+        need = 0
+        note = ""
+        if eng is None:
+            note = f"{engine_label(self.voice.engine_id)}: not installed in this build"
+        else:
+            try:
+                need = int(eng.needs_download(self.voice.voice_id) or 0)
+            except Exception as exc:    # noqa: BLE001
+                note = f"Could not check the download: {exc}"
+            if not need and not note:
+                try:
+                    if not eng.available():
+                        note = eng.unavailable_reason() or "Not available on this PC"
+                except Exception as exc:    # noqa: BLE001
+                    note = str(exc)
+        self.settings.set_voice_download(need)
+        self.settings.set_voice_note(note)
+
+    def _on_voice_engine(self, engine_id: str) -> None:
+        self._stop_voice_download()
+        self.voice.set_engine(engine_id)
+        self.cfg["voice_engine"] = self.voice.engine_id
+        self.voice.set_voice("")             # each engine starts on its default
+        self._show_voices()
+
+    def _on_voice_choice(self, voice_id: str) -> None:
+        self._stop_voice_download()
+        self.voice.set_voice(voice_id)
+        self.cfg["voice_voice"] = self.voice.voice_id
+        self._show_voice_download()
+
+    def _on_voice_speed(self, speed: float) -> None:
+        self.voice.set_speed(speed)
+        self.cfg["voice_speed"] = self.voice.speed
+
+    def _on_voice_style(self, style: str) -> None:
+        self.voice.set_style(style)
+        self.cfg["voice_style"] = self.voice.style
+
+    def _on_voice_test(self) -> None:
+        """TEST: the test phrase with the chosen engine, voice, speed, style."""
+        self.settings.set_voice_note("")
+        if not self.voice.test():
+            self.settings.set_voice_note(self.voice.last_error or "No speech engine available")
+
+    def _on_voice_download(self) -> None:
+        eng = self.voice.engine()
+        if eng is None or self._voice_download is not None:
+            return
+        worker = _VoiceDownload(eng, self.voice.voice_id, self)
+        worker.progress.connect(self.settings.set_voice_progress)
+        worker.done.connect(self._on_voice_download_done)
+        worker.finished.connect(worker.deleteLater)
+        self._voice_download = worker
+        log.info("VOICE: downloading %s voice %r", eng.id, self.voice.voice_id)
+        worker.start(QThread.Priority.LowPriority)
+
+    def _on_voice_download_cancel(self) -> None:
+        if self._voice_download is not None:
+            self._voice_download.cancel()
+
+    def _on_voice_download_done(self, error: str) -> None:
+        if self.sender() is not self._voice_download:
+            return                      # an old download stopped by a new choice
+        self._voice_download = None
+        if error and error != "cancelled":
+            log.warning("VOICE: download failed: %s", error)
+        self._show_voices()             # the add-on may list more voices now
+        if error == "cancelled":
+            self.settings.set_voice_note("Download cancelled")
+        elif error:
+            self.settings.set_voice_note(f"Download failed: {error}")
+        else:
+            self.settings.set_voice_note("Downloaded: press TEST to hear it")
+
+    def _stop_voice_download(self, timeout_ms: int = 3000) -> None:
+        """Cancel a running download and wait for its thread (bounded)."""
+        worker = self._voice_download
+        if worker is None:
+            return
+        self._voice_download = None
+        worker.cancel()
+        if not worker.wait(timeout_ms):
+            log.warning("VOICE: download did not stop within %d ms", timeout_ms)
 
     def _on_opacity(self, percent: int) -> None:
         level = max(0.3, min(1.0, int(percent) / 100.0))
@@ -2433,7 +2613,9 @@ class OverlayApp(QObject):
             return
         self._spoken_key = key
         self._spoken_value = int(value)
-        self.voice.say(spoken_text(top.label, top.count))
+        self.voice.say(phrases.spoken_text(
+            top.label, top.count, int(value), self.cfg.get("voice_style"),
+            phrases.unit_for(getattr(top, "kind", ""), 2)))
 
     def _on_scan_error(self, message: str) -> None:
         if message != self._last_scan_error:   # the loop repeats it every read
@@ -2617,7 +2799,8 @@ class OverlayApp(QObject):
         self.hauling.shutdown()
         # Cancel an UPDATE download in progress and wait for its thread.
         self.settings.shutdown()
-        self.voice.stop()
+        self._stop_voice_download()
+        self.voice.shutdown()
         self.settings.hide()
         self._close_log_viewer()
         self.tray.hide()

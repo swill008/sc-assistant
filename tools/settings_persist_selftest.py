@@ -18,6 +18,14 @@ backup holds it, scan_history.txt and bad_reads/ are removed, DETAILED LOG goes
 off, app.log is kept and the log window closes, and a fourth run starts on the
 defaults (the DEBUG switches off). Each run reads its settings the way main()
 does (main._startup_config: app.log first).
+
+VOICE (first run, fake Windows and Piper engines put into the real Voice so
+nothing is spoken or downloaded): ENGINE lists the voices of the chosen
+engine, DOWNLOAD shows the size and progress and CANCEL stops it, a second
+DOWNLOAD finishes, TEST speaks the test phrase in the SAYS style at the chosen
+voice, speed and volume 0; then ENGINE Microsoft online, a voice, SPEED and SAYS
+are saved, come back in the second run (menu and Voice), and the reset run
+starts on the Windows defaults.
 """
 from __future__ import annotations
 
@@ -38,6 +46,7 @@ if str(ROOT) not in sys.path:
 
 _TMP = tempfile.TemporaryDirectory(prefix="ca-persist-")
 os.environ["APPDATA"] = _TMP.name          # before app.config is imported
+os.environ["LOCALAPPDATA"] = _TMP.name     # voice add-ons and caches (app.tts)
 
 import cv2  # noqa: E402
 from PySide6.QtCore import Qt  # noqa: E402
@@ -91,6 +100,192 @@ def _pump(seconds: float) -> None:
     while time.monotonic() < end:
         QApplication.processEvents()
         time.sleep(0.01)
+
+
+class _FakeWindowsVoices:
+    """Stands in for the Windows voices: records speak(), says nothing."""
+
+    id = "windows"
+    label = "Windows voices (built in, offline)"
+    note = ""
+    online = False
+    speaks_directly = True
+
+    def __init__(self):
+        self.spoken: list = []
+
+    def available(self):
+        return True
+
+    def unavailable_reason(self):
+        return ""
+
+    def voices(self):
+        from app.tts.base import Voice as VoiceInfo
+        return [VoiceInfo("fake:A", "Fake A", "winrt · en-US"),
+                VoiceInfo("fake:B", "Fake B", "sapi · en-GB")]
+
+    def default_voice(self):
+        return "fake:A"
+
+    def needs_download(self, voice_id):
+        return 0
+
+    def download(self, voice_id, progress=None, cancelled=None):
+        return None
+
+    def speak(self, text, voice_id, speed, volume):
+        self.spoken.append((text, voice_id, speed, volume))
+        return True
+
+    def set_volume(self, volume):
+        pass
+
+    def stop(self):
+        pass
+
+
+class _FakePiper(_FakeWindowsVoices):
+    """An add-on engine whose voices need a download (no network)."""
+
+    id = "piper"
+    label = "Piper (offline, natural · add-on, GPL-3.0)"
+    note = "Add-on, GPL-3.0 (fake engine)"
+    speaks_directly = False
+    SIZE = 40 << 20
+
+    def __init__(self):
+        super().__init__()
+        self.ready: set = set()
+        self.calls: list = []
+
+    def voices(self):
+        from app.tts.base import Voice as VoiceInfo
+        return [VoiceInfo("p1", "Piper One", "CC0 · 40 MB"),
+                VoiceInfo("p2", "Piper Two", "CC-BY · 40 MB")]
+
+    def default_voice(self):
+        return "p1"
+
+    def needs_download(self, voice_id):
+        return 0 if voice_id in self.ready else self.SIZE
+
+    def download(self, voice_id, progress=None, cancelled=None):
+        from app.tts.base import Cancelled
+        self.calls.append(voice_id)
+        steps = 40
+        for i in range(steps + 1):
+            if cancelled is not None and cancelled():
+                raise Cancelled()
+            if progress is not None:
+                progress(self.SIZE * i // steps, self.SIZE)
+            time.sleep(0.03)
+        self.ready.add(voice_id)
+
+
+def _wait(cond, seconds: float = 5.0) -> bool:
+    end = time.monotonic() + seconds
+    while time.monotonic() < end:
+        QApplication.processEvents()
+        if cond():
+            return True
+        time.sleep(0.01)
+    return cond()
+
+
+def _pick(box, data) -> None:
+    """Choose an entry of a Settings list the way a click does."""
+    index = box.findData(data)
+    box.setCurrentIndex(index)
+    box.activated.emit(index)
+    QApplication.processEvents()
+
+
+def _voice_first_run(one) -> tuple[int, dict]:
+    """VOICE through the Settings controls on fake engines; returns
+    (failures, what should be saved)."""
+    from PySide6.QtTest import QTest
+
+    from app.tts import phrases
+
+    failures = 0
+    s = one.settings
+    fake_win, fake_piper = _FakeWindowsVoices(), _FakePiper()
+    one.voice._engines["windows"] = fake_win
+    one.voice._engines["piper"] = fake_piper
+    one._show_voice_menu()
+    s.volume_slider.setValue(0)                 # TEST below at volume 0
+
+    engines = [s.engine_box.itemData(i) for i in range(s.engine_box.count())]
+    failures += _check("VOICE: ENGINE lists windows, piper, kokoro, edge",
+                       engines == ["windows", "piper", "kokoro", "edge"], f"({engines})")
+    failures += _check("VOICE: Windows shows its voices, default first",
+                       s.voice_id == "fake:A" and s.voice_box.count() == 2
+                       and s.voice_download_row.isHidden(), f"({s.voice_id!r})")
+
+    _pick(s.engine_box, "piper")
+    failures += _check("VOICE: choosing Piper lists Piper's voices and is used",
+                       [s.voice_box.itemData(i) for i in range(s.voice_box.count())] == ["p1", "p2"]
+                       and one.voice.engine_id == "piper" and one.cfg["voice_engine"] == "piper"
+                       and one.voice.voice_id == "p1",
+                       f"({one.voice.engine_id}, {one.voice.voice_id!r})")
+    failures += _check("VOICE: DOWNLOAD shows the size, TEST waits",
+                       not s.voice_download_row.isHidden()
+                       and s.voice_download_label.text() == "Needs a 40 MB download"
+                       and not s.voice_test_btn.isEnabled(), f"({s.voice_download_label.text()!r})")
+    failures += _check("VOICE: the note is the engine's own (licence)",
+                       "GPL-3.0" in s.voice_note.text(), f"({s.voice_note.text()!r})")
+
+    QTest.mouseClick(s.voice_download_btn, Qt.MouseButton.LeftButton)
+    moving = _wait(lambda: s.voice_download_label.text().startswith(("5%", "7%", "1", "2")), 5.0)
+    failures += _check("VOICE: DOWNLOAD shows progress 'NN% · got of total MB' and CANCEL",
+                       moving and " of 40 MB" in s.voice_download_label.text()
+                       and s.voice_download_btn.text() == "CANCEL"
+                       and "downloading" in s.section_summary("voice"),
+                       f"({s.voice_download_label.text()!r}, {s.voice_download_btn.text()!r})")
+    QTest.mouseClick(s.voice_download_btn, Qt.MouseButton.LeftButton)
+    stopped = _wait(lambda: one._voice_download is None, 5.0)
+    failures += _check("VOICE: CANCEL stops the download; DOWNLOAD is back",
+                       stopped and "p1" not in fake_piper.ready
+                       and s.voice_download_btn.text() == "DOWNLOAD"
+                       and "Download cancelled" in s.voice_note.text(),
+                       f"({s.voice_note.text()!r})")
+
+    QTest.mouseClick(s.voice_download_btn, Qt.MouseButton.LeftButton)
+    done = _wait(lambda: one._voice_download is None and "p1" in fake_piper.ready, 8.0)
+    failures += _check("VOICE: a second DOWNLOAD finishes: row hidden, TEST back, note says so",
+                       done and s.voice_download_row.isHidden() and s.voice_test_btn.isEnabled()
+                       and "Downloaded" in s.voice_note.text() and fake_piper.calls == ["p1", "p1"],
+                       f"({fake_piper.calls}, {s.voice_note.text()!r})")
+
+    # TEST on the (fake) Windows voices, second voice, 1.4x, with the reading.
+    _pick(s.engine_box, "windows")
+    _pick(s.voice_box, "fake:B")
+    s.speed_slider.setValue(14)
+    _pick(s.style_box, "with_signature")
+    QTest.mouseClick(s.voice_test_btn, Qt.MouseButton.LeftButton)
+    want = phrases.test_phrase("with_signature")
+    failures += _check("VOICE: TEST says the test phrase in the SAYS style, chosen voice, "
+                       "speed, volume 0",
+                       fake_win.spoken[-1:] == [(want, "fake:B", 1.4, 0.0)]
+                       and want == "Feynmaline, nineteen deposits, fifty-seven thousand",
+                       f"({fake_win.spoken})")
+
+    # What is saved: the real Microsoft online engine (its built-in voice list).
+    _pick(s.engine_box, "edge")
+    edge_ids = [s.voice_box.itemData(i) for i in range(s.voice_box.count())]
+    choice = edge_ids[1] if len(edge_ids) > 1 else (edge_ids[0] if edge_ids else "")
+    if choice:
+        _pick(s.voice_box, choice)
+    failures += _check("VOICE: Microsoft online lists voices with no download",
+                       len(edge_ids) >= 2 and s.voice_download_row.isHidden()
+                       and "Microsoft" in s.voice_note.text(),
+                       f"({edge_ids[:3]}, {s.voice_note.text()!r})")
+    want_saved = {"voice_engine": "edge", "voice_voice": choice, "voice_speed": 1.4,
+                  "voice_style": "with_signature", "voice_volume": 0.0}
+    got = {k: one.cfg[k] for k in want_saved}
+    failures += _check("VOICE: the choices are in the settings", got == want_saved, f"({got})")
+    return failures, want_saved
 
 
 def _reset_run(app, saved: dict) -> int:
@@ -203,6 +398,17 @@ def _reset_run(app, saved: dict) -> int:
     failures += _check("open Settings sections back to SCANNER only",
                        four.cfg["settings_open"] == ["scanner"] and four.settings.open_sections == ["scanner"],
                        f"(cfg {four.cfg['settings_open']}, panel {four.settings.open_sections})")
+    s4 = four.settings
+    failures += _check("VOICE back to the Windows defaults (engine, speed, says, volume)",
+                       (four.cfg["voice_engine"], four.cfg["voice_speed"], four.cfg["voice_style"],
+                        four.cfg["voice_volume"]) == ("windows", 1.0, "count_after", 0.8)
+                       and (four.voice.engine_id, four.voice.speed, four.voice.style)
+                       == ("windows", 1.0, "count_after")
+                       and (s4.voice_engine, s4.voice_speed, s4.voice_style)
+                       == ("windows", 1.0, "count_after")
+                       and s4.volume_slider.value() == 80,
+                       f"(cfg {four.cfg['voice_engine']}/{four.cfg['voice_speed']}/"
+                       f"{four.cfg['voice_style']}, panel {s4.voice_engine}/{s4.voice_speed})")
     four.nav.quit_btn.click()
     four.nav.quit_btn.click()
     _pump(0.3)
@@ -273,6 +479,8 @@ def main() -> int:
     viewer.move(sg.left() + 70, sg.top() + 55)
     want_viewer = [viewer.x(), viewer.y()]
     _pump(1.3)                            # the debounced window save
+    voice_failures, want_voice = _voice_first_run(one)
+    failures += voice_failures
     want_open = ["scanner", "hotkeys", "look"]
     _user_opens(s, want_open)
     # DRAW REGION on the new box (the digits of the 5K2K image, which works on
@@ -320,6 +528,9 @@ def main() -> int:
                        f"({saved.get('debug_scan_history')}, {saved.get('debug_save_bad_reads')})")
     failures += _check("open Settings sections saved", saved.get("settings_open") == want_open,
                        f"({saved.get('settings_open')})")
+    got_voice = {k: saved.get(k) for k in want_voice}
+    failures += _check("VOICE choices saved (engine, voice, speed, says, volume)",
+                       got_voice == want_voice, f"({got_voice})")
     failures += _check("DETAILED LOG and the log window place saved",
                        saved.get("debug_detailed_log") is True
                        and saved.get("logviewer_pos") == want_viewer,
@@ -368,6 +579,19 @@ def main() -> int:
                        two._log_viewer is not None
                        and [two._log_viewer.x(), two._log_viewer.y()] == want_viewer,
                        f"({two._log_viewer.pos() if two._log_viewer else None} vs {want_viewer})")
+    failures += _check("VOICE comes back in the menu (engine, voice, speed, says, volume)",
+                       (s.voice_engine, s.voice_id, s.voice_speed, s.voice_style,
+                        s.volume_slider.value())
+                       == ("edge", want_voice["voice_voice"], 1.4, "with_signature", 0),
+                       f"({s.voice_engine}, {s.voice_id!r}, {s.voice_speed}, {s.voice_style})")
+    failures += _check("VOICE comes back in the Voice used for announcements",
+                       (two.voice.engine_id, two.voice.voice_id, two.voice.speed, two.voice.style,
+                        two.voice.volume)
+                       == ("edge", want_voice["voice_voice"], 1.4, "with_signature", 0.0))
+    failures += _check("VOICE summary: off · Microsoft online · <voice> · 1.4×",
+                       s.section_summary("voice").startswith("off · Microsoft online · ")
+                       and s.section_summary("voice").endswith(" · 1.4×"),
+                       f"({s.section_summary('voice')!r})")
     failures += _check("open Settings sections come back, unknown id dropped",
                        s.open_sections == want_open and two.cfg["settings_open"] == want_open,
                        f"(panel {s.open_sections}, cfg {two.cfg['settings_open']})")
@@ -383,7 +607,8 @@ def main() -> int:
                        all(resaved.get(k) == saved.get(k) for k in
                            ("poll_ms", "tracking_range", "show_region_outline", "game_monitor", "region", "anchor", "plate",
                             "settings_open", "debug_scan_history", "debug_save_bad_reads",
-                            "debug_detailed_log", "logviewer_pos")))
+                            "debug_detailed_log", "logviewer_pos", "voice_engine",
+                            "voice_voice", "voice_speed", "voice_style", "voice_volume")))
 
     # ---- RESET SETTINGS: defaults after the restart, nothing written back --
     failures += _reset_run(app, saved)

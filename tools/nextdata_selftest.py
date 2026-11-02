@@ -175,17 +175,20 @@ def check_lookups(data: mining.MiningData, label: str) -> None:
 
 
 def check_reader() -> None:
-    check("config DEFAULTS max_value is 100,000",
-          config.DEFAULTS["max_value"] == 100000, str(config.DEFAULTS["max_value"]))
+    from app import ocr as ocr_mod
+
+    check("reader range is built in: 2,000 to 120,000",
+          (ocr_mod.READ_MIN, ocr_mod.READ_MAX) == (2000, 120000),
+          str((getattr(ocr_mod, "READ_MIN", None), getattr(ocr_mod, "READ_MAX", None))))
+    check("reader range is not a saved setting (no min_value/max_value in config DEFAULTS)",
+          "min_value" not in config.DEFAULTS and "max_value" not in config.DEFAULTS)
     ocr = SignatureOCR(threads=1)
-    check("reader default max_value is 100,000", ocr.max_value == 100000)
-    check("reader accepts 76,000 (the user's ROC x19)",
-          [v for v, _ in ocr._numbers([("76,000", 0.99)])] == [76000])
-    cfg_ocr = SignatureOCR(int(config.DEFAULTS["min_value"]),
-                           int(config.DEFAULTS["max_value"]), 1)
-    check("reader with the default settings accepts 76,000 and 100,000, not 100,001",
-          [v for v, _ in cfg_ocr._numbers([("76000", 0.9), ("100,000", 0.9),
-                                            ("100001", 0.9)])] == [76000, 100000])
+    check("reader accepts 76,000 (ROC x19) and 112,000 (the user's Aphorite field), not 120,001",
+          [v for v, _ in ocr._numbers([("76,000", 0.99), ("112,000", 0.99),
+                                       ("120,001", 0.99)])] == [76000, 112000])
+    check("112,000 is read but matches no single kind (yellow, recorded)",
+          mining.MiningData().lookup(112000) == [] or
+          not any(m.exact for m in mining.MiningData().lookup(112000)))
 
 
 def check_unmatched() -> None:

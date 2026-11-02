@@ -4,3 +4,4 @@ mss>=9.0
 numpy>=1.26
 opencv-python>=4.9
 rapidocr-onnxruntime>=1.2.3
+edge-tts==7.3.1

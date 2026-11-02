@@ -1,5 +1,5 @@
-"""Settings window: five collapsible groups (scanner, scan data, hotkeys,
-look & sound, update & reset)."""
+"""Settings window: collapsible groups (scanner, scan data, hotkeys, look &
+sound, voice, update & reset, debug)."""
 from __future__ import annotations
 
 import time
@@ -10,7 +10,8 @@ from PySide6.QtGui import (QColor, QDesktopServices, QFont, QGuiApplication,
 from PySide6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QPushButton,
                                QSizePolicy, QSlider, QVBoxLayout, QWidget)
 
-from .. import updater
+from .. import tts, updater
+from ..tts import phrases
 from ..version import APP_NAME, VERSION
 from ..version import label as build_label
 from . import theme
@@ -28,6 +29,7 @@ SECTION_HEADINGS = (
     ("scan_data", "SCAN DATA"),
     ("hotkeys", "HOTKEYS"),
     ("look", "LOOK & SOUND"),
+    ("voice", "VOICE"),
     ("update", "UPDATE & RESET"),
     ("debug", "DEBUG"),
 )
@@ -208,6 +210,77 @@ def _slider() -> QSlider:
         }
     """))
     return slider
+
+
+def _combo() -> QComboBox:
+    """A drop-down list for the VOICE rows: never wider than its row (long
+    names are elided); the open list is as wide as its longest entry."""
+    box = QComboBox()
+    box.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+    box.setCursor(Qt.CursorShape.PointingHandCursor)
+    box.setFixedHeight(theme.px(24))
+    box.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+    box.setMinimumContentsLength(8)
+    box.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+    box.setStyleSheet(theme.qss("""
+        QComboBox {
+            color: rgba(200,214,228,0.95); background: rgba(79,209,224,0.06);
+            border: 1px solid rgba(79,209,224,0.18); border-radius: 6px;
+            padding: 0 8px; font-size: 8px;
+        }
+        QComboBox:hover { background: rgba(79,209,224,0.12); }
+        QComboBox:disabled { color: rgba(130,148,166,0.55); }
+        QComboBox::drop-down { border: none; width: 16px; }
+        QComboBox QAbstractItemView {
+            color: rgba(200,214,228,0.95); background: rgb(14,20,28);
+            selection-background-color: rgba(79,209,224,0.25);
+            border: 1px solid rgba(79,209,224,0.25);
+        }
+    """))
+    return box
+
+
+def _fit_popup(box: QComboBox) -> None:
+    """Let the open list show whole entries (it may be wider than the box)."""
+    view = box.view()
+    view.setTextElideMode(Qt.TextElideMode.ElideNone)
+    view.setMinimumWidth(view.sizeHintForColumn(0) + theme.px(24))
+
+
+# Short engine names for the closed VOICE heading, and the grey note under
+# the menu per engine (licence, online).
+ENGINE_SHORT = {"windows": "Windows", "piper": "Piper", "kokoro": "Kokoro",
+                "edge": "Microsoft online"}
+ENGINE_NOTES = {
+    "windows": "",
+    "piper": "Add-on, GPL-3.0: downloaded on demand, not part of SC Assistant. "
+             "Voices: public domain, CC0 or CC-BY only.",
+    "kokoro": "Add-on, GPL-3.0: downloaded on demand, not part of SC Assistant. "
+              "Uses more CPU than the others.",
+    "edge": "Online: sends the phrase to Microsoft. If it fails, a Windows "
+            "voice speaks instead.",
+}
+VOICE_NAME_ROLE = Qt.ItemDataRole.UserRole + 1     # voice name, for the summary
+
+SPEED_MIN, SPEED_MAX = 5, 20     # SPEED slider in tenths: 0.5× - 2.0×
+
+
+def speed_text(speed: float) -> str:
+    """1.0 -> '1.0×'."""
+    return f"{float(speed):.1f}×"
+
+
+def _size_mb(count: int) -> str:
+    """MB with one decimal below 10 MB (Kokoro voices are under 1 MB)."""
+    mb = max(0, int(count)) / (1 << 20)
+    return f"{mb:.1f}" if mb < 10 else f"{int(mb)}"
+
+
+def voice_download_text(got: int, total: int) -> str:
+    """The VOICE download line: 'NN% · got of total MB' (total 0 = unknown)."""
+    if total > 0:
+        return f"{_percent(got, total)}% · {_size_mb(got)} of {_size_mb(total)} MB"
+    return f"{_size_mb(got)} MB"
 
 
 TRACKING_MAX = 800     # px each side at 2160 px high
@@ -408,6 +481,14 @@ class SettingsPanel(QWidget):
     open_log = Signal()               # DEBUG -> OPEN LOG
     view_log = Signal()               # DEBUG -> VIEW LOG
     export_diagnostics = Signal()     # DEBUG -> EXPORT DIAGNOSTICS
+    # VOICE group, user choices only (the set_voice_* setters emit nothing).
+    voice_engine_changed = Signal(str)   # ENGINE id (app.tts.ENGINE_IDS)
+    voice_choice_changed = Signal(str)   # VOICE id within the engine
+    voice_speed_changed = Signal(float)  # SPEED 0.5-2.0
+    voice_style_changed = Signal(str)    # SAYS id (app.tts.phrases.STYLES)
+    voice_download_requested = Signal()  # DOWNLOAD
+    voice_download_cancelled = Signal()  # CANCEL while downloading
+    voice_test_requested = Signal()      # TEST
 
     # Two-click buttons (like QUIT on the nav bar): the first click arms,
     # a second within ARM_MS acts; otherwise the button reverts.
@@ -417,6 +498,8 @@ class SettingsPanel(QWidget):
     CLEAR_TEXT = "CLEAR"
     CLEAR_ARMED_TEXT = "CLEAR?"         # like QUIT? on the nav bar
     UNMATCHED_ROWS = 3                # newest rows listed
+    VOICE_DOWNLOAD_TEXT = "DOWNLOAD"
+    VOICE_CANCEL_TEXT = "CANCEL"
 
     def __init__(self, parent=None):
         super().__init__(None, Qt.WindowType.FramelessWindowHint
@@ -448,6 +531,12 @@ class SettingsPanel(QWidget):
         self._forced: str | None = None
         self._ore_count: int | None = None
         self._has_region = False
+        # VOICE: the status part of the note (errors, "downloaded"), the
+        # bytes the chosen voice still needs, and (got, total) while downloading.
+        self._voice_status = ""
+        self._voice_need = 0
+        self._voice_downloading: tuple[int, int] | None = None
+        self._engine_notes: dict[str, str] = dict(ENGINE_NOTES)
         self._build()
         self.adjustSize()
 
@@ -496,6 +585,7 @@ class SettingsPanel(QWidget):
         builders = {
             "scanner": self._build_scanner, "scan_data": self._build_scan_data,
             "hotkeys": self._build_hotkeys, "look": self._build_look,
+            "voice": self._build_voice,
             "update": self._build_update, "debug": self._build_debug,
         }
         for section_id, heading in SECTION_HEADINGS:
@@ -763,7 +853,7 @@ class SettingsPanel(QWidget):
         root.addWidget(self.hotkey_hint)
 
     def _build_look(self, root: QVBoxLayout) -> None:
-        """Appearance and Voice."""
+        """Appearance (UI scale, opacity, screenshots)."""
         # Appearance --------------------------------------------------
         root.addWidget(_section("Appearance"))
 
@@ -860,14 +950,27 @@ class SettingsPanel(QWidget):
         capture_row.addWidget(self.capture_hint, 1)
         capture_row.addWidget(self.capture_btn)
         root.addLayout(capture_row)
-        root.addSpacing(theme.px(8))
 
-        # Voice -------------------------------------------------------
-        root.addWidget(_section("Voice"))
-        voice_row = QHBoxLayout()
-        voice_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
-        voice_row.setSpacing(theme.px(8))
+    @staticmethod
+    def _row_name(text: str) -> QLabel:
+        name = QLabel(text)
+        name.setFixedWidth(theme.px(58))
+        name.setFont(theme.font(8, QFont.Weight.DemiBold, spacing=0.8))
+        name.setStyleSheet(theme.qss(
+            "color: rgba(150,166,182,0.95); background: transparent;"))
+        return name
 
+    @staticmethod
+    def _row() -> QHBoxLayout:
+        row = QHBoxLayout()
+        row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
+        row.setSpacing(theme.px(8))
+        return row
+
+    def _build_voice(self, root: QVBoxLayout) -> None:
+        """VOICE: on/off and volume, ENGINE, VOICE, DOWNLOAD (add-on voices),
+        SPEED, SAYS with TEST, and the grey note (licence, online, errors)."""
+        voice_row = self._row()
         self.voice_btn = _button("ON", checkable=True)
         self.voice_btn.setFixedWidth(theme.px(52))
         self.voice_btn.setChecked(True)
@@ -886,11 +989,96 @@ class SettingsPanel(QWidget):
         self.volume_label.setFont(theme.font(9))
         self.volume_label.setStyleSheet(theme.qss(
             "color: rgba(150,166,182,0.95); background: transparent;"))
-
         voice_row.addWidget(self.voice_btn)
         voice_row.addWidget(self.volume_slider, 1)
         voice_row.addWidget(self.volume_label)
         root.addLayout(voice_row)
+
+        engine_row = self._row()
+        self.engine_box = _combo()
+        self.engine_box.setToolTip(
+            "How the voice is made. Every method is free; compare them with TEST.")
+        for engine_id in tts.ENGINE_IDS:
+            self.engine_box.addItem(tts.engine_label(engine_id), engine_id)
+        _fit_popup(self.engine_box)
+        self.engine_box.activated.connect(self._on_engine)
+        engine_row.addWidget(self._row_name("ENGINE"))
+        engine_row.addWidget(self.engine_box, 1)
+        root.addLayout(engine_row)
+
+        choice_row = self._row()
+        self.voice_box = _combo()
+        self.voice_box.setToolTip("The voice of the chosen engine")
+        self.voice_box.activated.connect(self._on_voice_choice)
+        choice_row.addWidget(self._row_name("VOICE"))
+        choice_row.addWidget(self.voice_box, 1)
+        root.addLayout(choice_row)
+
+        # DOWNLOAD: shown only while the chosen voice needs files.
+        self.voice_download_row = QWidget(self)
+        dl_row = QHBoxLayout(self.voice_download_row)
+        dl_row.setContentsMargins(theme.px(0), theme.px(0), theme.px(0), theme.px(0))
+        dl_row.setSpacing(theme.px(8))
+        self.voice_download_label = QLabel()
+        self.voice_download_label.setFont(theme.font(7))
+        self.voice_download_label.setStyleSheet(theme.qss(
+            "color: rgba(176,192,208,0.95); background: transparent;"))
+        self.voice_download_btn = _button(self.VOICE_CANCEL_TEXT)
+        self.voice_download_btn.setToolTip(
+            "Download what this voice needs (once); CANCEL stops it")
+        width = self.voice_download_btn.sizeHint().width()
+        self.voice_download_btn.setText(self.VOICE_DOWNLOAD_TEXT)
+        self.voice_download_btn.setMinimumWidth(
+            max(width, self.voice_download_btn.sizeHint().width()))
+        self.voice_download_btn.clicked.connect(self._on_voice_download)
+        dl_row.addWidget(self.voice_download_label, 1)
+        dl_row.addWidget(self.voice_download_btn)
+        self.voice_download_row.hide()
+        root.addWidget(self.voice_download_row)
+
+        speed_row = self._row()
+        self.speed_slider = _slider()
+        self.speed_slider.setRange(SPEED_MIN, SPEED_MAX)      # tenths: 0.5-2.0
+        self.speed_slider.setSingleStep(1)
+        self.speed_slider.setPageStep(1)
+        self.speed_slider.setValue(10)
+        self.speed_slider.setToolTip("How fast the voice speaks (1.0× = normal)")
+        self.speed_slider.valueChanged.connect(self._on_speed)
+        self.speed_label = QLabel(speed_text(1.0))
+        self.speed_label.setFixedWidth(theme.px(34))
+        self.speed_label.setAlignment(
+            Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.speed_label.setFont(theme.font(9))
+        self.speed_label.setStyleSheet(theme.qss(
+            "color: rgba(150,166,182,0.95); background: transparent;"))
+        speed_row.addWidget(self._row_name("SPEED"))
+        speed_row.addWidget(self.speed_slider, 1)
+        speed_row.addWidget(self.speed_label)
+        root.addLayout(speed_row)
+
+        says_row = self._row()
+        self.style_box = _combo()
+        self.style_box.setToolTip("What is said when a signature locks")
+        for style_id in phrases.STYLES:
+            self.style_box.addItem(phrases.STYLE_LABELS[style_id], style_id)
+        _fit_popup(self.style_box)
+        self.style_box.activated.connect(self._on_style)
+        self.voice_test_btn = _button("TEST")
+        self.voice_test_btn.setToolTip(
+            "Say a sample reading (Feynmaline, 19 deposits, 57,000) in the chosen style")
+        self.voice_test_btn.clicked.connect(self.voice_test_requested.emit)
+        says_row.addWidget(self._row_name("SAYS"))
+        says_row.addWidget(self.style_box, 1)
+        says_row.addWidget(self.voice_test_btn)
+        root.addLayout(says_row)
+
+        self.voice_note = QLabel()
+        self.voice_note.setWordWrap(True)
+        self.voice_note.setFont(theme.font(7))
+        self.voice_note.setStyleSheet(theme.qss(
+            "color: rgba(130,148,166,0.9); background: transparent;"))
+        root.addWidget(self.voice_note)
+        self._refresh_voice_note()
 
     def _build_update(self, root: QVBoxLayout) -> None:
         """Update and Reset."""
@@ -1169,13 +1357,13 @@ class SettingsPanel(QWidget):
         unmatched = f"{len(self._unmatched)} unmatched"
         keys = " · ".join(f"{label} {vk_name(self._key_buttons[key].vk)}"
                           for key, label in HOTKEY_ROWS)
-        voice = "on" if self.voice_btn.isChecked() else "off"
         summaries = {
             "scanner": " · ".join(p for p in (str(monitor), box) if p),
             "scan_data": (f"{self._ore_count} ores · {unmatched}"
                           if self._ore_count is not None else unmatched),
             "hotkeys": keys,
-            "look": f"UI {self.ui_scale_slider.value()}% · voice {voice}",
+            "look": f"UI {self.ui_scale_slider.value()}%",
+            "voice": self.voice_summary(),
             "update": (self._download_summary() if self._download is not None
                        else f"v{self._pending_version} available" if self._pending_version
                        else f"v{VERSION} installed"),
@@ -1185,6 +1373,20 @@ class SettingsPanel(QWidget):
         }
         for section_id, text in summaries.items():
             self._groups[section_id][0].set_summary(text)
+
+    def voice_summary(self) -> str:
+        """'<engine> · <voice> · <speed>×'; 'off · ' in front while the voice
+        is off, ' · downloading NN%' after while a voice downloads."""
+        engine = ENGINE_SHORT.get(self.voice_engine, self.voice_engine)
+        name = self.voice_box.currentData(VOICE_NAME_ROLE) or "default voice"
+        text = f"{engine} · {name} · {speed_text(self.voice_speed)}"
+        if not self.voice_btn.isChecked():
+            text = "off · " + text
+        if self._voice_downloading is not None:
+            got, total = self._voice_downloading
+            text += (f" · downloading {_percent(got, total)}%" if total > 0
+                     else " · downloading")
+        return text
 
     def section_summary(self, section_id: str) -> str:
         """Full summary text of a group's heading (for tests)."""
@@ -1234,6 +1436,175 @@ class SettingsPanel(QWidget):
     def _on_volume(self, value: int) -> None:
         self.volume_label.setText(f"{value}%")
         self.volume_changed.emit(int(value))
+
+    # -- VOICE ---------------------------------------------------------
+    def _on_engine(self, index: int) -> None:
+        engine_id = self.engine_box.itemData(index)
+        self._voice_status = ""
+        self._refresh_voice_note()
+        self._update_summaries()
+        if engine_id:
+            self.voice_engine_changed.emit(str(engine_id))
+
+    def _on_voice_choice(self, index: int) -> None:
+        voice_id = self.voice_box.itemData(index)
+        self._voice_status = ""
+        self._refresh_voice_note()
+        self._update_summaries()
+        if voice_id is not None:
+            self.voice_choice_changed.emit(str(voice_id))
+
+    def _on_speed(self, value: int) -> None:
+        speed = max(SPEED_MIN, min(SPEED_MAX, int(value))) / 10.0
+        self.speed_label.setText(speed_text(speed))
+        self._update_summaries()
+        self.voice_speed_changed.emit(speed)
+
+    def _on_style(self, index: int) -> None:
+        style_id = self.style_box.itemData(index)
+        if style_id:
+            self.voice_style_changed.emit(str(style_id))
+
+    def _on_voice_download(self) -> None:
+        if self._voice_downloading is not None:
+            self.voice_download_btn.setEnabled(False)       # until main ends it
+            self.voice_download_label.setText("Cancelling…")
+            self.voice_download_cancelled.emit()
+        elif self._voice_need > 0:
+            self.set_voice_progress(0, self._voice_need)
+            self.voice_download_requested.emit()
+
+    def _refresh_voice_note(self) -> None:
+        """Grey line: the engine's note (licence / online), then the status."""
+        note = self._engine_notes.get(self.voice_engine, "")
+        text = "\n".join(t for t in (note, self._voice_status) if t)
+        self.voice_note.setText(text)
+        self.voice_note.setVisible(bool(text))
+
+    def _refresh_voice_download(self) -> None:
+        if self._voice_downloading is not None:
+            got, total = self._voice_downloading
+            self.voice_download_label.setText(voice_download_text(got, total))
+            self.voice_download_btn.setText(self.VOICE_CANCEL_TEXT)
+            self.voice_download_row.show()
+        elif self._voice_need > 0:
+            self.voice_download_label.setText(
+                f"Needs a {_size_mb(self._voice_need)} MB download")
+            self.voice_download_btn.setText(self.VOICE_DOWNLOAD_TEXT)
+            self.voice_download_btn.setEnabled(True)
+            self.voice_download_row.show()
+        else:
+            self.voice_download_row.hide()
+        self.voice_test_btn.setEnabled(
+            self._voice_downloading is None and self._voice_need <= 0)
+        self._update_summaries()
+        if self.isVisible():
+            self._fit()
+
+    @property
+    def voice_engine(self) -> str:
+        return str(self.engine_box.currentData() or "windows")
+
+    @property
+    def voice_id(self) -> str:
+        data = self.voice_box.currentData()
+        return "" if data is None else str(data)
+
+    @property
+    def voice_speed(self) -> float:
+        return self.speed_slider.value() / 10.0
+
+    @property
+    def voice_style(self) -> str:
+        return str(self.style_box.currentData() or phrases.DEFAULT_STYLE)
+
+    @property
+    def voice_downloading(self) -> bool:
+        return self._voice_downloading is not None
+
+    def set_voice_engines(self, engines) -> None:
+        """ENGINE entries as (id, label, note) from the engines themselves;
+        ids not given keep their built-in label and note. Emits nothing."""
+        for engine_id, label, note in engines or []:
+            index = self.engine_box.findData(str(engine_id))
+            if index < 0:
+                continue
+            if label:
+                self.engine_box.setItemText(index, str(label))
+            if note:
+                self._engine_notes[str(engine_id)] = str(note)
+        _fit_popup(self.engine_box)
+        self._refresh_voice_note()
+
+    def set_voice_engine(self, engine_id: str) -> None:
+        """Show the ENGINE choice (unknown ids show Windows); emits nothing."""
+        index = self.engine_box.findData(str(engine_id))
+        self.engine_box.setCurrentIndex(index if index >= 0 else 0)
+        self._refresh_voice_note()
+        self._update_summaries()
+
+    def set_voice_choices(self, voices, current: str = "") -> None:
+        """Fill VOICE with the engine's voices (objects with id, name, detail,
+        or (id, name, detail) tuples) and show ``current`` (else the first);
+        emits nothing."""
+        self.voice_box.blockSignals(True)
+        self.voice_box.clear()
+        for item in voices or []:
+            if isinstance(item, (tuple, list)):
+                vid, name, detail = (list(item) + ["", "", ""])[:3]
+            else:
+                vid = getattr(item, "id", "")
+                name = getattr(item, "name", "") or vid
+                detail = getattr(item, "detail", "")
+            text = f"{name} · {detail}" if detail else str(name)
+            row = self.voice_box.count()
+            self.voice_box.addItem(text, str(vid))
+            self.voice_box.setItemData(row, str(name), VOICE_NAME_ROLE)
+            self.voice_box.setItemData(row, text, Qt.ItemDataRole.ToolTipRole)
+        index = self.voice_box.findData(str(current or ""))
+        if self.voice_box.count():
+            self.voice_box.setCurrentIndex(index if index >= 0 else 0)
+        self.voice_box.setEnabled(self.voice_box.count() > 0)
+        _fit_popup(self.voice_box)
+        self.voice_box.blockSignals(False)
+        self._update_summaries()
+
+    def set_voice_download(self, size: int) -> None:
+        """Bytes the chosen voice still needs: >0 shows DOWNLOAD with the size,
+        0 hides the row. Ends a download in progress; emits nothing."""
+        self._voice_downloading = None
+        self._voice_need = max(0, int(size or 0))
+        self._refresh_voice_download()
+
+    def set_voice_progress(self, got: int, total: int) -> None:
+        """While downloading: 'NN% · got of total MB' and CANCEL."""
+        self._voice_downloading = (max(0, int(got)), max(0, int(total)))
+        self.voice_download_btn.setEnabled(True)
+        self._refresh_voice_download()
+
+    def set_voice_speed(self, speed: float) -> None:
+        try:
+            tenths = int(round(float(speed) * 10))
+        except (TypeError, ValueError):
+            tenths = 10
+        tenths = max(SPEED_MIN, min(SPEED_MAX, tenths))
+        if self.speed_slider.value() != tenths:
+            self.speed_slider.blockSignals(True)
+            self.speed_slider.setValue(tenths)
+            self.speed_slider.blockSignals(False)
+        self.speed_label.setText(speed_text(tenths / 10.0))
+        self._update_summaries()
+
+    def set_voice_style(self, style_id: str) -> None:
+        index = self.style_box.findData(str(style_id))
+        self.style_box.setCurrentIndex(index if index >= 0 else 0)
+
+    def set_voice_note(self, text: str) -> None:
+        """Status under the licence note (an error, "Downloaded"); "" clears."""
+        self._voice_status = (text or "").strip()
+        self._refresh_voice_note()
+        if self.isVisible():
+            self._fit()
 
     def _on_ui_scale(self, value: int) -> None:
         value = max(75, min(150, int(value)))

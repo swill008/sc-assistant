@@ -26,6 +26,7 @@ if str(ROOT) not in sys.path:
 # Never the user's %APPDATA%\SC Assistant: the config folder is
 # resolved when app.config is imported, so point it at a temp folder first.
 os.environ["APPDATA"] = tempfile.mkdtemp(prefix="ca_scan_selftest_")
+os.environ["LOCALAPPDATA"] = os.environ["APPDATA"]     # voice add-ons
 
 from PySide6.QtCore import QPoint, Qt, QTimer  # noqa: E402
 from PySide6.QtGui import QGuiApplication  # noqa: E402
@@ -258,11 +259,11 @@ def check_tracking_controls() -> int:
 
     failures = 0
     failures += _check("config: tracking_range defaults to 400, anchor to None, "
-                       "reader limits 2,000-100,000",
+                       "no saved reader limits (min_value / max_value)",
                        config_mod.DEFAULTS.get("tracking_range") == 400
                        and "anchor" in config_mod.DEFAULTS and config_mod.DEFAULTS["anchor"] is None
-                       and config_mod.DEFAULTS["min_value"] == 2000
-                       and config_mod.DEFAULTS["max_value"] == 100000)
+                       and "min_value" not in config_mod.DEFAULTS
+                       and "max_value" not in config_mod.DEFAULTS)
     panel = SettingsPanel()
     emitted: list[int] = []
     panel.tracking_changed.connect(emitted.append)
@@ -657,6 +658,7 @@ def _bare_overlay(cfg):
     o.outline = _FakeOutline()
     o.hotkeys = _FakeHotkeys()
     o.voice = SimpleNamespace(say=lambda text: None)
+    o._voice_download = None
     o.data = SimpleNamespace(nearest=lambda value: [], version="4.10.2", ores=[1, 2],
                              source_text="", fallback_reason="")
     o.nav = _FakeWindow("nav")
@@ -1567,6 +1569,38 @@ def check_settings_sections_wiring() -> int:
     return failures
 
 
+def check_announce_style() -> int:
+    """A locked rock is announced in the SAYS style chosen in Settings → VOICE,
+    with the reading's value (with_signature) and the match's unit."""
+    from types import SimpleNamespace
+
+    from app.config import DEFAULTS
+
+    failures = 0
+    failures += _check("VOICE defaults: Windows, default voice, 1.0×, 'Borase, times 3'",
+                       (DEFAULTS.get("voice_engine"), DEFAULTS.get("voice_voice"),
+                        DEFAULTS.get("voice_speed"), DEFAULTS.get("voice_style"))
+                       == ("windows", "", 1.0, "count_after"))
+    said: list[str] = []
+    want = {
+        "count_after": ["Borase, times 3", "Feynmaline, times 19"],
+        "count_before": ["Three Borase", "Nineteen Feynmaline"],
+        "with_signature": ["Borase, three rocks, fourteen thousand four hundred",
+                           "Feynmaline, nineteen deposits, fifty-seven thousand"],
+    }
+    for style, phrases_want in want.items():
+        o = _bare_overlay(_test_cfg(voice_style=style))
+        said.clear()
+        o.voice = SimpleNamespace(say=said.append)
+        o._announce_signature(14400, SimpleNamespace(kind="ship", name="Borase", count=3,
+                                                     label="Borase"))
+        o._announce_signature(57000, SimpleNamespace(kind="roc", name="Feynmaline", count=19,
+                                                     label="Feynmaline"))
+        failures += _check(f"announcement in style {style}", said == phrases_want,
+                           f"({said})")
+    return failures
+
+
 def check_update_handoff_failure() -> int:
     from app import updater
 
@@ -1667,14 +1701,25 @@ def check_user_case_76000() -> int:
 
     failures = 0
     data = MiningData()
-    scan = main_mod.ScanThread(data, Config())
-    reader = SignatureOCR(scan._min_value, scan._max_value)
+    from app import ocr as ocr_mod
+    # An older config.json that still holds max_value 100000 no longer limits
+    # the reader: the range is app/ocr.py's READ_MIN / READ_MAX.
+    old_cfg = Config({"min_value": 5000, "max_value": 100000})
+    failures += _check("a saved min_value / max_value is dropped on load",
+                       "min_value" not in old_cfg.data and "max_value" not in old_cfg.data)
+    scan = main_mod.ScanThread(data, old_cfg)
+    failures += _check("the scanner uses the fixed range 2,000-120,000 from app.ocr",
+                       (scan._min_value, scan._max_value) == (ocr_mod.READ_MIN, ocr_mod.READ_MAX)
+                       == (2000, 120000), f"({scan._min_value}, {scan._max_value})")
+    reader = SignatureOCR()
     got = reader._numbers([("76,000", 0.98)])
     failures += _check("the reader keeps 76,000 (default limit)", got == [(76000, 0.98)],
-                       f"(numbers {got}, max_value {scan._max_value})")
-    low = reader._numbers([("2,000", 0.98), ("100,001", 0.98)])
-    failures += _check("the reader keeps 2,000 (one plant / panel), drops over 100,000",
-                       low == [(2000, 0.98)], f"(numbers {low}, min_value {scan._min_value})")
+                       f"(numbers {got}, max_value {reader.max_value})")
+    low = reader._numbers([("2,000", 0.98), ("112,000", 0.98), ("120,001", 0.98)])
+    failures += _check("the reader keeps 2,000 and 112,000 (over the old 100,000 limit), "
+                       "drops over 120,000",
+                       low == [(2000, 0.98), (112000, 0.98)],
+                       f"(numbers {low}, range {reader.min_value}-{reader.max_value})")
 
     class _OCR76:
         def read(self, crop):
@@ -1925,7 +1970,8 @@ def check_unmatched_and_reset_wiring() -> int:
     o.combat = o.blueprint_tracker = SimpleNamespace(close=lambda: None)
     o.hotkeys = SimpleNamespace(stop=lambda: None, wait=lambda ms: True)
     o.tray = SimpleNamespace(hide=lambda: None)
-    o.voice = SimpleNamespace(stop=lambda: None)
+    o.voice = SimpleNamespace(stop=lambda: None, shutdown=lambda: None)
+    o._voice_download = None
     o.app = SimpleNamespace(quit=lambda: None)
     o._launch_args = []
     launched: list = []
@@ -2013,6 +2059,7 @@ def main() -> int:
     failures += check_pins_and_hide_all()
     failures += check_first_run_attention()
     failures += check_settings_sections_wiring()
+    failures += check_announce_style()
     failures += check_update_handoff_failure()
     failures += check_signature_refresh()
     print("-" * 78)

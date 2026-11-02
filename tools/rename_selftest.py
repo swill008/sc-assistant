@@ -57,7 +57,7 @@ def _fresh_appdata() -> Path:
 def _seed(folder: Path, value: int) -> dict[str, bytes]:
     """User data as an old install leaves it; returns {relative path: bytes}."""
     files = {
-        "config.json": json.dumps({"min_value": value}).encode(),
+        "config.json": json.dumps({"poll_ms": value}).encode(),
         "notes.txt": f"notes {value}".encode(),
         "inventory.json": b'{"items": [1, 2, 3]}',
         "anchors/anchor.png": bytes(range(256)) * 4,
@@ -87,7 +87,7 @@ def case_import_moves() -> int:
     f += _check("import: old folder moved (gone)", not (base / OLD_APP_NAME).exists())
     f += _check("import: every file intact in the new folder", _same(new, files))
     f += _check("import: Config.load reads the moved settings",
-                config.Config.load().get("min_value") == 4321)
+                config.Config.load().get("poll_ms") == 4321)
     return f
 
 

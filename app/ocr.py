@@ -76,8 +76,17 @@ class OCRResult:
         return self.value is not None
 
 
+# The numbers the reader accepts. Built in, not a user setting: a value saved
+# in config.json would keep an old range alive after an update (the 60,000
+# and 100,000 limits both did). 2,000 is one salvage piece or plant; 120,000
+# is a margin above the largest real scan seen, 112,000 (Aphorite field
+# above Cellin, user 2026-11-01; see README "Largest scans").
+READ_MIN = 2000
+READ_MAX = 120000
+
+
 class SignatureOCR:
-    def __init__(self, min_value: int = 2000, max_value: int = 100000, threads: int = 1):
+    def __init__(self, min_value: int = READ_MIN, max_value: int = READ_MAX, threads: int = 1):
         self.min_value = min_value
         self.max_value = max_value
         self.threads = max(1, int(threads))

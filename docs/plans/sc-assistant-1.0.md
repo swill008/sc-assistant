@@ -146,6 +146,22 @@ every scannable item; visible feedback for every read (no silent discards).
     lower limit 1; a test compares them with the newest scmdb data.
   - Reader accepts up to 100,000 (2a), the largest real reading; above
     that counts as unreadable (red). Default only, no settings-file update.
+    Superseded for 1.0.4 (user, 2026-11-01): the range is built in
+    (app/ocr.py READ_MIN 2,000, READ_MAX 120,000) and no longer saved in
+    config.json, so a raised limit reaches everyone without a reset;
+    112,000 is read, shown as SCANNED 112,000 with a yellow border and
+    saved by the recorder.
+  - Largest scans (user, 2026-11-01; mirrored in README "Largest scans",
+    updated from the recorder's unmatched readings):
+
+    | Reading | Where | What it is |
+    |---|---|---|
+    | 76,000 | Feynmaline | ROC x19 |
+    | 57,000 | Aphorite | hand mining x19 |
+    | 112,000 | Aphorite, flying above Cellin | fits no single kind (not a multiple of 3,000; 28 ROC deposits or a mix such as 8 Aphorite + 22 ROC would fit); likely the ship scanner adds up nearby deposits; unverified |
+
+    Game files (scmdb 4.10.2 live): ROC 10-25, hand mining 10-21, ship
+    rocks up to 6, salvage scrap up to 15.
   - When a number fits two kinds, both are shown on two lines (e.g.
     "ROC x19 · FEYNMALINE / ..." then "or DEBRIS x38").
   - Red border (3a): only while the scan plate is on screen (tracking found

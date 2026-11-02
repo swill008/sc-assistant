@@ -1,5 +1,175 @@
 # Changes
 
+## v1.0.4 — 2026-11-01
+
+A VOICE group with four speech engines, a DEBUG group with scan history,
+bad-read pictures and logging, the preview's green box on the digits the
+reader finds, and a built-in reader range up to 120,000.
+
+### VOICE group
+
+**What happened.** Announcements used one fixed voice (QtTextToSpeech's
+default) with only ON/OFF and volume, under LOOK & SOUND. The user asked for
+every free method side by side, clearly labelled, to compare and pick
+(research: `docs/reviews/2026-11-01-voice-research.md`, scripts in
+`docs/reviews/voice/`).
+
+**Change.** A new Settings group **VOICE** (id `voice`, after LOOK & SOUND;
+the Voice part moved out of LOOK & SOUND). Rows: VOICE ON/OFF and VOLUME
+(moved), ENGINE, VOICE (the engine's voices; Piper and Kokoro with licence
+and size or `downloaded`), a DOWNLOAD row only while the chosen voice needs
+files (`Needs a <N> MB download` + DOWNLOAD, then `NN% · <got> of <total> MB`
++ CANCEL; TEST disabled until done), SPEED 0.5-2.0 in 0.1 steps, SAYS (three
+styles), TEST (19 Feynmaline deposits, 57,000, in the chosen style:
+`Feynmaline, times 19` / `Nineteen Feynmaline` / `Feynmaline, nineteen
+deposits, fifty-seven thousand`) and a grey note line (licence / online
+notes, errors). Summary: `<engine> · <voice> · <speed>×` with short engine
+names (`Windows`, `Piper`, `Kokoro`, `Microsoft online`), `off · ` in front
+while off, ` · downloading NN%` after while downloading; LOOK & SOUND's
+summary is now `UI NN%`. New `config.json` keys: `voice_engine`
+(`"windows"`), `voice_voice` (`""`), `voice_speed` (`1.0`), `voice_style`
+(`"count_after"`).
+
+Engines (`app/tts/`):
+
+| id | Menu label | Notes |
+| --- | --- | --- |
+| `windows` | Windows voices (built in, offline) | QtTextToSpeech, engines `winrt` and `sapi` (the `mock` test engine hidden); voices from both, labelled with the engine |
+| `piper` | Piper (offline, natural · add-on, GPL-3.0) | `piper-tts` 1.8.0 (`cp39-abi3-win_amd64` wheel) + `pathvalidate` from PyPI (about 33 MB; Hebrew model, training code, templates and images not extracted, about 22 MB saved) + a voice (60-130 MB) from `huggingface.co/rhasspy/piper-voices` at a pinned revision; 17 English voices, only public-domain / CC0 / CC-BY dataset licences; the ONNX session is built by the app so the thread limit holds |
+| `kokoro` | Kokoro (offline, most natural · add-on, GPL-3.0, uses more CPU) | `kokoro-onnx` 0.6.1 + `phonemizer` 3.4.0 + `espeakng-loader` 0.2.4 and their small dependencies (`joblib`, `cloudpickle`, `attrs`, `dlinfo`, `typing-extensions`) from PyPI (about 10 MB), the int8 model (about 88 MB) and per-voice files (about 0.5 MB) from `onnx-community/Kokoro-82M-v1.0-ONNX` at a pinned revision; 28 English voices, Apache-2.0 |
+| `edge` | Microsoft online voices (online: sends the phrase to Microsoft) | `edge-tts` 7.3.1, LGPL-3.0, bundled in the EXE as plain `.py` files (`sc-assistant.spec`); every phrase goes to Microsoft's speech service (`speech.platform.bing.com`); the voice list is cached in `%LOCALAPPDATA%\SC Assistant\voices\edge\voices.json`, a built-in list of 8 until the first fetch |
+
+- `app/tts/base.py` `Engine` (`available`, `voices`, `needs_download`,
+  `download(voice_id, progress, cancelled)`, `synth(text, voice_id, speed)`);
+  the Windows engine speaks directly.
+- `app/tts/worker.py` `TtsWorker`: one queue on one below-normal-priority
+  thread, ONNX limited to 1 thread, stale phrases dropped, models loaded once
+  per engine and voice.
+- `app/tts/player.py`: PCM through `QAudioSink`, MP3 through `QMediaPlayer`,
+  both from a `QBuffer` (no temporary files).
+- `app/tts/phrases.py` `STYLES = ("count_after", "count_before",
+  "with_signature")`: `Borase, times 3` (as before) / `Three Borase` /
+  `Borase, three rocks, fourteen thousand four hundred`; numbers as words in
+  the second and third.
+- `app/voice.Voice` keeps `say`, `set_enabled`, `set_volume`, `available`,
+  `stop` and adds `set_engine`, `set_voice`, `set_speed`, `set_style`,
+  `test`. Any engine failure (not installed, not downloaded, synthesis or
+  playback error) speaks the phrase with a Windows voice, logs a warning and
+  shows it on the note line.
+- Tests: `tools/tts_selftest.py` (phrases, facade, worker, Windows voices,
+  player; always at volume 0), `tools/neural_selftest.py` (add-on download,
+  pins, tampered files, cancel, licence filter; offline stand-in, `--live`
+  checks the pins), `tools/edge_selftest.py` (fake transport; `--live` asks
+  Microsoft).
+
+**Add-ons (licence decision, 2026-11-01).** SC Assistant is MIT; Piper and
+Kokoro's phonemizer / espeak-ng are GPL-3.0, and bundling them would most
+likely make the EXE a GPL-3.0 combined work. They are therefore optional
+add-ons, never bundled: `app/tts/addons.py` downloads them on demand into
+`%LOCALAPPDATA%\SC Assistant\voices\<engine>\lib` (engine) and
+`...\<engine>\voices` (voices). Every wheel, model and voice file is pinned
+by exact name and SHA-256 (wheels also checked against PyPI's JSON) and a
+file that does not match is deleted and refused; the lib folder is appended
+to `sys.path` only when that engine is used, so the app's own numpy and
+onnxruntime always win. Sizes are shown before download.
+
+Measured (research, 8 cores, below-normal priority, 1-2 ONNX threads, test
+phrase about 2.1 s of audio): Windows plays directly (about 12 % CPU); Piper
+0.09-0.24 s to synthesise, first load 4.8 s, +118 MB RAM; Kokoro 0.74-1.1 s,
+19 % CPU for about 1 s, +166 MB; Microsoft online about 0.6 s including the
+network, about 2 % CPU. None conflicts with the app's onnxruntime 1.31 /
+numpy 2.5.
+
+### Reader range built in; largest scans
+
+**What happened.** The user scanned 112,000 (Aphorite, flying above Cellin),
+above the reader's 100,000 limit, so it was counted as unreadable. The range
+was saved in `config.json` (`min_value`, `max_value`), so a raised default
+would not have reached existing installs without a reset (the old 60,000
+limit had stayed alive the same way).
+
+**Change.** The range is built in: `app/ocr.py` `READ_MIN = 2000`,
+`READ_MAX = 120000` (a margin above 112,000), no longer read from or saved in
+`config.json`; a `min_value` / `max_value` left in an existing
+`config.json` is dropped on load. 112,000 is now read, shown as `SCANNED SIGNATURE 112,000`
+with a yellow border (it fits no single kind) and saved by the recorder.
+README gets a *Largest scans* table (game files: ROC 10-25, hand mining
+10-21, ship rocks up to 6, salvage scrap up to 15; real readings 76,000
+Feynmaline = ROC ×19, 57,000 Aphorite = hand mining ×19, 112,000 Aphorite
+above Cellin = no single kind: not a multiple of 3,000, 28 ROC or a mix such
+as 8 Aphorite + 22 ROC would fit, likely the ship scanner adding nearby
+deposits, unverified), updated from the recorder's unmatched readings.
+
+### DEBUG group: scan history and bad reads (911423e)
+
+**Change.** Settings gets a group **DEBUG** (id `debug`, last), part *Scan
+debugging*, both switches off by default:
+
+- **SCAN HISTORY** (`debug_scan_history`) keeps the last 50 reads in
+  `scan_history.txt` in the settings folder, newest last:
+  `<time> | read <n> | conf <c> | top <match> exact|~ | 2nd <match> |
+  confirmed yes|no | shown yes|no | border <b> | track <state>`. Written at
+  most once a second from a GUI-thread timer, never on the scanner thread.
+  **OPEN HISTORY** opens it.
+- **SAVE BAD READS** (`debug_save_bad_reads`) saves the digits picture as
+  PNG to `bad_reads/` when tracking is locked on the plate but the read
+  fails: at most one a second, newest 200 kept, name
+  `<time>-<seq>-<state>-x<l>-y<t>-<w>x<h>.png`. **OPEN FOLDER** opens it.
+- Summary while closed: `history on|off · saver on|off`.
+- RESET SETTINGS turns both off and removes `scan_history.txt` and
+  `bad_reads/` (`RESET_REMOVE`).
+- Test: `tools/debug_selftest.py`.
+
+### Logging (8eaee7e)
+
+**What happened.** The EXE has no console, and several errors in `main` and
+`config` were swallowed with `except OSError: pass`, so problems left no
+trace.
+
+**Change.**
+
+- `app/applog.py`: `app.log` next to the settings, one rotating handler on
+  the root logger (1 MB, 3 backups `app.log.1`-`.3`). WARNING and above
+  normally; unhandled errors from any thread are written too (they still go
+  to `error.log`).
+- **DETAILED LOG** (`debug_detailed_log`, Settings → DEBUG → *Logs*) raises
+  only the app's own loggers (`app.*`) to DEBUG, switchable while running;
+  other libraries stay at WARNING. New trace lines in `main`, `updater`,
+  `sigsource` and `tracking`; the swallowed errors in `main` and `config`
+  are now logged. Summary adds ` · log detailed`.
+- **OPEN LOG** opens `app.log`; **VIEW LOG** opens `app/ui/log_viewer.py`, a
+  640 × 420 always-on-top LOG window that tails the file (last 2,000 lines,
+  polled every second): ALL / WARNING+ / ERROR and text filters, COPY,
+  OPEN FILE, `LIVE` / `PAUSED` when scrolled up; position saved as
+  `logviewer_pos`.
+- **EXPORT DIAGNOSTICS** writes `SC Assistant diagnostics <date time>.zip` to
+  the Desktop (else the settings folder) and opens its folder: `system.txt`
+  (version, build, OS, Python, Qt, detailed on/off, monitors, game monitor,
+  region), `config.json`, `error.log`, `app.log*`, `scan_history.txt`, the
+  newest 20 `bad_reads` pictures and `unmatched/index.json` with the newest
+  20 pictures. Never `notes.txt`, `inventory.json`,
+  `unlocked_blueprints.json`, `refinery_jobs.json`, `active_run.json` or
+  `workflow_wallet.json` (`DIAG_EXCLUDE`).
+- RESET SETTINGS turns DETAILED LOG off and keeps the logs (`app.log*` in
+  `RESET_KEEP`).
+- Tests: `tools/applog_selftest.py`, `tools/logviewer_selftest.py`, plus
+  `debug_selftest`, `settings_extra_selftest` and `settings_persist_selftest`.
+
+### Preview: green box on the digits found (d1e7018)
+
+**What happened.** With a whole-window plate, SHOW PREVIEW drew the green box
+on the digits area placed from the pin, which is wider than the number, so
+the box looked off the number (about 16 px off its centre on the 5K2K
+fixture).
+
+**Change.** `plate_view` now draws the green box around
+`SignatureOCR.digit_box` of that area, the same trim the reader uses, so it
+is centred on the number; no green box when no digits stand out. Reading is
+unchanged. `settings_extra_selftest` checks the rendered preview at UI 1.0
+and 1.5; `scan_selftest` and `scan_e2e_selftest` fail on the old code.
+`tools/_testguard.py` now puts a test's `--root DIR` on `sys.path` before
+importing `app`, so old-code runs really test DIR.
+
 ## v1.0.3 — 2026-11-01
 
 DRAW REGION takes the whole signature window.

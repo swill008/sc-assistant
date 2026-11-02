@@ -528,7 +528,7 @@ Red only shows while tracking has found the plate on screen. With tracking off
 (`FIXED BOX`) or no plate on screen the border is never red, and a single
 dropped frame does not turn it red. While it is red the left side reads
 `SCANNED SIGNATURE —`, and the matched side and the ore name keep the last good
-result. A number above 100,000 counts as unreadable.
+result. A number above 120,000 counts as unreadable.
 
 ### Scan limits
 
@@ -545,11 +545,37 @@ data (scmdb.net 4.10.2 live clustering presets, and the Star Citizen Wiki):
 
 Why: a Feynmaline ROC field of 19 deposits reads 76,000. Before this the
 reader dropped every number over 60,000 and the matcher stopped at 8 ground
-deposits, so that scan showed nothing. The reader now accepts up to 100,000
-(the largest real reading), and the limits above cover every group size the
-game data lists (ROC fields 10-25 deposits, hand mining 10-21, ship rocks up
-to 6, salvage scrap up to 15, harvestables 2-10). A test compares the limits
-with scmdb's data.
+deposits, so that scan showed nothing. The limits above cover every group
+size the game data lists (ROC fields 10-25 deposits, hand mining 10-21, ship
+rocks up to 6, salvage scrap up to 15, harvestables 2-10). A test compares
+the limits with scmdb's data.
+
+**What the reader accepts.** Any number from 2,000 (one salvage piece or
+plant) to 120,000, a margin above the largest real scan seen so far
+(112,000, below). The range is built into the app (`READ_MIN` and `READ_MAX`
+in `app/ocr.py`) and is not saved in `config.json`, so a raised limit
+reaches every install with the update, without a reset. A number in range
+that matches nothing is still shown as `SCANNED SIGNATURE <n>` with a yellow
+border, and saved under *Unmatched readings*.
+
+#### Largest scans
+
+The biggest groups in the game files (scmdb.net 4.10.2 live), and the largest
+real readings seen in the game. This table is updated from the readings the
+recorder saves under *Unmatched readings*; send yours in.
+
+| Kind | Largest group in the game files |
+| --- | --- |
+| ROC deposits | 10-25 |
+| Hand mining deposits | 10-21 |
+| Ship rocks | up to 6 |
+| Salvage scrap | up to 15 |
+
+| Reading | Where | What it is |
+| --- | --- | --- |
+| 76,000 | Feynmaline field | ROC ×19 (19 × 4,000) |
+| 57,000 | Aphorite field | hand mining ×19 (19 × 3,000) |
+| 112,000 | Aphorite, flying above Cellin | fits no single kind: it is not a multiple of 3,000. 28 ROC deposits, or a mix such as 8 Aphorite + 22 ROC deposits, would fit. Most likely the ship's scanner adds up several deposits near each other; not verified. Shown as `SCANNED SIGNATURE 112,000` with a yellow border and saved by the recorder. |
 
 ### Unmatched readings
 
@@ -590,12 +616,18 @@ ore and the number of rocks:
   even when it is the same ore. The remembered rock is only forgotten after
   `voice_idle_reset_seconds` (default `12`) without a scan, or when pausing and
   resuming.
-- `⚙` → **Voice** has an **ON/OFF** button and a volume slider; the choice is
-  saved as `voice_enabled` and `voice_volume` (0.0–1.0).
+- `⚙` → **VOICE** turns it on or off and sets the volume, the speech engine,
+  the voice, the speed and what is said: `Borase, times 3` (the default),
+  `Three Borase`, or `Borase, three rocks, fourteen thousand four hundred`
+  with the signature. **TEST** lets you hear the choice. See *Settings
+  window*.
 
-Speech uses QtTextToSpeech — SAPI on Windows, AVSpeechSynthesizer on macOS. If no
-speech engine is installed the VOICE button says so in its tooltip and the
-scanner keeps working silently.
+The default engine is the Windows voices (QtTextToSpeech, offline, nothing to
+download; AVSpeechSynthesizer on macOS). Piper and Kokoro are optional
+offline add-ons (GPL-3.0) downloaded on demand; Microsoft online voices send
+each phrase to Microsoft. When the chosen engine fails, a Windows voice
+speaks instead. If no speech engine is installed at all, the scanner keeps
+working silently.
 
 ## Refinery work orders (headless)
 
@@ -1062,7 +1094,7 @@ application shortcuts while you type.
 
 ## Settings window
 
-`⚙` on the nav bar opens the settings window. Its controls are in five groups,
+`⚙` on the nav bar opens the settings window. Its controls are in seven groups,
 top to bottom. Each group has a heading you click to open or close it: `▸` when
 closed, `▾` when open. Any number of groups can be open at once, and the window
 resizes to fit. A closed heading shows a short grey summary on its right:
@@ -1072,8 +1104,10 @@ resizes to fit. A closed heading shows a short grey summary on its right:
 | **SCANNER** | *Signature capture region*, *Scanning* | the monitor · `no box` or `box set` |
 | **SCAN DATA** | *Signature data*, *Unmatched readings* | `<N> ores · <M> unmatched` (only `<M> unmatched` until the signature table has loaded) |
 | **HOTKEYS** | *Hotkeys* | SHOW BAR and HIDE ALL, e.g. `SHOW BAR F3 · HIDE ALL F4` |
-| **LOOK & SOUND** | *Appearance*, *Voice* | e.g. `UI 100% · voice on` |
+| **LOOK & SOUND** | *Appearance* | e.g. `UI 100%` |
+| **VOICE** | *Voice* | `<engine> · <voice> · <speed>×`, e.g. `Windows · <voice> · 1.0×`; `off · ` in front while the voice is off, ` · downloading NN%` after while a voice downloads |
 | **UPDATE & RESET** | *Update*, *Reset* | `v<x> installed`, or `v<x> available` after CHECK found a newer one; `downloading NN%` (or `downloading <got> MB`) while UPDATE downloads |
+| **DEBUG** | *Scan debugging*, *Logs* | `history off · saver off`, plus ` · log detailed` while DETAILED LOG is on |
 
 Where a group holds two of the old sections, their names stay as small
 sub-headings inside it. The open groups are remembered (`settings_open` in
@@ -1109,7 +1143,10 @@ Closing HOTKEYS cancels a key change that was waiting for a key press.
 - **SHOW PREVIEW** — show the raw pixels being read; useful for checking the box.
   When DRAW REGION was drawn around the whole signature window and the pin is
   being tracked, it shows that whole window, scaled to fit, with the pin
-  outlined in cyan and the digits being read outlined in green. Without a
+  outlined in cyan and the digits being read outlined in green. The green box
+  is drawn around the digits the reader actually finds in the read area, so it
+  sits centred on the number; when no digits stand out (a blurred or empty
+  plate) there is no green box. Without a
   saved window (a digits-only box, no pin found, a pin learned from a scan,
   or tracking lost) it shows
   the digits box as before.
@@ -1166,9 +1203,54 @@ Closing HOTKEYS cancels a key change that was waiting for a key press.
   overlay in place (positions and settings are saved first). At the default 100%
   nothing is scaled and the layout is pixel-identical to earlier builds.
 
-*Voice*
+**VOICE**
 
-- **VOICE** — turn on or off spoken announcements and set their volume (see *Voice* above).
+Spoken announcements (see *Voice* under *Reading the scanner*). Every free
+speech engine is offered side by side, so you can try them and keep the one
+you like:
+
+- **VOICE ON/OFF** and **VOLUME** — speak or not, and how loud (saved as
+  `voice_enabled` and `voice_volume`, 0.0–1.0).
+- **ENGINE** — which speech engine speaks (saved as `voice_engine`):
+
+  | Engine | Offline? | Download | Licence | What it means |
+  | --- | --- | --- | --- | --- |
+  | **Windows voices** (built in, offline) | yes | none | ships with Windows | The voices Windows already has (David, Zira, Mark…), from both Windows speech engines; each voice is labelled with its engine. The default, and the fall-back for the others. |
+  | **Piper** (offline, natural · add-on, GPL-3.0) | yes, after the download | the Piper add-on (about 33 MB) once, plus 60-130 MB per voice | **GPL-3.0** (the add-on); each voice has its own licence, shown in the list | A natural-sounding voice that runs on your PC; 17 English voices. Only voices that are public domain, CC0 or CC-BY are offered. |
+  | **Kokoro** (offline, most natural · add-on, GPL-3.0, uses more CPU) | yes, after the download | the Kokoro add-on (about 10 MB) and its model (about 88 MB) once, plus about 0.5 MB per voice | **GPL-3.0** (its phonemizer and espeak-ng parts; kokoro-onnx itself is MIT); voices Apache-2.0 | The most natural voice; 28 English voices. It uses more CPU than the others for about a second per phrase. |
+  | **Microsoft online voices** (online: sends the phrase to Microsoft) | **no** | none (built into the app) | edge-tts, LGPL-3.0 | Microsoft's online voices. Every phrase is sent to Microsoft's speech service over the internet, and the voice list is fetched from it (kept in `%LOCALAPPDATA%\SC Assistant\voices\edge\voices.json`; a short built-in list until then). If the service cannot be reached, a Windows voice speaks instead. |
+
+- **VOICE** — the voice for the chosen engine (saved as `voice_voice`; empty
+  means the engine's default voice). For Piper and Kokoro the list shows each
+  voice's licence and its size, or `downloaded`.
+- **DOWNLOAD** — shown only when the chosen voice still needs files (the
+  add-on, the model or the voice): `Needs a <N> MB download` and
+  **DOWNLOAD**; while it downloads, `NN% · <got> of <total> MB` and
+  **CANCEL**. Nothing is downloaded until you press it, and **TEST** waits
+  until the download is done.
+- **SPEED** — 0.5× to 2.0× in steps of 0.1 (saved as `voice_speed`,
+  default 1.0).
+- **SAYS** — what is said (saved as `voice_style`):
+  - `Borase, times 3` (the default, as before),
+  - `Three Borase`,
+  - `Borase, three rocks, fourteen thousand four hundred` (with the
+    signature).
+- **TEST** — says a test reading (19 Feynmaline deposits, 57,000) in the
+  chosen style, engine, voice and speed: `Feynmaline, times 19`,
+  `Nineteen Feynmaline` or `Feynmaline, nineteen deposits, fifty-seven
+  thousand`.
+- A grey note line under the rows shows the licence or online note for the
+  engine, and any error.
+
+**Add-ons.** Piper and Kokoro are licensed GPL-3.0, so they are not part of
+SC Assistant (which is MIT). They are optional add-ons, downloaded only when
+you pick them and press DOWNLOAD, from PyPI (the engine) and Hugging Face
+(the voices and Kokoro's model). Every file is checked against a fixed
+SHA-256 digest; a file that does not match is deleted and not used. They are
+stored in `%LOCALAPPDATA%\SC Assistant\voices\` (`<engine>\lib` for the
+engine, `<engine>\voices` for the voices; parts Piper never uses, about
+22 MB, are not unpacked); to remove an add-on, delete its folder there. If an engine fails for any reason, the
+phrase is spoken with a Windows voice and the reason is written to `app.log`.
 
 **UPDATE & RESET**
 
@@ -1209,17 +1291,65 @@ Closing HOTKEYS cancels a key change that was waiting for a key press.
      SHOW BOX, hotkeys, panel positions and pinned windows), the saved pin
      picture `anchor.png`, the downloaded caches (`signatures_scmdb.json`,
      `where_to_mine.json`, `routes_cache.json`, `hauling_*.json`), their
-     `.bak` copies, and the `unmatched` folder;
+     `.bak` copies, the `unmatched` folder, and the DEBUG files
+     (`scan_history.txt` and the `bad_reads` folder);
   3. kept: `notes.txt`, `inventory.json`, the blueprint registry
      (`unlocked_blueprints.json`), the refinery timers (`refinery_jobs.json`),
      the hauling run and wallet (`active_run.json`, `workflow_wallet.json`),
-     `error.log`, their `.bak` files, and any file the app does not know;
-  4. the app restarts with default settings; draw the scan box again.
+     `error.log`, the logs (`app.log` and its older copies), their `.bak`
+     files, and any file the app does not know;
+  4. the app restarts with default settings (the DEBUG switches and DETAILED
+     LOG off); draw the scan box again.
 
   If the files cannot be removed (for example one is open in another
   program), nothing is removed and the note says `Reset failed, nothing was
   removed: …`. To undo a reset, quit the app and copy the files back from the
   backup folder.
+
+**DEBUG**
+
+Tools for finding out why something goes wrong. All switches are off by
+default; leave them off unless you are looking into a problem.
+
+*Scan debugging*
+
+- **SCAN HISTORY** ON/OFF, with **OPEN HISTORY** — keeps the last 50 reads in
+  `scan_history.txt` in the settings folder, newest last, one line per read:
+  the time, the number read, the reader's confidence, the top and second
+  match, whether it was confirmed and shown, the border colour and the
+  tracking state. The file is written at most once a second, away from the
+  scanner, so it does not slow the reads (`debug_scan_history`).
+- **SAVE BAD READS** ON/OFF, with **OPEN FOLDER** — when tracking sees the
+  plate but its number cannot be read, saves the picture to the `bad_reads`
+  folder in the settings folder: at most one a second, the newest 200 kept.
+  The file name holds the time and where the digits were
+  (`debug_save_bad_reads`).
+
+*Logs*
+
+- The app writes warnings and errors to `app.log` in the settings folder,
+  always (also from the EXE, which has no console); at 1 MB the file is
+  renamed `app.log.1` and a new one started, and three old copies are kept.
+  Errors that used to be ignored silently are now written there.
+- **DETAILED LOG** ON/OFF, with **OPEN LOG** — also writes the app's
+  step-by-step trace lines to `app.log`; it switches at once, without a
+  restart (`debug_detailed_log`). **OPEN LOG** opens `app.log` in your text
+  editor.
+- **VIEW LOG** — opens the LOG window: the newest lines of `app.log`,
+  following new lines as they are written, coloured by level. **ALL**,
+  **WARNING+** and **ERROR** filter by level, the text box filters by text,
+  **COPY** copies the lines shown and **OPEN FILE** opens the file. Scrolling
+  up pauses the following (`PAUSED`); scrolling back to the bottom resumes it
+  (`LIVE`). The window remembers its position (`logviewer_pos`).
+- **EXPORT DIAGNOSTICS** — saves one zip,
+  `SC Assistant diagnostics <date time>.zip`, on your Desktop (or in the
+  settings folder when there is no Desktop folder) and opens its folder; the
+  note line says where. It holds a `system.txt` (app version, Windows,
+  Python and Qt versions, monitors, the scan box), `config.json`,
+  `error.log`, `app.log` and its old copies, `scan_history.txt`, and the
+  newest 20 pictures from `bad_reads` and from *Unmatched readings*. It never
+  holds your notes, inventory, blueprints, refinery timers or hauling run.
+  Attach it when you report a problem.
 
 The settings window has a push-pin too, like every panel.
 
@@ -1374,7 +1504,8 @@ mining), so 8,000 in space still reads DEBRIS ×4. Above 30,000 a ground
 cluster is far more likely, so ROC and hand mining come first: 76,000 reads
 ROC ×19, then DEBRIS ×38. The near (`~`) guesses follow. The panel shows the
 first and, when there is one, a second exact match of another kind on its own
-line. The reader accepts 2,000 to 100,000 (`min_value` / `max_value`).
+line. The reader accepts 2,000 to 120,000, built into the app (see *Scan
+limits*).
 
 ## Anti-cheat
 
@@ -1390,7 +1521,9 @@ Star Citizen runs Easy Anti-Cheat. This overlay only:
 - reads and writes its own local refinery timer registry,
 - reads and writes its own local `unlocked_blueprints.json` unlock registry,
 - makes read-only UEX HTTP requests for hauling, planner and station data,
-- downloads signature data from scmdb.net (read-only, at most once a day).
+- downloads signature data from scmdb.net (read-only, at most once a day),
+- speaks announcements with a speech engine of your choice (optional voice
+  add-ons are downloaded only when you ask).
 
 It never opens a handle to the game, reads its memory, injects a DLL, or
 synthesizes input into the game. That keeps it on the safe side of EAC, but any
@@ -1403,10 +1536,14 @@ connect to it. It does not hook, inject into or read the memory of the game
 process: it tails `Game.log` as text and OCRs a screen region you calibrate,
 entirely on your machine.
 
-Outbound traffic is GET requests only:
+Outbound traffic is GET requests only, except the Microsoft online voices
+(below), which you have to choose yourself:
 
 | Destination | Why |
 | --- | --- |
+| `pypi.org`, `files.pythonhosted.org` | the Piper or Kokoro voice add-on's engine files, only when you press DOWNLOAD under `⚙` → VOICE |
+| `huggingface.co` | the Piper or Kokoro voices (and Kokoro's model), only when you press DOWNLOAD under `⚙` → VOICE |
+| Microsoft's online speech service (`speech.platform.bing.com`) | only while VOICE uses **Microsoft online voices**: the text of each phrase (for example "Borase, times 3") is sent to Microsoft to be spoken (a WebSocket connection), and the voice list is read from it. Nothing else is sent. |
 | `api.uexcorp.uk` | trade routes and the UEX marketplace tab |
 | `scminer.rocks` | ore locations for ORE FINDER |
 | `scmdb.net` | signature data (`versions.json` and `mining_data-<version>.json`), at most once a day; never with `signature_source: "bundled"` |
@@ -1416,8 +1553,10 @@ Outbound traffic is GET requests only:
 | `codeload.github.com` | the update archive from `swill008/sc-assistant`, only when you press UPDATE in a source install |
 
 There is no telemetry, no analytics and no account. Screenshots, notes and
-inventory data are never uploaded; everything the app stores lives in
-`%APPDATA%\SC Assistant`.
+inventory data are never uploaded; **EXPORT DIAGNOSTICS** only writes a zip
+on your PC, which you send yourself if you want to. Everything the app stores
+lives in `%APPDATA%\SC Assistant`, except the optional voice add-ons, in
+`%LOCALAPPDATA%\SC Assistant\voices`.
 
 ### Updates are manual
 
@@ -1476,13 +1615,20 @@ to it.
 | UEX opens the wrong page | The box should contain only the search term, then press **OPEN**. The footer shows the exact URL that was opened. |
 | Scanner shows `UNKNOWN` | The number is not in the table, or OCR dropped a digit. Check the raw value shown. |
 | Yellow border and `MATCHED SIGNATURE —` | The number was read but matches nothing in the table. It is saved under `⚙` → *Unmatched readings*; open the folder, check the picture, and report it if the number is right (see *Unmatched readings*). |
-| Red border | The scan plate is on screen but its number has not been readable for about a second: something covers the digits, or the box is off. Check with **SHOW PREVIEW**, then **DRAW REGION** again if needed. A number over 100,000 also shows red. |
+| Red border | The scan plate is on screen but its number has not been readable for about a second: something covers the digits, or the box is off. Check with **SHOW PREVIEW**, then **DRAW REGION** again if needed. A number over 120,000 also shows red. |
+| A big ground scan (over 100,000) shows only `SCANNED SIGNATURE` with a yellow border | The number was read but fits no single kind (for example 112,000 over Aphorite near Cellin: likely several deposits added up). It is saved under `⚙` → *Unmatched readings*; report it so it can be added to *Largest scans*. |
 | Settings are in a bad state, or you want a clean start | `⚙` → **RESET SETTINGS** (click twice). Notes, inventory and blueprints are kept, the old settings are copied to `SC Assistant backup <date time>` next to `%APPDATA%\SC Assistant`, and the app restarts. Draw the scan box again afterwards. |
 | Nothing appears in screenshots | Open `⚙` and set the screenshots button to **VISIBLE**. If it already says VISIBLE, your build predates the toggle: run with `--capture-visible`. |
 | Scanner stops reading after making screenshots visible | A panel now overlaps the calibrated scan box, so the scanner captures the overlay instead of the HUD. Move that panel away from the box, or set the screenshots button back to **HIDDEN** while mining. |
 | UI scale slider seems to do nothing | It needs a restart: press **RESTART** next to the slider (or quit and start again). The hint turns amber while the chosen scale is not active yet. |
 | `run.bat` says Python was not found | Install Python 3.11+ (64-bit) and tick “Add python.exe to PATH”, or run `setup.bat` once to create `C:\scov`. |
 | A black console flashes when a refinery order completes | Fixed: the speech/WAV helpers start PowerShell with `CREATE_NO_WINDOW`. If you see it, you are running an older copy. |
+| Preview shows no green box on the plate | The reader found no digits that stand out in the read area this frame (a blurred, tinted or empty plate). Wait for a steady view; if it never appears, press **DRAW REGION** again. |
+| Something went wrong and you want to report it | `⚙` → DEBUG: turn **DETAILED LOG** on, make it happen again, then press **EXPORT DIAGNOSTICS** and attach the zip from your Desktop to the issue. It holds logs, settings and debug pictures, never notes, inventory or blueprints. Turn DETAILED LOG off afterwards. |
+| Scans are misread now and then and you want to see why | `⚙` → DEBUG: turn on **SCAN HISTORY** (each read with its confidence and match) and **SAVE BAD READS** (pictures of plates that could not be read). Turn them off when done. |
+| Voice says nothing | Check `⚙` → VOICE is **ON** and the volume is up, then press **TEST**. A grey note under the rows names any error. With Piper or Kokoro, press **DOWNLOAD** first if it shows. |
+| A Windows voice speaks although Piper, Kokoro or Microsoft online voices is chosen | The chosen engine failed (no internet for the online voices, a missing or damaged add-on), so a Windows voice spoke instead. The reason is in `app.log` (**VIEW LOG**). For an add-on, delete its folder in `%LOCALAPPDATA%\SC Assistant\voices\` and download it again. |
+| Voice add-on download fails | It needs pypi.org, files.pythonhosted.org and huggingface.co. Press **DOWNLOAD** again; a file that does not match its SHA-256 digest is not used. |
 | Scanner stays on `READING` and never locks | OCR returned no text: confirm in **SHOW PREVIEW** that the digits (the green outline, or the whole crop for a digits-only box) contain the number, then re-calibrate. `run-debug.bat` prints the scan error; if it reports a missing module, reinstall the OCR deps with `pip install -r requirements.txt`. |
 
 ## Development
@@ -1500,6 +1646,12 @@ C:\scov\Scripts\python.exe -m tools.signature_selftest REM scmdb conversion, gro
 C:\scov\Scripts\python.exe -m tools.hotkeys_selftest REM rebinding hotkeys while running, Settings -> HOTKEYS (fake user32, no real hotkey)
 C:\scov\Scripts\python.exe -m tools.dataage_selftest REM data age and window pins on HAULING, ORE FINDER, COMBAT, UEX (offline)
 C:\scov\Scripts\python.exe -m tools.update_selftest REM UPDATE: release lookup, sha256 check, What's new, installer hand-off, TRACKING slider (one live read-only request)
+C:\scov\Scripts\python.exe -m tools.debug_selftest REM DEBUG: SCAN HISTORY, SAVE BAD READS, the Logs buttons, reset
+C:\scov\Scripts\python.exe -m tools.applog_selftest REM app.log, DETAILED LOG, unhandled errors, EXPORT DIAGNOSTICS contents
+C:\scov\Scripts\python.exe -m tools.logviewer_selftest REM VIEW LOG window: follow, filters, pause, COPY (invisible, secondary monitor)
+C:\scov\Scripts\python.exe -m tools.tts_selftest REM VOICE: phrases, engine choice and fall-back, worker, Windows voices, player (always silent)
+C:\scov\Scripts\python.exe -m tools.neural_selftest REM Piper and Kokoro add-ons: download, SHA-256 pins, tampered files, cancel (offline; --live checks the pins)
+C:\scov\Scripts\python.exe -m tools.edge_selftest REM Microsoft online voices with a fake connection (--live asks Microsoft)
 C:\scov\Scripts\python.exe tools\release_notes_selftest.py REM release_body.py and the workflows (set RELEASE_CHECK=1 to also require release-notes\<version>.md)
 C:\scov\Scripts\python.exe -m tools.workflow_selftest REM workflow + Game.log checks
 C:\scov\Scripts\python.exe -m tools.refinery_selftest REM refinery parser + timers
@@ -1537,6 +1689,17 @@ console stays attached.
 ## License
 
 MIT — see [`LICENSE`](LICENSE). Use it, fork it, ship it; there is no warranty.
+
+The optional voice add-ons are not part of SC Assistant and keep their own
+licences: Piper ([piper-tts](https://pypi.org/project/piper-tts/), with
+espeak-ng) is GPL-3.0, and Kokoro
+([kokoro-onnx](https://pypi.org/project/kokoro-onnx/), MIT) needs phonemizer
+and espeak-ng, which are GPL-3.0. They are downloaded only when you choose
+them in `⚙` → VOICE and are never bundled into the EXE. Piper voices are
+offered only under public-domain, CC0 or CC-BY licences; Kokoro's voices are
+Apache-2.0. The Microsoft online voices use Microsoft's service through
+[edge-tts](https://pypi.org/project/edge-tts/) (LGPL-3.0), an unofficial
+client.
 
 The overlay itself is original work. Data and assets keep their own terms: the
 bundled hauling mission snapshot comes from
